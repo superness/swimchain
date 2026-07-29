@@ -80,6 +80,14 @@
  * `encodePresence`/`encodeEat` before it gets here, so floor and trunc agree);
  * no fractional quantity is ever stored or compared.
  *
+ * A CHECKPOINT is the one write whose action timestamp is NOT the instant its
+ * body describes. `sendCheckpoint(ctx, cp, nowMs)` takes the publisher's own
+ * clock for the envelope only: the body's time is the epoch inside the payload,
+ * and if a publisher's clock reached the body then two honest clients rolling
+ * the same boundary milliseconds apart would compute different payloads for one
+ * world — turning every honest pair into a detected divergence. See
+ * `sendCheckpoint` below.
+ *
  * ## `sendEat` takes `(cell, ms)`, not `(cell)`
  *
  * Carried forward from Task 1: the plan brief listed `encodeEat(cell)` and
@@ -105,9 +113,77 @@
 
 import { argon2id, createSHA256 } from 'hash-wasm';
 
-import type { Vec } from './shoalTypes';
-import { encodeEat, encodePresence } from './shoalWire';
-import { assertWireSpaceId, rpcCall, type RpcAuth } from './shoalRpc';
+import type { Checkpoint, Vec } from './shoalTypes';
+import { encodeCheckpoint, encodeEat, encodePresence } from './shoalWire';
+import { assertWireSpaceId, JsonRpcCallError, NodeUnreachableError, rpcCall, type RpcAuth } from './shoalRpc';
+
+// ---------------------------------------------------------------------------
+// Classifying a failed write (plan 2026-07-28-the-shoal-shallows, Task 3,
+// "Blocker 2" — a new swimmer cannot write at all, and the shell cannot tell why)
+// ---------------------------------------------------------------------------
+//
+// On testnet and mainnet, `submit_reply` (src/rpc/methods.rs:2895) runs
+// `check_identity_sponsored` (:753) before anything else. That check
+// short-circuits to `Ok(())` ONLY on regtest (:757-759); everywhere else an
+// unsponsored author's very first write is rejected at ingestion with the
+// JSON-RPC error code `RpcErrorCode::IdentityNotSponsored = -32015`
+// (src/rpc/error.rs:31, thrown at src/rpc/methods.rs:823-827). That is a real,
+// distinct numeric code — not a code shared with any other rejection reason —
+// so classifying on it is exact, not a guess: no other `submit_reply` failure
+// path returns -32015 (see src/rpc/error.rs's full `RpcErrorCode` list; every
+// other code there means something else entirely).
+//
+// `rpcCall` (shoalRpc.ts) now throws a distinct class per failure SHAPE
+// (`JsonRpcCallError`, `HttpStatusCallError`, `NodeUnreachableError`) rather
+// than one flat `Error` with the code baked into the message text — see that
+// module's header. That is what makes the classification below type-based
+// (`instanceof` + a numeric field) instead of a regex over human-readable
+// prose, per this task's requirement to read the code rather than guess it.
+//
+// This module deliberately produces only the TYPE, never player-facing copy
+// (this plan's global constraint reserves that for Task 4) — `SendFailure` is
+// consumed by a caller that decides what to show, not by this module.
+
+/** `RpcErrorCode::IdentityNotSponsored` — src/rpc/error.rs:31. The one code
+ *  `check_identity_sponsored` returns for an unsponsored author
+ *  (src/rpc/methods.rs:823-827); no other rejection reason shares it. */
+const IDENTITY_NOT_SPONSORED_CODE = -32015;
+
+export type SendFailureKind = 'not-sponsored' | 'unreachable' | 'unknown';
+
+/** A typed answer to "why did this write fail?" `cause` is the original thrown
+ *  value, kept for logging — nothing in this module reads text out of it. */
+export interface SendFailure {
+  readonly kind: SendFailureKind;
+  readonly cause: unknown;
+}
+
+/**
+ * Classify anything `sendPresence`/`sendEat`/`sendCheckpoint` (or `rpcCall`
+ * directly) can throw:
+ *
+ *   - `'not-sponsored'` — the node answered and refused this identity
+ *     specifically because it has no sponsor (`JsonRpcCallError` whose `code`
+ *     is exactly -32015). A DIFFERENT `JsonRpcCallError` — wrong PoW, bad
+ *     signature, malformed params, whatever — is real protocol feedback from
+ *     a reachable node and must NOT collapse into this bucket, or a "claim a
+ *     sponsor" flow would fire on unrelated failures.
+ *   - `'unreachable'` — `fetch()` itself never got a response
+ *     (`NodeUnreachableError`): offline, DNS failure, connection refused.
+ *   - `'unknown'` — anything else: a different JSON-RPC error code, an HTTP
+ *     status failure, a malformed-JSON response, a thrown value that isn't
+ *     even an `Error`. Exactly what the brief calls "everything else" — this
+ *     module does not pretend to have confidently classified it.
+ */
+export function classifySendFailure(err: unknown): SendFailure {
+  if (err instanceof JsonRpcCallError && err.code === IDENTITY_NOT_SPONSORED_CODE) {
+    return { kind: 'not-sponsored', cause: err };
+  }
+  if (err instanceof NodeUnreachableError) {
+    return { kind: 'unreachable', cause: err };
+  }
+  return { kind: 'unknown', cause: err };
+}
 
 // ---------------------------------------------------------------------------
 // Action PoW — byte layouts verified against src/crypto/action_pow.rs
@@ -499,12 +575,24 @@ interface SubmitReplyResult {
 }
 
 /**
- * Mine, sign and submit one already-encoded move body. Returns the new
- * reply's `content_id` — the same `sha256:…` string that comes back as a
- * `LogEntry.hash` from `repliesToLog`, so a caller can recognise its own
- * write in the next fetched log.
+ * Mine, sign and submit one already-encoded body — a move or a checkpoint, both
+ * of which are replies to the room post. Returns the new reply's `content_id`
+ * — the same `sha256:…` string that comes back as a `LogEntry.hash` (or a
+ * `CheckpointEntry.hash`) from `splitRoomReplies`, so a caller can recognise
+ * its own write in the next fetched room.
  */
-async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<string> {
+/**
+ * Submit a raw, already-encoded body as a reply to the room.
+ *
+ * EXPORTED FOR ADVERSARIAL HARNESSES ONLY. Every honest caller goes through
+ * `sendPresence`/`sendEat`/`sendCheckpoint`, which build the body from the
+ * ctx's own key and cannot author anything else. This entry point exists so a
+ * test can author what an honest client never would — specifically, a
+ * byte-identical COPY of another swimmer's checkpoint, which is the input that
+ * makes a node's author attribution nondeterministic across peers. See
+ * `scripts/two-client-checkpoint.ts`'s copied-checkpoint section.
+ */
+export async function submitToRoom(ctx: SendCtx, body: string, ms: number): Promise<string> {
   assertWireSpaceId(ctx.spaceId, 'shoalSend: ctx.spaceId');
 
   const profile = ctx.powProfile ?? (await powProfileFor(ctx.auth));
@@ -539,7 +627,37 @@ async function submitMove(ctx: SendCtx, body: string, ms: number): Promise<strin
  * so a caller bug costs nothing but the exception.
  */
 export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promise<string> {
-  return submitMove(ctx, encodePresence(vec, ctx.authorIdHex, say), vec.t);
+  return submitToRoom(ctx, encodePresence(vec, ctx.authorIdHex, say), vec.t);
+}
+
+/**
+ * Publish this client's checkpoint for a closed epoch (spec §3.9 point 4) into
+ * the same room every move goes to. `cp` is what `advance` returned as
+ * `rolled` — never one built by hand, and never `checkpointFrom` called
+ * directly (see its own doc: only `rollEpoch` prunes `departed` first, and a
+ * checkpoint taken without that prune is a different payload for the same
+ * world, which no honest peer agrees with).
+ *
+ * `nowMs` IS NOT PART OF THE CHECKPOINT and never reaches the wire body. It is
+ * the publisher's own clock, used only for the action envelope's `timestamp`,
+ * which the node checks against a window (600 s back, 60 s forward —
+ * action_pow.rs:79-82) and which is not covered by `content_hash =
+ * sha256(body)`. That separation is deliberate and load-bearing: two honest
+ * publishers roll the same boundary milliseconds apart, so if their clocks
+ * reached the BODY they would compute different payloads for one world and
+ * every joiner would read an honest pair as a divergence. The body's only time
+ * is the epoch inside the payload.
+ *
+ * This module still reads no clock of its own — `nowMs` is passed in, exactly
+ * as `ms` is for an eat claim.
+ *
+ * A checkpoint body is KB-scale rather than the ~50 bytes a move costs (see
+ * shoalWire.ts's size measurements), but PoW and mempool eviction are priced
+ * per ACTION, not per byte (builder.rs:92), so publishing one costs the same
+ * mine as a single vector — once an hour.
+ */
+export async function sendCheckpoint(ctx: SendCtx, cp: Checkpoint, nowMs: number): Promise<string> {
+  return submitToRoom(ctx, encodeCheckpoint(cp, ctx.authorIdHex), nowMs);
 }
 
 /**
@@ -550,5 +668,5 @@ export async function sendPresence(ctx: SendCtx, vec: Vec, say?: string): Promis
  * and nothing in `src/lib/` may read a clock. See the module header.
  */
 export async function sendEat(ctx: SendCtx, cell: number, ms: number): Promise<string> {
-  return submitMove(ctx, encodeEat(cell, ms, ctx.authorIdHex), ms);
+  return submitToRoom(ctx, encodeEat(cell, ms, ctx.authorIdHex), ms);
 }

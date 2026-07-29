@@ -22,14 +22,15 @@
  */
 import { orderLog, foldShoal, foldTick, rollEpoch, bodiesOf } from './shoalEngine';
 import { checkpointFrom, serialiseCheckpoint } from './checkpoint';
+import { encodeCheckpoint } from './shoalWire';
 import type { LogEntry, Presence, EatClaim, ShoalState, Checkpoint } from './shoalTypes';
 import {
   START_SIZE, MIN_SIZE, BITE_GROWTH, TICK_MS,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, PRESENCE_TTL_MS,
-  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS, WARMUP_MS,
+  BLOOM_BITES, EAT_COOLDOWN_MS, VOID_WINDOW_MS, MAX_FOLD_TICKS, EPOCH_MS, WARMUP_MS, MAX_SIZE,
   SCATTER_COST, SPEED_DART, SPEED_CRUISE, BLOOM_VISIT_R, BLOOM_READY_MS,
 } from './shoalConst';
-import { cellCentre, bitesLeft } from './bloom';
+import { cellCentre, cellIndex, bitesLeft } from './bloom';
 import { epochOf, epochStartMs, epochEndMs, epochFoldEndMs } from './epoch';
 // shoalFixtures.ts is deliberately NON-EXECUTING (it declares and returns; it
 // runs no checks and calls no process.exit), so importing it here cannot run
@@ -2550,6 +2551,108 @@ check('epoch 1 starts at EPOCH_MS, independent of any entry',
   const bodies = bodiesOf(s);
   check('bodiesOf returns one body per live fish', bodies.length === 2, bodies.length);
   check('bodiesOf is sorted by id', bodies[0].id === 'a' && bodies[1].id === 'b', bodies.map((b) => b.id));
+}
+
+// ===========================================================================
+// THE FOLD'S SIZE RANGE IS THE WIRE'S SIZE RANGE
+//
+// `clampSize` used to floor only. `checkpointInDomain` (shoalWire.ts) refused
+// to CARRY a size above MAX_SIZE. Two bounds, each defensible alone, unbounded
+// in relation to each other — and the gap between them was reachable with one
+// checkpoint and one ordinary bite:
+//
+//   seat a swimmer at exactly MAX_SIZE   (in domain, so it is adopted)
+//   let it take one credited bite        (+BITE_GROWTH, unclamped)
+//   -> every client's next `rolled` carries MAX_SIZE + 12
+//   -> `encodeCheckpoint` throws on it, FOREVER
+//
+// The throw is caught and reported by the shell (`publishCheckpoint`), so the
+// symptom is not a crash: that client stops publishing for the rest of the
+// session, loses its vote every hour, and a room of such clients leaves every
+// joiner unseeded. Both halves are pinned below — the growth clamp, and the
+// end-to-end consequence it removes.
+// ===========================================================================
+{
+  // A cell in the middle of the world, so nothing clamps at an edge.
+  const CELL = cellIndex(2_048, 1_536);
+  const c = cellCentre(CELL);
+  // A swimmer parked on a bloom cell, seeded at exactly MAX_SIZE, taking one
+  // bite. Hand-derived: the bite credits (the cell is fallow at the origin —
+  // "the sea starts full"), so an UNCLAMPED fold lands on MAX_SIZE + 12.
+  const E = 400;
+  const origin = epochStartMs(E);
+  const log: LogEntry[] = [
+    pres('whale', c.x, c.y, origin - 1_000),
+    eat('whale', CELL, origin + 1_000),
+  ];
+  const seed: Checkpoint = {
+    epoch: E - 1, sizes: [['whale', MAX_SIZE]], recent: [],
+  };
+  const s = foldShoal(log, origin + 2_000, { epoch: E, seed });
+  check('hand-derived: the bite was credited, so this case is not vacuous',
+    s.bitesTaken.get(CELL) === 1, s.bitesTaken.get(CELL));
+  check('a swimmer at MAX_SIZE does not grow past it on a credited bite',
+    s.fish.get('whale')?.size === MAX_SIZE, s.fish.get('whale')?.size);
+  check('...and MAX_SIZE + BITE_GROWTH is what an unclamped fold would have produced',
+    MAX_SIZE + BITE_GROWTH === 1_000_000_012);
+
+  // THE CONSEQUENCE, end to end: whatever the fold produces at a boundary must
+  // be publishable. This is the check that fails if either bound moves without
+  // the other.
+  //
+  // The swimmer arrives LATE in the epoch on purpose — presence 5 s before the
+  // boundary, one bite 3 s before it — so that only about five hunger ticks
+  // land before the roll. Over a whole epoch hunger (1/s, 3_600 an hour) would
+  // pull even an unclamped 1_000_000_012 back under the ceiling and the case
+  // would stop discriminating. Hand-derived: 20 ticks of presence, hunger every
+  // 4th, one of them skipped for the bite, so the roll lands within a few units
+  // of MAX_SIZE — above it without the clamp, at or below it with it.
+  const WHALE = 'f'.repeat(64);
+  const boundary = epochFoldEndMs(E);
+  const lateLog: LogEntry[] = [
+    pres(WHALE, c.x, c.y, boundary - 5_000),
+    eat(WHALE, CELL, boundary - 3_000),
+  ];
+  const lateSeed: Checkpoint = { epoch: E - 1, sizes: [[WHALE, MAX_SIZE]], recent: [] };
+  const closed = foldShoal(lateLog, boundary, { epoch: E, seed: lateSeed });
+  const rolled = rollEpoch(closed);
+  const whaleSize = rolled.sizes.find(([id]) => id === WHALE)?.[1] ?? -1;
+  check('hand-derived: the late bite credited too, so this half is not vacuous either',
+    closed.bitesTaken.get(CELL) === 1, closed.bitesTaken.get(CELL));
+  check('hand-derived: the rolled size sits within 100 of MAX_SIZE, so an unclamped '
+    + 'fold would have been ABOVE it and this case discriminates',
+    whaleSize > MAX_SIZE - 100 && whaleSize <= MAX_SIZE, whaleSize);
+  let threw: unknown = null;
+  try { encodeCheckpoint(rolled, WHALE); } catch (e) { threw = e; }
+  check('the checkpoint the fold produces from a MAX_SIZE swimmer is PUBLISHABLE',
+    threw === null, threw instanceof Error ? threw.message : threw);
+}
+
+// --- The swimmer COUNT has no such gap, and here is why ---------------------
+// MAX_CHECKPOINT_SWIMMERS is the other bound of the same shape: the wire caps
+// the number of swimmers a checkpoint may name, and nothing in the fold caps
+// how many it collects. The difference is that `rollEpoch` PRUNES — a seeded
+// swimmer nobody returned to claim is dropped at the next boundary (it keys off
+// `touchedIds`), so a checkpoint's row count cannot ratchet upward across
+// epochs the way an unclamped size ratcheted upward across bites. It is bounded
+// by the number of distinct ids that actually wrote a presence in ONE epoch,
+// which the room's own fetch ceiling bounds far below 1000.
+{
+  const E = 500;
+  const origin = epochStartMs(E);
+  // Three seeded swimmers; only one of them writes anything this epoch.
+  const seed: Checkpoint = {
+    epoch: E - 1,
+    sizes: [['aaa', 300], ['bbb', 300], ['ccc', 300]],
+    recent: [],
+  };
+  const log: LogEntry[] = [pres('bbb', 100, 100, origin + 1_000)];
+  const closed = foldShoal(log, epochFoldEndMs(E), { epoch: E, seed });
+  const rolled = rollEpoch(closed);
+  check('hand-derived: a 3-swimmer seed with one returner checkpoints ONE swimmer',
+    rolled.sizes.length === 1 && rolled.sizes[0][0] === 'bbb', rolled.sizes);
+  check('...so the row count cannot ratchet up across epochs the way size did',
+    rolled.sizes.every(([id]) => id === 'bbb'), rolled.sizes);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

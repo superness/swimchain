@@ -18,6 +18,16 @@
  * The one text on the surface is a player's own speech — which is the point of
  * it (spec 2.6: speech is the honest tell that a swimmer is a person).
  *
+ * THERE IS NOW A SECOND, AND EXACTLY ONE. A swimmer nobody has let into the
+ * water yet is shown `TheEdge` (spec 2.16), which carries two written lines.
+ * That is not a hole in the rule above but the rule's own exception: 2.16 says
+ * a player who cannot reach the shoal must see A PLACE, NOT AN ERROR, and a
+ * place with no way of saying what would change it is a dead end. The words
+ * live in `wayIn.ts` and are held to the diegetic rule by name in
+ * `wayIn.test.ts`; the surface itself is water, a boundary, and one small fish
+ * circling on the wrong side of it. It appears for one classified failure and
+ * for nothing else — see `wayIn.afterWrite`.
+ *
  * Two developer affordances survive, both wordless:
  *   - a dim dot in the bottom-right corner, and F1, toggle Task 1's
  *     diagnostics panel. It is the only way to see whether the sidecar is
@@ -88,6 +98,8 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { chainSea, type ChainSea } from './chainSea';
+import { TheEdge } from './TheEdge';
+import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
@@ -105,6 +117,7 @@ import { canEat, cellCentre } from '../lib/bloom';
 import { bodiesOf } from '../lib/shoalEngine';
 import type { Body, ShelterBody } from '../lib/shelter';
 import type { ReadonlyVisitMap } from '../lib/shoalTypes';
+import type { SendFailure } from '../lib/shoalSend';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
@@ -150,7 +163,7 @@ interface ChainParams {
  * so the public key comes from `&id=` and `chainSea` checks the two agree once
  * the key arrives. That keeps the frame loop's construction unchanged.
  */
-function buildChainSea(): ChainSea | null {
+function buildChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea | null {
   // THE STATIC GATE, and it is here as well as inside `chainParams` on purpose.
   // `import.meta.env.DEV` is replaced by the literal `false` in a production
   // build, so this becomes `if (true) return null;` and everything below it —
@@ -179,6 +192,13 @@ function buildChainSea(): ChainSea | null {
     // from before the first publish.
     spawn: { x: Math.round(WORLD_W / 2), y: Math.round(WORLD_H / 2) },
     onError: (where, err) => { console.error(`[shoal] chain sea (${where}):`, err); },
+    // THE WAY IN (spec §2.16). Every write's outcome, typed — accepted, or
+    // classified by `classifySendFailure` from the node's own JSON-RPC code.
+    // What it MEANS is decided by `wayIn.afterWrite`, which raises the edge of
+    // the water for exactly one of the three kinds and leaves the standing
+    // alone for the other two. Nothing here reads an error message, and this
+    // page never sees one.
+    onWrite,
   });
 }
 
@@ -298,6 +318,18 @@ export function App() {
   });
   /** The line being typed, or null when not speaking. */
   const [typing, setTyping] = useState<string | null>(null);
+  /**
+   * Where this client stands with the water (spec §2.16). Raised by a write
+   * the node refused for want of a voucher, lifted by a write it accepted —
+   * see `wayIn.ts`. It lives in React state rather than in the frame loop
+   * because it changes at most twice in a session and drives DOM, not paint;
+   * the frame loop is untouched by it, and the sea keeps folding and drawing
+   * underneath exactly as it did.
+   *
+   * `afterWrite` returns the SAME object when nothing changed, so the accepted
+   * write every few seconds does not re-render the tree.
+   */
+  const [standing, setStanding] = useState<Standing>(OPEN_WATER);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const typingRef = useRef<string | null>(null);
   typingRef.current = typing;
@@ -371,7 +403,9 @@ export function App() {
     // Built once per scene, and torn down by this effect's cleanup — a chain
     // sea owns a WebSocket and timers, so leaking one across a hot reload
     // would leave a growing pile of subscribers on the node.
-    const chain = scene === 'chain' ? buildChainSea() : null;
+    const chain = scene === 'chain'
+      ? buildChainSea((failure) => { setStanding((s) => afterWrite(s, failure)); })
+      : null;
     const sea: Sea = chain
       ?? (scene === 'harness'
         ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
@@ -688,6 +722,10 @@ export function App() {
   return (
     <div style={S.page}>
       <canvas ref={canvasRef} style={S.canvas} />
+      {/* THE EDGE OF THE WATER (spec §2.16). Over the live canvas, never
+          instead of it: the sea keeps folding and drawing underneath, because
+          a player who cannot get in has to see a place, not an error. */}
+      {standing.atTheEdge && <TheEdge />}
       {typing !== null && (
         // A bare line with a caret. No label, no placeholder, no send button —
         // the diegetic rule holds here too, and there is nothing to say about

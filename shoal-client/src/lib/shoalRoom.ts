@@ -151,7 +151,7 @@
  * safe direction.
  */
 import type { LogEntry } from './shoalTypes';
-import { decodeBody } from './shoalWire';
+import { decodeBody, decodeCheckpointBody, type CheckpointEntry } from './shoalWire';
 import { orderLog } from './shoalEngine';
 import { rpcCall, type RpcAuth } from './shoalRpc';
 
@@ -224,8 +224,47 @@ const AUTHOR_ID_RE = /^[0-9a-f]{64}$/;
  *  - hands the survivors to `orderLog` for the engine's total order (ms, then hash).
  */
 export function repliesToLog(replies: readonly RawReply[]): LogEntry[] {
+  return splitRoomReplies(replies).log;
+}
+
+/**
+ * A room's replies, separated into the two things they can be: the ordered
+ * `LogEntry[]` the engine FOLDS, and the `CheckpointEntry[]` a joining client
+ * SEEDS from (spec §3.9 points 4 and 5).
+ *
+ * ONE PASS, because they arrive together. A checkpoint is a reply to the same
+ * room post as every move, so it is in the same `get_replies` array, and a
+ * caller that fetched twice — once for moves, once for checkpoints — could be
+ * handed two different snapshots of one room.
+ *
+ * A CHECKPOINT MUST NEVER ENTER THE LOG. It seeds a fold; it is not something
+ * the fold consumes. `foldShoal`'s tick body branches on "presence, otherwise
+ * eat claim", so a checkpoint that reached the log would be mis-handled as a
+ * bite by every one of those branches. The separation is structural rather than
+ * a filter anyone has to remember: the two decoders are disjoint on the wire's
+ * kind tag (`decodeBody` returns `null` for a checkpoint body and
+ * `decodeCheckpointBody` returns `null` for a move body — shoalWire.ts's "A
+ * checkpoint is NOT a `LogEntry`"), and a reply that decodes as a checkpoint
+ * here is never offered to `decodeBody` at all. Pinned by the entry-count case
+ * in shoalRoom.test.ts.
+ *
+ * Everything else is exactly `repliesToLog`'s contract, and applies to
+ * checkpoints too: duplicate `content_id`s collapse to the first seen, the
+ * author id's shape is a tripwire, `id`/`hash` are sourced from the reply's own
+ * envelope and never from `body`, and anything that does not decode is dropped
+ * rather than thrown on.
+ *
+ * Checkpoints come back in encounter order and are deliberately NOT sorted:
+ * `adoptCheckpoint` (adopt.ts) is a function of the SET and defines its own
+ * total order over them, so a second ordering rule here would be a second place
+ * for two clients to disagree.
+ */
+export function splitRoomReplies(
+  replies: readonly RawReply[],
+): { log: LogEntry[]; checkpoints: CheckpointEntry[] } {
   const seen = new Set<string>();
   const entries: LogEntry[] = [];
+  const checkpoints: CheckpointEntry[] = [];
   for (const r of replies) {
     // Duplicate content_id: keep the first seen. This is a deliberate but
     // unforced choice — the brief only requires collapsing to "one", not which one
@@ -259,13 +298,21 @@ export function repliesToLog(replies: readonly RawReply[]): LogEntry[] {
       continue;
     }
 
+    // A checkpoint is taken off here and NEVER offered to `decodeBody` below.
+    // See this function's doc: it seeds a fold, it is not folded.
+    const checkpoint = decodeCheckpointBody(r.body, r.author_id, r.content_id);
+    if (checkpoint !== null) {
+      checkpoints.push(checkpoint);
+      continue;
+    }
+
     // id/hash come from the reply's own envelope — never from `body`, which a
     // hostile client fully controls. This is the load-bearing line in this module.
     const entry = decodeBody(r.body, r.author_id, r.content_id);
     if (entry === null) continue; // malformed/hostile body: drop it, don't poison the room
     entries.push(entry);
   }
-  return orderLog(entries);
+  return { log: orderLog(entries), checkpoints };
 }
 
 /** The slice of `get_replies`'s real result this module reads. See the module header
@@ -366,13 +413,36 @@ export function narrowRoomReplies(
  * and what a caller does about it.
  */
 export async function fetchRoomLog(
-  auth: RpcAuth, _spaceId: string, roomContentId: string,
+  auth: RpcAuth, spaceId: string, roomContentId: string,
 ): Promise<LogEntry[]> {
+  return (await fetchRoom(auth, spaceId, roomContentId)).log;
+}
+
+/**
+ * One fetch, both halves: the room's ordered log AND the checkpoints published
+ * into it (spec §3.9). `fetchRoomLog` is this function with the checkpoints
+ * dropped, kept because callers that only fold already import it.
+ *
+ * ONE round trip, not two. A checkpoint is a reply to the same room post as
+ * every move, so a caller that fetched the log and the checkpoints separately
+ * would be adopting a seed from one snapshot of the room and folding a log from
+ * another — and the second fetch is not free either (the room is a single
+ * `get_replies` of up to `ROOM_FETCH_LIMIT` rows, run on every `content_new`).
+ *
+ * THROWS (via `narrowRoomReplies`) if the room has outgrown `ROOM_FETCH_LIMIT`
+ * direct replies — see the module header. Checkpoints make that ceiling arrive
+ * sooner rather than later (they are replies too, one per publisher per hour),
+ * which is why open item 12 records that whatever rotates a room has to decide
+ * where checkpoints live at the same time.
+ */
+export async function fetchRoom(
+  auth: RpcAuth, _spaceId: string, roomContentId: string,
+): Promise<{ log: LogEntry[]; checkpoints: CheckpointEntry[] }> {
   const result = await rpcCall<GetRepliesResult>(auth, 'get_replies', {
     content_id: roomContentId,
     limit: ROOM_FETCH_LIMIT, // the node defaults to 1000 and clamps nothing
     depth_limit: 0, // direct replies only — see the module header
   });
 
-  return repliesToLog(narrowRoomReplies(result, roomContentId, ROOM_FETCH_LIMIT));
+  return splitRoomReplies(narrowRoomReplies(result, roomContentId, ROOM_FETCH_LIMIT));
 }

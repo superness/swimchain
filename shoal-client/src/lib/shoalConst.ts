@@ -254,6 +254,41 @@ export const EAT_COOLDOWN_MS = 2_500;
 // --- Size ------------------------------------------------------------------
 export const START_SIZE = 100;
 export const MIN_SIZE = 60;
+/**
+ * The ceiling on a swimmer's size. CONSENSUS, and it is a FOLD rule, not a
+ * wire rule — that distinction is the whole reason this constant moved here.
+ *
+ * WHY IT EXISTS. `clampSize` used to floor only, so the fold grew a size with
+ * no upper bound at all, while `checkpointInDomain` (shoalWire.ts) refused any
+ * carried size above 1e9. Two bounds, each defensible alone, unbounded IN
+ * RELATION TO EACH OTHER — and the gap between them is reachable: seat a
+ * swimmer at exactly 1e9 (in domain, so it is adopted) and let it take one
+ * ordinary bite, and every client's next `rolled` is 1_000_000_012, which
+ * `encodeCheckpoint` then throws on FOREVER. That throw is caught and reported
+ * (chainSea.ts's `publishCheckpoint`), so the visible symptom is not a crash:
+ * the client silently stops publishing for the rest of the session, loses its
+ * vote every hour, and a room of such clients leaves every joiner unseeded.
+ * One checkpoint, and the room's whole checkpoint mechanism is off.
+ *
+ * The fix is that the fold and the wire now read the SAME constant, so the
+ * fold cannot produce a size the wire refuses to carry. `clampSize` applies it
+ * at every size write, growth included.
+ *
+ * WHY 1e9. The fold's fastest possible growth is one BITE_GROWTH per
+ * EAT_COOLDOWN_MS: `EPOCH_MS / EAT_COOLDOWN_MS + 1 = 1441` bites an epoch,
+ * `1441 * 12 = 17_292` size an epoch. Reaching 1e9 therefore takes at least
+ * `floor(1e9 / 17_292) = 57_830` consecutive epochs — six and a half years of
+ * never once being absent for a whole hour (`rollEpoch` prunes a `departed`
+ * record after one epoch of absence, so a single lapse forfeits the total) and
+ * never missing a bite. Rivalrous blooms put the real rate far below that.
+ *
+ * WHAT IT COSTS, stated rather than hidden: this is a real game rule now, not
+ * only a validation bound. A swimmer at MAX_SIZE stops growing. Nobody will
+ * ever reach it by playing, but a fold rule is a fold rule — it is CONSENSUS
+ * and permanent, and it is folded, so it belongs in this block and not in the
+ * wire's.
+ */
+export const MAX_SIZE = 1_000_000_000;
 /** Size gained per credited bite. */
 export const BITE_GROWTH = 12;
 /**

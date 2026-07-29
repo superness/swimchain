@@ -18,7 +18,7 @@ import { markVisits, canEat, isBloomReady, stampVisit } from './bloom';
 import type { LogEntry, ShoalState, Checkpoint, ReadonlyVisitMap } from './shoalTypes';
 import { checkpointFrom } from './checkpoint';
 import {
-  TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, BITE_GROWTH, SCATTER_COST,
+  TICK_MS, PRESENCE_TTL_MS, START_SIZE, MIN_SIZE, MAX_SIZE, BITE_GROWTH, SCATTER_COST,
   HUNGER_TICK_INTERVAL, HUNGER_AMOUNT, BLOOM_BITES, VOID_WINDOW_MS, LOCK_MS,
   MAX_FOLD_TICKS, WARMUP_MS,
 } from './shoalConst';
@@ -166,8 +166,25 @@ export function shelterBodiesOf(
   return out;
 }
 
+/**
+ * Hold a size inside the fold's own range, `[MIN_SIZE, MAX_SIZE]`.
+ *
+ * IT CEILINGS AS WELL AS FLOORS, and it must: `checkpointInDomain`
+ * (shoalWire.ts) refuses to CARRY a size above MAX_SIZE, so a fold that could
+ * produce one would produce a state it cannot publish. That is not
+ * hypothetical — it was reachable by seating a swimmer at exactly MAX_SIZE
+ * (in domain, therefore adopted) and letting it take one ordinary bite, after
+ * which `encodeCheckpoint` threw on every rollover for the rest of the
+ * session and the client silently stopped voting. See MAX_SIZE's own doc in
+ * shoalConst.ts.
+ *
+ * EVERY size write goes through here, GROWTH INCLUDED — the bite in step 1
+ * used to be a bare `f.size + BITE_GROWTH`, which is exactly how the ceiling
+ * was escaped.
+ */
 function clampSize(n: number): number {
-  return n < MIN_SIZE ? MIN_SIZE : n;
+  if (n < MIN_SIZE) return MIN_SIZE;
+  return n > MAX_SIZE ? MAX_SIZE : n;
 }
 
 /**
@@ -383,7 +400,10 @@ export function foldTick(state: ShoalState, ordered: readonly LogEntry[]): Shoal
         state.bloomSinceMs.delete(e.cell);
         stampVisit(state.lastVisit, e.cell, e.id, e.ms);
       }
-      f.size = f.size + BITE_GROWTH;
+      // Clamped, like every other size write. Growth was the one site that was
+      // not, which is what let the fold walk past MAX_SIZE and out of the range
+      // its own checkpoints are allowed to carry. See `clampSize`.
+      f.size = clampSize(f.size + BITE_GROWTH);
       f.lastBiteMs = e.ms;
       // Track the bite for scatter voiding, pruned to VOID_WINDOW_MS so
       // this can never grow across a long session: a fish that keeps

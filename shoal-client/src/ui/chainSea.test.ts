@@ -40,12 +40,19 @@
  */
 import { chainSea, type ChainSea } from './chainSea';
 import { wildSeedFrom } from './demoSea';
-import { encodeEat, encodePresence } from '../lib/shoalWire';
+import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import type { SendFailure } from '../lib/shoalSend';
+import { encodeCheckpoint, encodeEat, encodePresence } from '../lib/shoalWire';
 import { cellCentre, cellIndex } from '../lib/bloom';
-import { epochStartMs, epochOf } from '../lib/epoch';
-import { PRESENCE_TTL_MS, TICK_MS } from '../lib/shoalConst';
+import { epochEndMs, epochStartMs, epochOf } from '../lib/epoch';
+import { bodiesOf } from '../lib/shoalEngine';
+import { shelterOf } from '../lib/shelter';
+import { fingerprint } from '../lib/shoalFixtures';
+import {
+  EAT_R2, PRESENCE_TTL_MS, SHELTER_R2, SHELTER_THRESHOLD, TICK_MS,
+} from '../lib/shoalConst';
 import type { NodeReply } from '../lib/shoalRoom';
-import type { Vec } from '../lib/shoalTypes';
+import type { Checkpoint, ShoalState, Vec } from '../lib/shoalTypes';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -103,6 +110,22 @@ interface Stub {
   replies: NodeReply[];
   /** When true, `submit_reply` answers with a JSON-RPC error. */
   rejectSubmit: boolean;
+  /**
+   * The JSON-RPC `code` that rejection carries. Default -32000 is the shape of
+   * open item 2's failure on a network that enforces the space gate at
+   * ingestion; section 8 sets it to -32015 (`RpcErrorCode::IdentityNotSponsored`,
+   * src/rpc/error.rs:31) to exercise the way-in classification instead.
+   */
+  submitErrorCode: number;
+  /** Every body the sea submitted, in order, with the author it claimed. */
+  submitted: { body: string; author: string }[];
+  /**
+   * When true, an accepted `submit_reply` is APPENDED to `replies`, so the
+   * next `get_replies` hands it back the way a real node does once the write
+   * has landed. Off by default: sections 1-3 below depend on a submitted row
+   * never coming back.
+   */
+  landSubmissions: boolean;
   calls: { getReplies: number; submit: number; getInfo: number };
 }
 
@@ -114,6 +137,9 @@ function installStub(): { stub: Stub; restore: () => void } {
   const stub: Stub = {
     replies: [],
     rejectSubmit: false,
+    submitErrorCode: -32_000,
+    submitted: [],
+    landSubmissions: false,
     calls: { getReplies: 0, submit: 0, getInfo: 0 },
   };
 
@@ -126,7 +152,9 @@ function installStub(): { stub: Stub; restore: () => void } {
   });
 
   g.fetch = async (_url: unknown, init: { body: string }) => {
-    const req = JSON.parse(init.body) as { method: string; id: number };
+    const req = JSON.parse(init.body) as {
+      method: string; id: number; params?: { body?: string; author_id?: string };
+    };
     if (req.method === 'get_info') {
       stub.calls.getInfo++;
       return json({ jsonrpc: '2.0', id: req.id, result: { network: 'regtest' } });
@@ -146,11 +174,24 @@ function installStub(): { stub: Stub; restore: () => void } {
           jsonrpc: '2.0',
           id: req.id,
           // The real shape of open item 2's failure, on a network that enforces
-          // the gate at ingestion (methods.rs:2917).
-          error: { code: -32_000, message: 'author not authorized in space' },
+          // the gate at ingestion (methods.rs:2917). Section 8 swaps the code
+          // for -32015, which is a different refusal with a different meaning.
+          error: { code: stub.submitErrorCode, message: 'author not authorized in space' },
         });
       }
-      return json({ jsonrpc: '2.0', id: req.id, result: { content_id: `sha256:${'f'.repeat(64)}` } });
+      const body = req.params?.body ?? '';
+      const author = req.params?.author_id ?? '';
+      stub.submitted.push({ body, author });
+      // A distinct id per accepted write, the way a real node derives one from
+      // the body. `landSubmissions` decides whether the room then serves it.
+      const contentId = `sha256:${(0xf000 + stub.submitted.length).toString(16).padStart(64, '0')}`;
+      if (stub.landSubmissions) {
+        stub.replies = [...stub.replies, {
+          content_id: contentId, author_id: author, body,
+          parent_id: ROOM, block_height: null, created_at: 0,
+        }];
+      }
+      return json({ jsonrpc: '2.0', id: req.id, result: { content_id: contentId } });
     }
     throw new Error(`stub fetch: unexpected method ${req.method}`);
   };
@@ -177,8 +218,12 @@ function installStub(): { stub: Stub; restore: () => void } {
   };
 }
 
-function makeSea(): ChainSea {
+function makeSea(
+  onError?: (where: string, err: unknown) => void,
+  onWrite?: (failure: SendFailure | null) => void,
+): ChainSea {
   return chainSea({
+    ...(onWrite === undefined ? {} : { onWrite }),
     auth: { endpoint: ENDPOINT, authHeader: null },
     spaceId: SPACE,
     roomContentId: ROOM,
@@ -190,7 +235,7 @@ function makeSea(): ChainSea {
       sign: async () => new Uint8Array(64),
     }),
     spawn: { x: CENTRE.x, y: CENTRE.y },
-    onError: () => { /* errors are the subject here, not a failure of the run */ },
+    onError: onError ?? (() => { /* errors are the subject here, not a failure of the run */ }),
   });
 }
 
@@ -418,12 +463,501 @@ function wildSeedFromIsPinnedAndAgreesAcrossShells(): void {
     { ab: wildSeedFrom('a', 'b'), room: wildSeedFrom(SPACE, ROOM), empty: wildSeedFrom('', '') });
 }
 
+// ===========================================================================
+// 4. THE BOUNDARY: PUBLISH, ADOPT, AND AGREE (open item 12 — Blocker 12)
+//
+// `advance` returns `{ loop, rolled }` and `rolled` used to be discarded, so
+// nothing published a checkpoint and nothing adopted one: a client that ran
+// through an hour boundary kept every swimmer's accumulated size (it seeds
+// itself from its own `rolled`), while a client that joined after folded
+// unseeded and saw everyone back at START_SIZE. Size feeds shelterWeight ->
+// shelterOf -> isExposed -> selectTaken, so the two disagreed about who the
+// shark eats.
+//
+// ── THE FIXTURE, AND EVERY NUMBER DERIVED FROM THE CONSENSUS CONSTANTS ─────
+//
+// Tick alignment first, because every size below depends on it. `foldShoal`
+// starts a fresh state at `epochWarmStartMs(e) = start - 90_000` with
+// `tickCount` 0, and `foldTick` increments it BEFORE testing
+// `tickCount % HUNGER_TICK_INTERVAL (4)`, so the first tick is #1 and hunger
+// fires on ticks 4, 8, 12 … i.e. at `warmStart + 750 + 1000k`. 90_000 is a
+// whole number of seconds, so:
+//
+//     HUNGER FIRES AT t = epochStart + 750 + 1000k, FOR EVERY EPOCH.
+//
+// Hunger is HUNGER_AMOUNT (1), skipped for a fish whose last bite is under
+// HUNGER_TICK_INTERVAL * TICK_MS (1000 ms) old, and `clampSize` floors at
+// MIN_SIZE (60). START_SIZE is 100 and BITE_GROWTH is 12.
+//
+// OTHER — a swimmer that eats early in the epoch and then leaves:
+//   presence  E_START + 1_000  (on CELL_O's exact centre, speed 0)
+//   eat       E_START + 1_500  -> 100 + 12 = 112, lastBiteMs = E_START+1_500
+//   presence  E_START + 2_000  (its last write of the epoch)
+//   Hunger from E_START+1_750 on: the +1_750 tick is skipped (250 ms after the
+//   bite), then one per second. Its presence expires at 2_000 + PRESENCE_TTL_MS
+//   = E_START + 92_000, so it is evicted around +92_250 having taken ~90
+//   hunger hits — far more than the 52 needed to take 112 down to the MIN_SIZE
+//   floor. IT BANKS EXACTLY MIN_SIZE = 60 in `departed`, and the floor is what
+//   makes that exact rather than sensitive to a tick either way.
+//
+// ID — this client's own swimmer, alive across the boundary:
+//   presence  E_END - 5_000    (on CELL's exact centre, speed 0)
+//   eat       E_END - 4_000
+//   Hunger ticks in that window are at E_END - 4_250, -3_250, -2_250, -1_250
+//   and -250 (the epoch's last tick, since E_END - 250 = start + 750 + 1000k).
+//     -4_250: no bite yet            100 - 1 = 99
+//     -4_000: the bite                99 + 12 = 111
+//     -3_250: 750 ms after the bite   skipped
+//     -2_250:                         110
+//     -1_250:                         109
+//       -250:                         108
+//   ID CROSSES THE BOUNDARY AT SIZE 108, and its bite is 4_000 ms before
+//   E_END, inside VOID_WINDOW_MS (10_000), so it is also in the checkpoint's
+//   `recent` tail. OTHER's bite is 3_598_500 ms before the end and is not.
+//
+// THE PUBLISHED CHECKPOINT IS THEREFORE, EXACTLY:
+//   {"epoch":E,"sizes":[[ID,108],[OTHER,60]],"recent":[[ID,B,[B]]]}
+//   with B = E_START + 3_596_000, and ID < OTHER as strings ('a1…' < 'b2…').
+//
+// EPOCH E+1: OTHER writes one presence at E_END + 2_000 — it comes back. Both
+// clients fold to E_END + 10_000:
+//   ID:     seeded to 108 at the origin, then hunger at +750 … +9_750, ten
+//           hits, none skipped (its bite is 4_000 ms before the origin):
+//           108 - 10 = 98. The warm-up replays ID's own presence and eat
+//           claim, so an UNSEEDED client reconstructs the identical 98 — ID is
+//           the control that proves the warm-up is doing its job.
+//   OTHER:  revived at the tick of its E+1 presence with `prior.size` from
+//           `departed`. Hunger at +2_750 … +9_750 is eight hits.
+//             ADOPTED:  60 - 8 -> clamped at MIN_SIZE = 60
+//             UNSEEDED: no `departed` record at all, so a BRAND-NEW fish at
+//                       START_SIZE: 100 - 8 = 92
+//   60 versus 92 is spec 2.7's "you return the size you left", and it is the
+//   whole of Blocker 12 in one number.
+// ===========================================================================
+
+/** The swimmer that eats early and leaves. 64 lowercase hex, and sorts AFTER
+ *  ID ('a1…' < 'b2…') so the checkpoint's `sizes` order is known by hand. */
+const OTHER = 'b2'.repeat(32);
+/** The cell OTHER sits on: the one immediately before ID's in the row-major
+ *  bloom grid. Adjacent cell centres are BLOOM cell-width apart — checked
+ *  below to be inside SHELTER_R (so the two shelter each other and a size
+ *  difference is visible) and outside EAT_R (so neither can claim the other's
+ *  cell). */
+const CELL_O = CELL - 1;
+const CENTRE_O = cellCentre(CELL_O);
+
+const E_END = epochEndMs(EPOCH);
+/** The instant ID's bite is claimed — the value that lands in the checkpoint's
+ *  `recent` tail. */
+const ID_BITE_MS = E_END - 4_000;
+/** Where both clients are folded to in epoch E+1. */
+const TARGET = E_END + 10_000;
+
+function vecAtOn(t: number, c: { x: number; y: number }): Vec {
+  return { x: c.x, y: c.y, heading: 0, speed: 0, t };
+}
+
+/** A reply from an arbitrary author (the fixture above needs two). */
+function landedBy(n: number, author: string, body: string, createdAt: number): NodeReply {
+  return {
+    content_id: `sha256:${n.toString(16).padStart(64, '0')}`,
+    author_id: author,
+    body,
+    parent_id: ROOM,
+    block_height: null,
+    created_at: createdAt,
+  };
+}
+
+/** The room, before anyone publishes anything. */
+function boundaryRoom(): NodeReply[] {
+  return [
+    landedBy(11, OTHER, encodePresence(vecAtOn(EPOCH_START + 1_000, CENTRE_O), OTHER), 0),
+    landedBy(12, OTHER, encodeEat(CELL_O, EPOCH_START + 1_500, OTHER), 0),
+    landedBy(13, OTHER, encodePresence(vecAtOn(EPOCH_START + 2_000, CENTRE_O), OTHER), 0),
+    landedBy(14, ID, encodePresence(vecAtOn(E_END - 5_000, CENTRE), ID), 0),
+    landedBy(15, ID, encodeEat(CELL, ID_BITE_MS, ID), 0),
+    // Epoch E+1: OTHER comes back.
+    landedBy(16, OTHER, encodePresence(vecAtOn(E_END + 2_000, CENTRE_O), OTHER), 0),
+  ];
+}
+
+function fixtureGeometryIsWhatTheDerivationAssumes(): void {
+  console.log('\n4a. the fixture\'s geometry, before anything depends on it');
+  const d2 = (CENTRE.x - CENTRE_O.x) ** 2 + (CENTRE.y - CENTRE_O.y) ** 2;
+  check('ID and OTHER are close enough to shelter each other (inside SHELTER_R)',
+    d2 <= SHELTER_R2, { d2, SHELTER_R2 });
+  check('...and far enough apart that neither can claim the other\'s bloom cell (outside EAT_R)',
+    d2 > EAT_R2, { d2, EAT_R2 });
+  check('ID sorts before OTHER, so the checkpoint\'s `sizes` order is known by hand',
+    ID < OTHER, { ID, OTHER });
+}
+
+async function aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts(): Promise<void> {
+  console.log('\n4b. one client crosses the hour; a client that joins after agrees with it');
+  const { stub, restore } = installStub();
+  stub.landSubmissions = true;
+  const seas: ChainSea[] = [];
+  try {
+    stub.replies = boundaryRoom();
+
+    // --- The client that is already running -------------------------------
+    const a = makeSea();
+    seas.push(a);
+    await until(() => stub.calls.getReplies >= 1, 'A\'s first read');
+
+    // NON-DEGENERACY, caught in the act: OTHER's bite has to be credited while
+    // it is still visible. By the boundary an hour later it is not — a bloom
+    // cell that has lain fallow for BLOOM_READY_MS is reset by step 3 of
+    // `foldTick`, so `bitesTaken` says nothing about an hour-old bite, and only
+    // the SIZE still carries it.
+    const justAfterTheBite = a.step(EPOCH_START + 1_500);
+    check('NON-DEGENERACY: OTHER really ate — one bite credited on CELL_O',
+      justAfterTheBite.bitesTaken.get(CELL_O) === 1, justAfterTheBite.bitesTaken.get(CELL_O));
+    check('NON-DEGENERACY, hand-derived: and it grew it to START_SIZE + BITE_GROWTH = 112 '
+      + '(the first hunger tick after its arrival is not until +1_750)',
+      justAfterTheBite.fish.get(OTHER)?.size === 112, justAfterTheBite.fish.get(OTHER)?.size);
+
+    // Folded to the epoch's LAST tick, which is where `rollEpoch` takes its
+    // checkpoint. Not past it — this call must not roll.
+    const atBoundary = a.step(E_END - TICK_MS);
+    check('NON-DEGENERACY: ID ate too, close enough to the boundary that the bite '
+      + 'is still on the board', atBoundary.bitesTaken.get(CELL) === 1,
+      atBoundary.bitesTaken.get(CELL));
+    check('hand-derived: ID crosses the boundary alive at size 108, not START_SIZE',
+      atBoundary.fish.get(ID)?.size === 108, atBoundary.fish.get(ID)?.size);
+    check('hand-derived: OTHER left, banking MIN_SIZE 60 in `departed`',
+      atBoundary.departed.get(OTHER)?.size === 60, atBoundary.departed.get(OTHER)?.size);
+    check('...and OTHER is NOT still live (it really departed)',
+      atBoundary.fish.get(OTHER) === undefined);
+
+    // --- Cross it ----------------------------------------------------------
+    const crossed = a.step(TARGET);
+    const crossedPrint = fingerprint(crossed);
+    check('A rolled into the next epoch', crossed.epoch === EPOCH + 1, crossed.epoch);
+
+    await until(() => stub.submitted.length >= 1, 'A to publish its checkpoint');
+    check('A published exactly one thing at the boundary — its checkpoint',
+      stub.submitted.length === 1, stub.submitted.length);
+
+    // Hand-derived, character for character: the wire form is
+    // `v1|checkpoint|<16 hex of the author key>|<canonical payload>`.
+    const expectedPayload =
+      `{"epoch":${EPOCH},"sizes":[["${ID}",108],["${OTHER}",60]],`
+      + `"recent":[["${ID}",${ID_BITE_MS},[${ID_BITE_MS}]]]}`;
+    const expectedBody = `v1|checkpoint|${ID.slice(0, 16)}|${expectedPayload}`;
+    check('hand-derived: the published body is exactly the canonical checkpoint',
+      stub.submitted[0]?.body === expectedBody,
+      { got: stub.submitted[0]?.body, want: expectedBody });
+    check('...published under this client\'s own author id',
+      stub.submitted[0]?.author === ID, stub.submitted[0]?.author);
+
+    // Hand-derived sizes in the NEW epoch, for the client that was there.
+    check('hand-derived: ID is 98 in the new epoch (108, less ten hunger ticks)',
+      crossed.fish.get(ID)?.size === 98, crossed.fish.get(ID)?.size);
+    check('hand-derived: OTHER came back at its banked 60, held there by the floor',
+      crossed.fish.get(OTHER)?.size === 60, crossed.fish.get(OTHER)?.size);
+
+    // --- The client that joins after ---------------------------------------
+    const readsBefore = stub.calls.getReplies;
+    const b = makeSea();
+    seas.push(b);
+    await until(() => stub.calls.getReplies > readsBefore, 'B\'s first read');
+    const joined = b.step(TARGET);
+
+    check('THE BLOCKER: a joiner sees ID at the size it crossed the hour with, 98',
+      joined.fish.get(ID)?.size === 98, joined.fish.get(ID)?.size);
+    check('THE BLOCKER: and sees OTHER return at 60 — "you return the size you left"',
+      joined.fish.get(OTHER)?.size === 60, joined.fish.get(OTHER)?.size);
+    check('the two clients agree on EVERY swimmer, byte for byte',
+      fingerprint(joined) === crossedPrint,
+      { joined: fingerprint(joined), crossed: crossedPrint });
+
+    // --- The control: what an UNSEEDED fold produces ------------------------
+    // Without this the equality above would pass over a world where adoption
+    // changed nothing at all.
+    stub.replies = stub.replies.filter((r) => !r.body.startsWith('v1|checkpoint|'));
+    const readsBeforeC = stub.calls.getReplies;
+    const c = makeSea();
+    seas.push(c);
+    await until(() => stub.calls.getReplies > readsBeforeC, 'C\'s first read');
+    const unseeded = c.step(TARGET);
+
+    check('CONTROL: with no checkpoint to adopt, ID is still 98 — the warm-up '
+      + 'reconstructs a swimmer whose whole history is inside its 180 s window',
+      unseeded.fish.get(ID)?.size === 98, unseeded.fish.get(ID)?.size);
+    check('CONTROL, hand-derived: but OTHER comes back a STRANGER at 92 '
+      + '(START_SIZE 100, less eight hunger ticks) — the bug this closes',
+      unseeded.fish.get(OTHER)?.size === 92, unseeded.fish.get(OTHER)?.size);
+    check('CONTROL: so the unseeded world is genuinely a different world',
+      fingerprint(unseeded) !== crossedPrint);
+
+    // ...and the consequence, on the exact chain open item 12 names: size ->
+    // shelterWeight -> shelterOf. Hand-derived from SHELTER_BASE (100),
+    // SHELTER_SIZE_DIV (40) and SHELTER_SIZE_CAP (45):
+    //   shelterWeight(60) = 100 + trunc(60/40) = 101   (adopted)
+    //   shelterWeight(92) = 100 + trunc(92/40) = 102   (unseeded)
+    // OTHER is ID's only neighbour inside SHELTER_R, so that IS ID's shelter.
+    const selfOf = (s: ShoalState) => bodiesOf(s).find((b) => b.id === ID);
+    const adoptedShelter = shelterOf(selfOf(joined)!, bodiesOf(joined));
+    const unseededShelter = shelterOf(selfOf(unseeded)!, bodiesOf(unseeded));
+    check('hand-derived: with the checkpoint adopted, ID\'s shelter is 101',
+      adoptedShelter === 101, adoptedShelter);
+    check('hand-derived: without it, 102 — the size table really does reach the '
+      + 'shelter maths the sweep judges exposure with',
+      unseededShelter === 102, unseededShelter);
+    check('SHELTER_THRESHOLD is 300 and two swimmers cap out at 2 * 145 = 290, so '
+      + 'this fixture cannot flip `isExposed` — that needs a populated room',
+      SHELTER_THRESHOLD === 300 && adoptedShelter < SHELTER_THRESHOLD
+        && unseededShelter < SHELTER_THRESHOLD,
+      { adoptedShelter, unseededShelter, SHELTER_THRESHOLD });
+  } finally {
+    for (const s of seas) s.stop();
+    restore();
+  }
+}
+
+// ===========================================================================
+// 5. TWO DIFFERING CHECKPOINTS ARE REPORTED, NOT SILENTLY ABSORBED
+//
+// Every honest client computes the identical PAYLOAD (the bodies still differ,
+// because each carries its author's own salt), so two different payloads for
+// one epoch is a detected divergence. The policy — plurality of publishers,
+// then the lowest content hash — is in adopt.ts and is unit-tested there; what
+// is asserted here is that the shell SURFACES it through the same `onError`
+// channel it uses for every other failure, and still folds.
+// ===========================================================================
+async function twoCheckpointsForOneEpochAreReported(): Promise<void> {
+  console.log('\n5. two differing checkpoints for one epoch are reported through onError');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const errors: { where: string; err: unknown }[] = [];
+  try {
+    // The honest one (what the fixture above really computes) and a fabricated
+    // rival that puts OTHER back at START_SIZE. Different authors, so they are
+    // two chain objects rather than one.
+    const honest: Checkpoint = {
+      epoch: EPOCH,
+      sizes: [[ID, 108], [OTHER, 60]],
+      recent: [[ID, ID_BITE_MS, [ID_BITE_MS]]],
+    };
+    const rival: Checkpoint = { epoch: EPOCH, sizes: [[ID, 108], [OTHER, 100]], recent: [] };
+    stub.replies = [
+      ...boundaryRoom(),
+      landedBy(21, ID, encodeCheckpoint(honest, ID), 0),
+      landedBy(22, OTHER, encodeCheckpoint(rival, OTHER), 0),
+    ];
+
+    sea = makeSea((where, err) => { errors.push({ where, err }); });
+    await until(() => stub.calls.getReplies >= 1, 'the first read');
+    const state = sea.step(TARGET);
+
+    const diverge = errors.filter((e) => e.where === 'checkpointDivergence');
+    check('the divergence is REPORTED, exactly once', diverge.length === 1,
+      errors.map((e) => e.where));
+    const msg = diverge[0] === undefined ? '' : String((diverge[0].err as Error).message ?? '');
+    // The PROSE has to name it, not merely the appended payload dump. The old
+    // spelling of this check was `msg.includes(String(EPOCH))`, which the
+    // `"epoch":N` inside the payload text satisfies on its own — it passed
+    // whether or not the sentence said anything. `describeDivergence` opens
+    // with `epoch <n> has …`, so anchoring to the start of the message is what
+    // actually pins the prose.
+    check('...naming the epoch that disagrees, in the PROSE and not just the payload dump',
+      msg.startsWith(`epoch ${EPOCH} has `), msg.slice(0, 80));
+    check('...and both payloads, so the report is the whole picture, not the winner',
+      msg.includes('"' + OTHER + '",60') && msg.includes('"' + OTHER + '",100'), msg);
+    // Hand-derived: one voter each, so the tie breaks on the lowest content
+    // hash. `sha256:0…15` (the honest one, id 21 = 0x15) is lower than
+    // `sha256:0…16` (the rival, 22 = 0x16) as plain strings, so the honest
+    // payload wins and OTHER returns at 60 rather than 100.
+    check('hand-derived: the tie breaks on the lower content hash, and the sea folds on',
+      state.fish.get(OTHER)?.size === 60, state.fish.get(OTHER)?.size);
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+// ===========================================================================
+// 6. NO CHECKPOINT IS ABSENCE, NOT DISAGREEMENT
+//
+// The first epoch a room ever has has no predecessor to adopt from. That must
+// be silent: a client that reported it would shout on every new room, and a
+// client that refused to fold would never start one.
+// ===========================================================================
+async function noCheckpointIsSkippedCleanly(): Promise<void> {
+  console.log('\n6. a room with no checkpoint at all folds quietly');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const errors: { where: string; err: unknown }[] = [];
+  try {
+    stub.replies = boundaryRoom();
+    sea = makeSea((where, err) => { errors.push({ where, err }); });
+    await until(() => stub.calls.getReplies >= 1, 'the first read');
+    const state = sea.step(TARGET);
+    check('nothing is reported at all', errors.length === 0, errors.map((e) => e.where));
+    check('...and the sea still folds — OTHER arrives as a stranger at 92',
+      state.fish.get(OTHER)?.size === 92, state.fish.get(OTHER)?.size);
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+// ===========================================================================
+// 7. ADOPTION SURVIVES LOSING THE RACE WITH THE FIRST FRAME
+//
+// `chainSea` fires its first `refetch` from the constructor and the browser
+// draws the first frame long before it answers, so the ordinary path is: fold
+// UNSEEDED for a few hundred ms, then the room arrives. A client that only
+// looked for a checkpoint at loop creation would miss it every time.
+// ===========================================================================
+async function adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch(): Promise<void> {
+  console.log('\n7. the first frame beats the first fetch, and the checkpoint is still adopted');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    const honest: Checkpoint = {
+      epoch: EPOCH,
+      sizes: [[ID, 108], [OTHER, 60]],
+      recent: [[ID, ID_BITE_MS, [ID_BITE_MS]]],
+    };
+    stub.replies = [...boundaryRoom(), landedBy(21, ID, encodeCheckpoint(honest, ID), 0)];
+
+    sea = makeSea();
+    // Synchronously, before the constructor's own fetch can have resolved.
+    const first = sea.step(TARGET);
+    check('the first frame folds an empty, unseeded sea (the fetch has not landed)',
+      first.fish.size === 0, first.fish.size);
+    // The constructor's `get_replies` has been ISSUED (the stub counts it the
+    // moment the request is made) but not answered, which is exactly the race:
+    // the frame loop is drawing before the room exists.
+    check('...and knows nothing of anybody — no seed and no log',
+      first.fish.size === 0 && first.departed.size === 0,
+      { fish: first.fish.size, departed: first.departed.size });
+
+    await until(() => stub.calls.getReplies >= 1, 'the room to arrive');
+    const second = sea.step(TARGET);
+    check('once the room lands, the checkpoint is adopted after the fact — OTHER is 60',
+      second.fish.get(OTHER)?.size === 60, second.fish.get(OTHER)?.size);
+    check('...and ID is 98', second.fish.get(ID)?.size === 98, second.fish.get(ID)?.size);
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+// ===========================================================================
+// 8. THE WAY IN (spec §2.16) — a refusal for want of a voucher reaches the
+//    shell as a TYPE, and nothing else does
+//
+// This is the join `wayIn.test.ts` cannot make on its own: that file proves
+// `afterWrite` reads a classification correctly, and `shoalSend.test.ts`
+// proves `rpcCall` produces the classification correctly, but neither proves
+// that `chainSea` — the only thing in this client that writes — actually
+// carries one from the wire to the shell. Task 3's report says plainly that
+// `classifySendFailure` had NO CALL SITE. So the whole chain is driven here,
+// end to end, through the real `chainSea`:
+//
+//   node answers -32015  ->  rpcCall throws JsonRpcCallError
+//                        ->  classifySendFailure -> kind 'not-sponsored'
+//                        ->  onWrite -> afterWrite -> atTheEdge
+//
+// and the negative alongside it, on the SAME machinery with one number
+// changed: a different code must leave the player in open water.
+// ===========================================================================
+
+/** Drive one presence write and return the standing the shell would hold, plus
+ *  everything `onWrite` reported. `errors` is collected too, because the
+ *  developer channel must keep firing — the way in replaces nothing. */
+async function writeOnce(
+  code: number | null,
+): Promise<{ standing: Standing; seen: (SendFailure | null)[]; errors: string[] }> {
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const seen: (SendFailure | null)[] = [];
+  const errors: string[] = [];
+  try {
+    stub.replies = [landed(1, encodePresence(vecAt(T0, 0), ID), T0)];
+    if (code !== null) { stub.rejectSubmit = true; stub.submitErrorCode = code; }
+    sea = makeSea((where) => { errors.push(where); }, (f) => { seen.push(f); });
+    await until(() => stub.calls.getReplies >= 1, 'the first read');
+
+    sea.publish(vecAt(T1, 64));
+    await until(() => seen.length >= 1, 'the write to be reported');
+
+    let standing = OPEN_WATER;
+    for (const f of seen) standing = afterWrite(standing, f);
+    return { standing, seen, errors };
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function theGateReachesTheShellAsAType(): Promise<void> {
+  console.log('\n8a. a write refused with -32015 puts this client at the edge of the water');
+  const { standing, seen, errors } = await writeOnce(-32_015);
+
+  check('the write was reported exactly once', seen.length === 1, seen.length);
+  check('...as a failure, not as an acceptance', seen[0] !== null, seen[0]);
+  check('...classified `not-sponsored` from the CODE, with no message read anywhere',
+    seen[0]?.kind === 'not-sponsored', seen[0]?.kind);
+  check('THE WAY IN: the shell\'s standing is at the edge of the water',
+    standing.atTheEdge === true, standing);
+  check('...and the developer channel still fired too — this adds a channel, it '
+    + 'does not replace one', errors.includes('sendPresence'), errors);
+}
+
+async function anUnrelatedRefusalIsNotTheWayIn(): Promise<void> {
+  console.log('\n8b. THE NEGATIVE: a refusal with any other code leaves them in open water');
+  // -32000 is open item 2's own failure — a real rejection, from a reachable
+  // node, that has nothing to do with whether anyone has vouched for this
+  // swimmer. The ONLY difference from 8a is this number.
+  const { standing, seen, errors } = await writeOnce(-32_000);
+
+  check('the write was reported as a failure', seen.length === 1 && seen[0] !== null, seen);
+  check('...classified `unknown` — the honest bucket', seen[0]?.kind === 'unknown', seen[0]?.kind);
+  check('THE NEGATIVE: the shell does NOT show the way in',
+    standing.atTheEdge === false, standing);
+  check('...and it is still reported to the developer channel, loudly',
+    errors.includes('sendPresence'), errors);
+}
+
+async function anAcceptedWriteReportsAcceptance(): Promise<void> {
+  console.log('\n8c. a write the node accepts is reported as such, and lifts the edge');
+  const { standing, seen, errors } = await writeOnce(null);
+
+  check('the accepted write was reported', seen.length >= 1, seen.length);
+  check('...as `null`, which is what "the water took it" looks like',
+    seen[0] === null, seen[0]);
+  check('nothing went to the developer channel at all', errors.length === 0, errors);
+
+  // The standing folded from an accepted write alone is open water — but the
+  // case that matters is a player who WAS at the edge and has just been let in
+  // by someone in the water, which is the whole point of spec §2.16's "letting
+  // one in is an in-game act". Folded from the edge, the same report lifts it.
+  let letIn = afterWrite({ atTheEdge: true }, seen[0] ?? null);
+  for (const f of seen.slice(1)) letIn = afterWrite(letIn, f);
+  check('a client that was at the edge is in the water the moment a write lands',
+    letIn.atTheEdge === false, letIn);
+  check('...and one that never was stays where it was', standing.atTheEdge === false, standing);
+}
+
 async function main(): Promise<void> {
   wildSeedFromIsPinnedAndAgreesAcrossShells();
   await landedEatMustNotRetireAPendingVector();
   await landedVectorMustNotRetireAPendingEat();
   await aRejectedWriteIsRolledBack();
   await anUnansweredRowExpires();
+  fixtureGeometryIsWhatTheDerivationAssumes();
+  await aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts();
+  await twoCheckpointsForOneEpochAreReported();
+  await noCheckpointIsSkippedCleanly();
+  await adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch();
+  await theGateReachesTheShellAsAType();
+  await anUnrelatedRefusalIsNotTheWayIn();
+  await anAcceptedWriteReportsAcceptance();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

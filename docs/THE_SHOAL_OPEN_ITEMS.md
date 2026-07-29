@@ -10,6 +10,15 @@ says what is broken, how it was found, and what it costs to leave.
 
 ## Resolved
 
+### 12. The shell computes a checkpoint every hour and throws it away *(RESOLVED 2026-07-28)*
+
+Closed on branch `feat/the-shoal-shallows`. A checkpoint now travels as a third wire kind
+(`v1|checkpoint|salt|<canonical payload>`, plan task 1), `chainSea.ts` publishes `rolled`
+at every boundary, and a joining client adopts the newest one it can see before its first
+fold. Full write-up in place below, under Blockers, with a RESOLUTION note.
+
+---
+
 ### 3. Gossip is unproven end to end *(RESOLVED 2026-07-28)*
 
 Closed by two real peered regtest nodes and `shoal-client/scripts/two-client-smoke.ts`.
@@ -102,7 +111,57 @@ Related: the bridge has no way to distinguish "you have no sponsor" from "the no
 down" without string-matching an error message. A typed classification in `shoalSend` is a
 small addition and belongs with this work.
 
-### 12. The shell computes a checkpoint every hour and throws it away
+#### RECOGNITION HALF DONE 2026-07-28 — the granting half is still open
+
+**What now exists.** `classifySendFailure` (`shoal-client/src/lib/shoalSend.ts`, plan 4a
+Task 3) reads the node's numeric JSON-RPC code and returns
+`'not-sponsored' | 'unreachable' | 'unknown'` — no message text anywhere.
+`chainSea`'s `onWrite` callback carries that classification out of every write,
+`wayIn.afterWrite` (`src/ui/wayIn.ts`) folds it into a standing, and `TheEdge.tsx` draws
+the edge of the water for `'not-sponsored'` and for nothing else. A write that is
+*accepted* clears the standing, so a player vouched in mid-session is simply let in.
+Verified against a real local testnet node answering a real -32015.
+
+**What is still missing: actually granting a vouch.** The node side exists in full —
+`create_sponsorship_offer` / `list_sponsorship_offers` / `claim_sponsorship_offer` /
+`approve_sponsorship_claim` (`src/rpc/methods.rs:1197-1204`), with params in
+`src/rpc/types.rs:1877-1921`. What a client would have to add:
+
+1. **A signed `create_sponsorship_offer` on the sponsor's side.** `CreateSponsorshipOfferParams`
+   wants `sponsor_pubkey`, `slots`, `offer_type`, `expires_days`, `timestamp` and a
+   `signature` over the offer's own preimage — a fourth signing preimage the bridge does
+   not implement (it knows only the action preimage). The sponsor's key must itself be
+   sponsored, which is true of anyone actually in the water.
+2. **A signed, PoW-mined `claim_sponsorship_offer` on the newcomer's side** —
+   `ClaimSponsorshipOfferParams` carries its own nonce/difficulty/hash/signature, a fifth
+   preimage and a second mining path.
+3. **A way for the offer id to travel that is not a link or a code.** This is the real
+   design problem, and §2.16 forbids the easy answer outright. The newcomer cannot write
+   to the room — that IS the condition — but they can *read* it, so an "open hand"
+   published by a swimmer already in the water is the obvious shape. That is a FOURTH wire
+   kind in `shoalWire.ts` (`presence` / `eat` / `checkpoint` / …), which is
+   **consensus and permanent** (spec §4) and must be specified before it is written.
+4. **A mainnet policy decision.** `auto_approve` offers are refused on mainnet except for
+   the operator-designated game sponsor (`methods.rs:17184-17195`). Without that
+   exception, granting is two in-game acts by the sponsor (offer, then approve the claim),
+   not one — which changes the mechanic, not just the plumbing.
+
+Roughly: one spec decision, one consensus wire change, two new signing preimages, a second
+mining path, and a sponsor-side gesture. Deliberately **not** attempted in plan 4a Task 4:
+a grant flow that looks like it works and silently does not is worse than a clear
+"someone already swimming has to bring you through".
+
+**Also still true:** the way-in surface is only reachable where a chain sea is, and
+`buildChainSea` is gated on `import.meta.env.DEV` (`App.tsx`, deliberately — it reads a
+cookie and a weak key derivation out of the address bar). A shipped build folds a demo sea
+and never writes, so it never sees -32015 either. Whatever eventually gives the shipped
+shell a real room (open item 7, mainnet provisioning) is what makes this surface reachable
+by a real downloader; the recognition logic itself is shell-agnostic and needs no change.
+
+### 12. The shell computes a checkpoint every hour and throws it away — **RESOLVED 2026-07-28**
+
+**Closed by** `feat/the-shoal-shallows`, tasks 1 and 2. The description below is left as
+written; what changed follows it under **RESOLUTION**.
 
 **Found by:** the final whole-branch review of the Shoal shell (plan 2c), reading
 `chainSea.ts`'s frame step against `shoalLoop.advance`'s return type. Not a live run — it
@@ -175,6 +234,54 @@ corrected in `docs/superpowers/plans/2026-07-28-the-shoal-shell.md`.
 deliberately, what it costs, and points here. Until this is built, the shell is safe only in
 a session that never crosses an hour boundary, and any two clients that do cross one together
 agree only because they crossed it together.
+
+**RESOLUTION (2026-07-28).** All five points above are built.
+
+1. **Wire form** — `v1|checkpoint|salt|<canonical checkpoint JSON>` in `shoalWire.ts`,
+   calling `serialiseCheckpoint`/`parseCheckpoint` rather than re-deciding canonical text.
+   A checkpoint carries an author SALT, so two agreeing publishers are two chain objects
+   rather than one (`content_id = sha256(body)` would otherwise collapse them and make the
+   surviving object's author nondeterministic). **The consequence for point 3 below: two
+   honest clients emit different BODIES with identical PAYLOADS, so agreement is a payload
+   comparison, never a byte comparison.**
+2. **Publish** — `sendCheckpoint(ctx, cp, nowMs)` in `shoalSend.ts`, mined and signed like
+   any other reply, into the same room. `nowMs` reaches only the action envelope, never the
+   body, so two clients rolling milliseconds apart still author identical payloads. **Every
+   client publishes, every hour**: PoW is priced per action, so a checkpoint costs one mine
+   however many KB it carries, and one-publisher-per-opinion is exactly what makes the
+   evidence in point 3 mean anything.
+3. **Adopt, by evidence** — `adopt.ts`. Candidates are only those for exactly `epoch - 1`
+   (`foldShoal` refuses any other seed). Group by canonical payload; a publisher that
+   published two payloads for one epoch votes for neither; adopt the payload with the most
+   independent publishers, lowest content hash breaking a tie. Any epoch with more than one
+   payload is REPORTED through the shell's `onError` — a difference does not prove
+   dishonesty (a bite still in flight when one client rolls is enough), and the message says
+   so. The `k`-of-agreement threshold this item asked for was deliberately NOT made a hard
+   floor: it would have left a two-player room permanently unseeded, which is the very
+   failure being fixed. Plurality gives the same sybil cost without that.
+4. **The seam** — `chainSea.ts` adopts before its first fold AND again on every refetch
+   until it succeeds, because the constructor's own fetch has not answered by the first
+   frame; a one-shot at startup would miss the checkpoint almost every time.
+5. **Ordering against item 1** — unchanged and still open. Checkpoints are replies too, so
+   they accumulate in the same log that is heading for `ROOM_FETCH_LIMIT`; whatever rotates
+   a room must decide where checkpoints live at the same time. `fetchRoom` reads both halves
+   in ONE `get_replies`, so nothing here doubles the fetch cost.
+
+**Proved, not asserted.** `shoal-client/scripts/two-client-checkpoint.ts` (`npm run
+smoke:checkpoint`) runs two peered regtest nodes, two identities, real mined writes and real
+gossip: both clients compute the identical payload for a real epoch on the absolute grid,
+publish it as two distinct chain objects, and a joiner reading the OTHER node adopts it and
+folds to a fingerprint identical to the client that crossed the hour — with an unseeded
+control alongside that remembers nobody. The hour itself is compressed by passing the sea
+clock as the parameter it already is (`advance(loop, entries, toMs)` reads no clock); every
+timestamp the node validates stays real. Run 2026-07-28 against epoch 495912: ALL PASS.
+
+**One thing carried forward.** A checkpoint body does not name its ROOM, and `content_id`
+is `sha256(body)` alone — so the same publisher publishing the same payload into two
+different rooms produces ONE chain object (observed across two runs of the proof script).
+It is benign today: the two are the same fact by the same author, and reply indexing is
+per-parent, so each room still serves it. It would stop being benign if a rule ever read a
+checkpoint's own provenance rather than the room it was fetched from.
 
 ### 3. Gossip is unproven end to end — **RESOLVED 2026-07-28**
 

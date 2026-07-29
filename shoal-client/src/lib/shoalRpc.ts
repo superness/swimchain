@@ -63,6 +63,70 @@ interface JsonRpcResponse<T> {
   id: number | string;
 }
 
+// --- Typed rejections --------------------------------------------------------------
+//
+// `rpcCall` used to reject with a single flat `Error` for every failure mode, its
+// `code`/`status` baked into the message text (`RPC Error -32015: …`, `HTTP 500: …`)
+// and nowhere else. That is enough for a human reading a log, but it is exactly the
+// gap Task 3 (plan 2026-07-28-the-shoal-shallows) exists to close: a caller could not
+// tell "the node answered and refused this identity" from "the node never answered at
+// all" without regexing that message, and a message string is not a stable contract —
+// only the shapes below are. Three distinct classes because they are three distinct
+// FACTS about how the call failed, not three formattings of one fact:
+//
+//   - `JsonRpcCallError`   — a real JSON-RPC response came back with an `error` body.
+//                            The node is up, parsed the request, and refused it. The
+//                            numeric `code` is the JSON-RPC error code
+//                            (`RpcErrorCode`, src/rpc/error.rs) verbatim.
+//   - `HttpStatusCallError`— the HTTP transaction completed but the status was not ok
+//                            (proxy/gateway error, node mid-restart serving 5xx, etc).
+//                            The node's JSON-RPC layer was never reached.
+//   - `NodeUnreachableError` — the `fetch()` call itself rejected: no response of any
+//                            kind arrived (DNS failure, connection refused, offline).
+//                            This is the only one of the three that means "transport
+//                            failed" — see shoalSend.ts's `classifySendFailure`.
+//
+// A 200 response with an unparsable JSON body (the fourth failure mode already
+// covered by shoalRpc.test.ts) stays a plain `Error`/`SyntaxError` on purpose: the
+// node answered AND the transport worked, so it is neither of the above and callers
+// should treat it as "everything else", same as any other error class this module
+// does not specifically recognise.
+
+/** The node's JSON-RPC layer returned an `error` body — the node is up and reached,
+ *  and refused this specific request. `code` is `RpcErrorCode` (src/rpc/error.rs)
+ *  verbatim, not re-parsed out of the message string. */
+export class JsonRpcCallError extends Error {
+  readonly code: number;
+  constructor(code: number, rpcMessage: string) {
+    super(`RPC Error ${code}: ${rpcMessage}`);
+    this.name = 'JsonRpcCallError';
+    this.code = code;
+  }
+}
+
+/** The HTTP transaction completed with a non-2xx status before any JSON-RPC body was
+ *  parsed (proxy error, gateway timeout, node serving a bare error page). */
+export class HttpStatusCallError extends Error {
+  readonly status: number;
+  constructor(status: number, statusText: string, bodyText: string) {
+    super(`HTTP ${status}: ${statusText}${bodyText ? ` - ${bodyText}` : ''}`);
+    this.name = 'HttpStatusCallError';
+    this.status = status;
+  }
+}
+
+/** `fetch()` itself rejected — no HTTP response of any kind came back. The one
+ *  failure mode that actually means "could not reach the node" (offline, DNS
+ *  failure, connection refused, etc). `cause` is whatever `fetch` threw. */
+export class NodeUnreachableError extends Error {
+  constructor(cause: unknown) {
+    const causeMsg = cause instanceof Error ? cause.message : String(cause);
+    super(`Node unreachable: ${causeMsg}`);
+    this.name = 'NodeUnreachableError';
+    this.cause = cause;
+  }
+}
+
 // A single counter shared by every `RpcAuth`, deliberately — not one counter per
 // auth. The `id` here is a JSON-RPC correlation token for a single HTTP
 // request/response exchange; `rpcCall` reads the response body directly off the
@@ -85,11 +149,19 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
   // the header being absent the way a null auth is supposed to read.
   if (auth.authHeader) headers.Authorization = auth.authHeader;
 
-  const res = await fetch(auth.endpoint, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ jsonrpc: '2.0', method, params: params ?? {}, id: requestId++ }),
-  });
+  // Only THIS call, not res.json() below, means "the node was unreachable" — see the
+  // `NodeUnreachableError` doc comment. Anything past this line got a real HTTP
+  // response, so the node was there and answered.
+  let res: Response;
+  try {
+    res = await fetch(auth.endpoint, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ jsonrpc: '2.0', method, params: params ?? {}, id: requestId++ }),
+    });
+  } catch (cause) {
+    throw new NodeUnreachableError(cause);
+  }
 
   if (!res.ok) {
     let bodyText = '';
@@ -98,7 +170,7 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
     } catch {
       // best-effort only
     }
-    throw new Error(`HTTP ${res.status}: ${res.statusText}${bodyText ? ` - ${bodyText}` : ''}`);
+    throw new HttpStatusCallError(res.status, res.statusText, bodyText);
   }
 
   // Deliberately not wrapped in try/catch: a non-JSON 200 body is exactly the
@@ -106,9 +178,11 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
   // allowed to propagate as `rpcCall`'s rejection rather than being swallowed.
   const parsed = (await res.json()) as JsonRpcResponse<T>;
   if (parsed.error) {
-    // A swallowed RPC error is invisible in production — the code is included so a
-    // caller (or a log) can tell a real protocol error from an empty/undefined result.
-    throw new Error(`RPC Error ${parsed.error.code}: ${parsed.error.message}`);
+    // A swallowed RPC error is invisible in production — the numeric code is a real
+    // field on the thrown error (not just embedded in the message string) so a
+    // caller can tell a real protocol error from an empty/undefined result, and can
+    // switch on which protocol error it was. See `JsonRpcCallError` above.
+    throw new JsonRpcCallError(parsed.error.code, parsed.error.message);
   }
   return parsed.result as T;
 }

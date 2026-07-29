@@ -78,6 +78,40 @@
  * the same price `advance` already pays for any entry that lands behind its
  * cursor — and it is paid only when a write actually failed.
  *
+ * ## The hour boundary: publish, and adopt (spec §3.9 points 4 and 5)
+ *
+ * This is where open item 12 — Blocker 12 — is closed. `advance` returns
+ * `{ loop, rolled }`, and `rolled` used to be dropped here while `createLoop`
+ * was seeded a hard `null`. Both halves of the mechanism existed and neither
+ * was reachable, so a client that had been running through an hour boundary
+ * kept every swimmer's accumulated size (`advance` seeds itself from its own
+ * `rolled` internally) while a client that joined after folded an UNSEEDED
+ * epoch and saw everyone back at START_SIZE. Size feeds shelterWeight ->
+ * shelterOf -> isExposed -> selectTaken, so the two disagreed about WHO THE
+ * SHARK EATS, and spec §2.7's "you return the size you left" was false across
+ * any reload that crossed an hour.
+ *
+ * THREE THINGS HAPPEN NOW, and each is one line of policy:
+ *
+ *  1. **Publish.** A non-null `rolled` is written to the room, by every client,
+ *    every hour — see `publishCheckpoint` for what that costs and what it buys.
+ *  2. **Adopt.** Before the first fold, and again on every refetch until it
+ *     succeeds, the room's checkpoints are weighed by `adoptCheckpoint`
+ *     (adopt.ts) and the winner seeds `createLoop`. Retrying is not belt and
+ *     braces: the constructor's own fetch has not answered by the first frame,
+ *     so the ordinary cold start adopts LATE. See `adoptInto`.
+ *  3. **Report.** Two different payloads for one epoch is a detected
+ *     divergence, and it goes out through the same `onError` channel as every
+ *     other failure rather than being resolved in silence. See
+ *     `describeDivergence`, which is careful about what a difference does and
+ *     does not prove.
+ *
+ * A checkpoint never touches `pending` and never touches the fold. It is not a
+ * `LogEntry` (shoalWire.ts), `splitRoomReplies` keeps it out of the log by
+ * construction, and this client is already folding from the same value it
+ * published — so there is no optimistic row here to withdraw and nothing to
+ * roll back if the write fails.
+ *
  * ## The event races the read
  *
  * A `content_new` notification means "something happened", NOT "the log now
@@ -96,14 +130,32 @@
  * black out the window. They go to `onError`, and the last good log keeps
  * being folded. There is no player-facing copy here (nor anywhere in
  * `src/lib/`); the shell decides what, if anything, to say.
+ *
+ * ## A write's outcome is a second channel, and it also reports SUCCESS
+ *
+ * `onError` cannot carry the one fact spec §2.16 needs. A newcomer nobody has
+ * vouched for is refused at ingestion (`check_identity_sponsored`,
+ * src/rpc/methods.rs:753) and Task 3 classified that refusal by its numeric
+ * code; but being LET IN is an in-game act another player performs while this
+ * window is open, and the only evidence of it here is a write that stops
+ * failing. An error channel structurally cannot report that.
+ *
+ * So `onWrite` fires once per attempted write — `null` for accepted, the typed
+ * `SendFailure` for refused — and `wayIn.ts` folds the two into a standing.
+ * This file draws no conclusion from the kind and holds no copy.
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochOf } from '../lib/epoch';
-import { fetchRoomLog } from '../lib/shoalRoom';
+import { fetchRoom } from '../lib/shoalRoom';
+import { adoptCheckpoint, type Adoption } from '../lib/adopt';
 import { DEFAULT_POLL_INTERVAL_MS, startLive } from '../lib/shoalLive';
-import { powProfileFor, sendEat, sendPresence, type SendCtx, type SignFn } from '../lib/shoalSend';
+import {
+  classifySendFailure, powProfileFor, sendCheckpoint, sendEat, sendPresence,
+  type SendCtx, type SendFailure, type SignFn,
+} from '../lib/shoalSend';
 import { PRESENCE_TTL_MS } from '../lib/shoalConst';
 import type { RpcAuth } from '../lib/shoalRpc';
+import type { CheckpointEntry } from '../lib/shoalWire';
 import type { LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
 import { speechFrom, wildSeedFrom, type Sea } from './demoSea';
 
@@ -120,6 +172,26 @@ export interface ChainSeaConfig {
   readonly signer: Promise<{ publicKeyHex: string; sign: SignFn }>;
   readonly spawn: { readonly x: number; readonly y: number };
   readonly onError?: (where: string, err: unknown) => void;
+  /**
+   * How every attempted write ended: `null` when the node accepted it,
+   * otherwise the TYPED classification of the refusal (`classifySendFailure`,
+   * shoalSend.ts) — never the error, never its message.
+   *
+   * A SECOND CHANNEL ALONGSIDE `onError`, not a replacement for it, because the
+   * two answer different questions. `onError` is the developer's log: it fires
+   * for reads, for signer trouble and for checkpoint divergence as well as for
+   * writes, it carries the raw thrown value, and nothing is expected to act on
+   * it. This one fires once per WRITE, carries a discriminant a caller can
+   * switch on, and — uniquely — also fires when a write SUCCEEDS. That last
+   * part is what a shell needs and an error channel structurally cannot give:
+   * being let into the water (spec §2.16) shows up as a write that stops being
+   * refused, which is not an event any `onError` can ever report.
+   *
+   * `chainSea` itself draws no conclusion from the kind. Deciding what a
+   * refusal means to a player belongs to `wayIn.ts`, and the words belong to
+   * `TheEdge.tsx`; this file stays as free of player-facing copy as it was.
+   */
+  readonly onWrite?: (failure: SendFailure | null) => void;
 }
 
 /** How long after an event-driven refetch to look again, to cover the gap
@@ -151,10 +223,29 @@ export interface ChainSea extends Sea {
 
 export function chainSea(cfg: ChainSeaConfig): ChainSea {
   const report = (where: string, err: unknown) => { cfg.onError?.(where, err); };
+  /**
+   * Announce how one write ended. Called for all three of them — a presence, an
+   * eat claim and a checkpoint are the same action to the node, and the gate
+   * that refuses one refuses all three, so a shell that watched only presences
+   * would go on believing it was in the water for as long as nobody moved.
+   *
+   * The classification is done HERE rather than by the caller so that no other
+   * module ever has to hold a raw thrown value to find out what happened. The
+   * kind is all that leaves this file.
+   */
+  const noteWrite = (failure: SendFailure | null) => { cfg.onWrite?.(failure); };
 
   let remote: LogEntry[] = [];
   let pending: LogEntry[] = [];
+  let published: CheckpointEntry[] = [];
   let loop: LoopState | null = null;
+  /** True once this loop's epoch has an authoritative seed — either adopted
+   *  from the room, or this client's own `rolled` from the boundary it crossed.
+   *  Adoption is attempted on every refetch until it is. */
+  let seeded = false;
+  /** Epochs whose divergence has already been reported, so a refetch that keeps
+   *  finding the same disagreement does not keep shouting about it. */
+  const divergenceReported = new Set<number>();
   let stopped = false;
   let serial = 0;
   let inFlight = false;
@@ -189,15 +280,20 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     if (stopped || inFlight) return;
     inFlight = true;
     try {
-      const next = await fetchRoomLog(cfg.auth, cfg.spaceId, cfg.roomContentId);
+      const room = await fetchRoom(cfg.auth, cfg.spaceId, cfg.roomContentId);
       if (stopped) return;
+      const next = room.log;
       remote = next;
+      published = room.checkpoints;
       // Retire on (id, ms, KIND). See the module header on why `kind` is part
       // of the key: a vector and an eat claim share one `authorMs` routinely,
       // and without it each retires the other.
       pending = pending.filter(
         (p) => !next.some((r) => r.id === p.id && r.ms === p.ms && r.kind === p.kind),
       );
+      // A checkpoint that arrives after the first frame is still worth
+      // adopting — see `adopt` below on why this is not a one-shot at startup.
+      if (loop !== null && !seeded) adoptInto(loop.epoch);
     } catch (e) {
       report('fetchRoomLog', e); // keep folding the last good log
     } finally {
@@ -243,6 +339,111 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     if (loop !== null) loop = createLoop(loop.epoch, loop.seed);
   }
 
+  /**
+   * What a detected divergence reads like on the way out. Diagnostic, not
+   * player-facing copy: the shell's `onError` is a developer channel, and no
+   * copy of any kind lives in `src/lib/`.
+   *
+   * It deliberately does NOT say "someone is cheating". `shoalLoop.ts` section 2
+   * names an entirely honest cause: a checkpoint is taken AT the boundary, so an
+   * eat claim authored in the last seconds of an hour and still in flight when
+   * one client rolls is simply absent from its checkpoint and present in a
+   * slower peer's. Both folds are correct and the payloads still differ. What
+   * this reports is that two clients did not close the hour holding the same
+   * entries — which covers an attack and a gossip race alike.
+   */
+  function describeDivergence(closedEpoch: number, outcome: Adoption): Error {
+    const lines = outcome.opinions.map(
+      (o) => `  ${o.voters.length} voter(s) of ${o.publishers.length} publisher(s), `
+        + `lowest voter ${o.lowestVoter ?? "(none — self-contradicted)"}: ${o.payload}`,
+    );
+    return new Error(
+      `epoch ${closedEpoch} has ${outcome.opinions.length} different checkpoint payloads. `
+      + 'Every honest client computes the identical payload, so these clients did not close '
+      + 'the hour holding the same entries — an attack, or an eat claim still in flight when '
+      + 'one of them rolled. Adopted the payload with the most independent publishers — '
+      + 'the lowest publisher id breaks a tie, and the payload text decides outright when '
+      + 'every publisher contradicted itself (one player with two sessions does that '
+      + 'honestly); see adopt.ts.\n' + lines.join('\n'),
+    );
+  }
+
+  /**
+   * Pick the seed for `epoch` from the checkpoints the room has handed over,
+   * reporting a divergence the first time one is seen for that epoch. The
+   * policy itself — which payload wins, and why — lives in `adopt.ts`.
+   */
+  function chooseSeed(epoch: number): Adoption {
+    const outcome = adoptCheckpoint(published, epoch);
+    if (outcome.diverged && !divergenceReported.has(epoch - 1)) {
+      divergenceReported.add(epoch - 1);
+      report('checkpointDivergence', describeDivergence(epoch - 1, outcome));
+    }
+    return outcome;
+  }
+
+  /**
+   * Adopt into a loop that is already running unseeded.
+   *
+   * THIS IS NOT A ONE-SHOT AT STARTUP, and making it one would miss the
+   * checkpoint almost every time. `refetch` is fired from the constructor and
+   * the first frame is drawn hundreds of ms before it answers, so the ordinary
+   * cold start folds an unseeded epoch first and only then learns what the room
+   * holds. A joiner that arrives while the last publisher is still mining has to
+   * keep looking, too. So adoption is attempted on every refetch until it
+   * succeeds once — after which `seeded` closes it, because a second adoption
+   * mid-epoch would be a second answer to a question already settled.
+   *
+   * Re-entering costs one bounded epoch replay and no correctness: `createLoop`
+   * is the one legal way to start an epoch (shoalLoop.ts section 4), and the
+   * fresh loop's empty `appliedHashes` makes the next `advance` re-admit the
+   * whole log — the same mechanism `withdraw` above relies on.
+   */
+  function adoptInto(epoch: number): void {
+    const outcome = chooseSeed(epoch);
+    if (outcome.seed === null) return; // nothing to adopt yet; look again next fetch
+    seeded = true;
+    loop = createLoop(epoch, outcome.seed);
+  }
+
+  /**
+   * Publish the checkpoint `advance` handed back at a boundary (spec §3.9
+   * point 4). Fire-and-forget, like every other write here.
+   *
+   * EVERY CLIENT PUBLISHES, EVERY HOUR. That is the policy, and the cost is
+   * what makes it affordable: PoW and mempool eviction are priced per ACTION
+   * (builder.rs:92), so a checkpoint costs one mine — the same as a single
+   * vector — however many KB it carries. At the design's 25-swimmer ceiling
+   * that is ~141 KB an hour of storage across the whole space. What it buys is
+   * the only evidence a joiner has: with one publisher per opinion the count of
+   * independent publishers IS the count of independent folds, which is exactly
+   * what `adoptCheckpoint` weighs. A rule that let only some clients publish
+   * would make that number mean nothing while saving a rounding error.
+   *
+   * `nowMs` is the frame's own clock and reaches only the ACTION envelope's
+   * timestamp, never the body — see `sendCheckpoint`. Two honest clients rolling
+   * milliseconds apart therefore still author the identical payload.
+   *
+   * A FAILURE COSTS THIS CLIENT ITS VOTE AND NOTHING ELSE. There is no
+   * optimistic row to withdraw: a checkpoint is not a `LogEntry` and never
+   * enters the fold, and this client is already folding from the same value
+   * (`advance` seeded itself with it internally). So the only consequence is
+   * that peers see one fewer publisher agreeing, which is why it is reported
+   * rather than swallowed. It is deliberately NOT retried: by the time a retry
+   * could land, the node's own timestamp window (600 s back) would be closing
+   * on it, and a checkpoint published late is a checkpoint every joiner that
+   * needed it has already done without.
+   */
+  function publishCheckpoint(cp: NonNullable<ReturnType<typeof advance>['rolled']>, nowMs: number): void {
+    void ctxReady
+      .then((c) => sendCheckpoint(c, cp, nowMs))
+      .then(() => { noteWrite(null); return refetch(); })
+      .catch((e) => {
+        noteWrite(classifySendFailure(e));
+        report('sendCheckpoint', e);
+      });
+  }
+
   return {
     selfId: cfg.authorIdHex,
     // The sea is a property of the ROOM (open item 13): every client pointed
@@ -267,11 +468,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       });
       void ctxReady
         .then((c) => sendPresence(c, vec, say))
-        .then(() => refetch())
+        .then(() => { noteWrite(null); return refetch(); })
         .catch((e) => {
           // A dart nobody was told about is not a dart. Take the claim back
           // before reporting, so the sea on screen is the sea that exists.
           withdraw((p) => p.hash === hash);
+          noteWrite(classifySendFailure(e));
           report('sendPresence', e);
         });
     },
@@ -281,10 +483,11 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash });
       void ctxReady
         .then((c) => sendEat(c, cell, ms))
-        .then(() => refetch())
+        .then(() => { noteWrite(null); return refetch(); })
         .catch((e) => {
           // Otherwise this client alone believes it grew.
           withdraw((p) => p.hash === hash);
+          noteWrite(classifySendFailure(e));
           report('sendEat', e);
         });
     },
@@ -302,24 +505,27 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       // The epoch is chosen from the first frame's clock, not at construction,
       // so a sea built a moment before a boundary still starts in the epoch it
       // will actually be folding. `advance` rolls it from there.
-      if (loop === null) loop = createLoop(epochOf(wallMs), null);
-      // `.rolled` — the checkpoint `advance` computes at every hour boundary —
-      // IS DELIBERATELY DROPPED HERE, and that is a known, recorded defect, not
-      // a tidy destructure. Nothing in this client publishes a checkpoint and
-      // nothing adopts one: the seed above is a hard `null`, so a client that
-      // joins after a boundary folds an UNSEEDED epoch and sees everyone back
-      // at START_SIZE, while a client that was already running keeps every
-      // swimmer's accumulated size (`advance` seeds itself from its own
-      // `rolled` internally). Size feeds shelterWeight -> shelterOf ->
-      // isExposed -> selectTaken, so the two clients disagree about WHO THE
-      // SHARK EATS — the outcome sweep.ts's header names as the most
-      // trust-destroying bug this game can have — and spec 2.7's "you return
-      // the size you left" is false across any reload crossing an hour.
-      // Spec 3.9 points 4 (checkpoints are published) and 5 (a cold joiner
-      // adopts the newest verified one) are both unimplemented because of it.
-      // Full write-up, including what the fix costs and why it is not done
-      // here: docs/THE_SHOAL_OPEN_ITEMS.md, Blocker 12.
-      loop = advance(loop, combined(), wallMs).loop;
+      //
+      // ADOPTION HAPPENS HERE (spec §3.9 point 5) and, when the room has not
+      // arrived yet, again on the refetch that brings it — see `adoptInto`.
+      // `chooseSeed` returns `null` for a room with no checkpoint for the
+      // preceding epoch, which is the first epoch a room ever has: absence, not
+      // disagreement, and folded unseeded without a word.
+      if (loop === null) {
+        const epoch = epochOf(wallMs);
+        const outcome = chooseSeed(epoch);
+        if (outcome.seed !== null) seeded = true;
+        loop = createLoop(epoch, outcome.seed);
+      }
+      const advanced = advance(loop, combined(), wallMs);
+      loop = advanced.loop;
+      if (advanced.rolled !== null) {
+        // A boundary was crossed. `advance` has already seeded the new epoch
+        // from this value internally, so from here on this client's own fold IS
+        // the authority for the new epoch and there is nothing left to adopt.
+        seeded = true;
+        publishCheckpoint(advanced.rolled, wallMs);
+      }
       return loop.state;
     },
 
