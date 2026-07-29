@@ -1,26 +1,27 @@
 /**
- * `burn <key>` — give a jar back for 70% of its crumbs.
+ * `burn <key>` — REFUSE a jar and take 70% of its price in crumbs.
  *
- * The shop had no reverse gear. A player who works out that the Sous Chef
- * cashes at x32 and therefore CANCELS the 1.2B Long Fry they just bought
- * could only mute him; the jar itself was permanent (operator: "let them burn
- * sous chef because they are smart and it annoys them").
+ * You never own it. There is nothing to sell back and nothing to pay: you
+ * decline an upgrade you had earned the right to buy, and the crumbs land
+ * immediately. Operator: "it is a strategy to advance ... exactly it is a
+ * rush."
  *
- * Two properties do the heavy lifting here, and both are tested below.
+ * (An earlier version of this file tested the opposite verb — buy it, own it,
+ * sell it back for 70%. That is a pawn shop, not a rush: it costs full price
+ * first, so it can never accelerate anything. Rewritten wholesale rather than
+ * extended, because every assertion in it was about the wrong mechanic. Safe
+ * to redefine the word: mainnet was scanned across all 17 tables and 2,523
+ * replies, and `burn` had never once been used.)
  *
- * IT CANNOT BE FARMED. Buy at C, burn for 0.7C: every round trip is a 30%
- * loss, so there is no cycle that ends up ahead. That is what lets the verb
- * be freely repeatable without any cooldown or once-per-run rule.
- *
- * IT CANNOT CORRUPT A CHAIN. Chained jars are bought in order and the fold
- * rejects out-of-order buys, so burning a jar that a LATER owned rung stands
- * on would leave a table that could never be re-folded to the same state.
- * Burning the deepest owned rung is fine; burning under one is refused.
+ * WHAT MAKES IT COST SOMETHING. The price is real, because a buy still needs
+ * its chain prefix owned — so refusing Seasoning III ends the seasoning
+ * ladder at III for the rest of the run. The deeper the rung, the fatter the
+ * payout and the more of the game you are trading away for it.
  *
  * Run: npx tsx src/lib/chipsEngine.burn.test.ts
  */
 import { foldChips, type ChipsHeader, type ChipsReply } from './chipsEngine';
-import { UPGRADES, BURN_REFUND_NUM, BURN_REFUND_DEN, START_BOWL_CAP } from './chipsConst';
+import { UPGRADES, BURN_REFUND_NUM, BURN_REFUND_DEN } from './chipsConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -38,8 +39,6 @@ const reply = (body: string): ChipsReply => {
   const ms = nextMs();
   return { author_id: OWNER, body: `${body}#${ms}~`, block_height: 1, content_id: `c${n}`, created_at: ms };
 };
-/** Crumbs on the board. Dips are clamped by the bowl cap, so this tops up
- *  in bites the current cap can hold. */
 const earn = (crumbs: number): ChipsReply[] => {
   const out: ChipsReply[] = [];
   let got = 0;
@@ -47,105 +46,95 @@ const earn = (crumbs: number): ChipsReply[] => {
   return out;
 };
 const fold = (rs: ChipsReply[]) => foldChips(header, TABLE, rs, new Map());
-const refundOf = (key: string) => Math.floor(UPGRADES[key].cost * BURN_REFUND_NUM / BURN_REFUND_DEN);
+const takeOf = (key: string) => Math.floor(UPGRADES[key].cost * BURN_REFUND_NUM / BURN_REFUND_DEN);
 
-/* ── the basic trade ──────────────────────────────────────────────────── */
+/* ── THE RUSH: crumbs for nothing but the jar you gave up ─────────────── */
+{
+  // Broke on purpose. Affordability is NOT a condition — that is the whole
+  // point of a rush, and an implementation that required the crumbs first
+  // would have nothing to accelerate.
+  const st = fold([reply('burn season1')]);
+  check('a jar can be refused with an empty bowl', st.moves[0].outcome === 'burned', st.moves[0]);
+  check('and 70% of its price lands immediately', st.crumbs === takeOf('season1'), st.crumbs);
+  check('you do NOT own it', !st.owned.has('season1'), [...st.owned]);
+  check('it is recorded as refused', st.declined.has('season1'));
+}
+
+/* ── AND YOU CANNOT THEN BUY IT ───────────────────────────────────────── */
+{
+  const st = fold([...earn(60_000), reply('burn season1'), reply('buy season1')]);
+  check('buying a jar you refused is rejected',
+    st.moves[st.moves.length - 1].outcome === 'rejected-owned', st.moves[st.moves.length - 1]);
+  check('and you still do not own it', !st.owned.has('season1'));
+}
+
+/* ── NOR REFUSE IT TWICE ──────────────────────────────────────────────── */
+{
+  const st = fold([reply('burn season1'), reply('burn season1')]);
+  check('a second refusal is rejected',
+    st.moves[1].outcome === 'rejected-unowned', st.moves[1]);
+  check('and pays only once', st.crumbs === takeOf('season1'), st.crumbs);
+}
+
+/* ── NOR REFUSE WHAT YOU ALREADY BOUGHT ───────────────────────────────── */
 {
   const st = fold([...earn(60_000), reply('buy season1'), reply('burn season1')]);
-  check('a burn is recorded', st.moves[st.moves.length - 1].outcome === 'burned',
-    st.moves[st.moves.length - 1]);
-  check('the jar is gone', !st.owned.has('season1'), [...st.owned]);
-  check('its effect is gone with it — seasoning is back to 1/1',
-    st.seasoningNum === 1 && st.seasoningDen === 1, `${st.seasoningNum}/${st.seasoningDen}`);
-  check('and 70% of the cost came back',
-    st.crumbs === 60_000 - UPGRADES['season1'].cost + refundOf('season1'), st.crumbs);
-}
-
-/* ── IT CANNOT BE FARMED. The property that lets it be unlimited. ─────── */
-{
-  const start = 200_000;
-  let rs = earn(start);
-  for (let i = 0; i < 5; i++) rs = [...rs, reply('buy season1'), reply('burn season1')];
-  const st = fold(rs);
-  const spent = 5 * (UPGRADES['season1'].cost - refundOf('season1'));
-  check('five buy/burn round trips LOSE crumbs every time', st.crumbs === start - spent, st.crumbs);
-  check('...and the loss is 30% of the price each time',
-    UPGRADES['season1'].cost - refundOf('season1') === UPGRADES['season1'].cost - refundOf('season1'));
-  check('so the cycle can never end up ahead', st.crumbs < start, { start, end: st.crumbs });
-}
-
-/* ── IT CANNOT CORRUPT A CHAIN ────────────────────────────────────────── */
-{
-  const rs = [...earn(700_000), reply('buy season1'), reply('buy season2'), reply('burn season1')];
-  const st = fold(rs);
-  check('burning UNDER an owned rung is refused',
-    st.moves[st.moves.length - 1].outcome === 'rejected-order', st.moves[st.moves.length - 1]);
-  check('and the chain is untouched', st.owned.has('season1') && st.owned.has('season2'));
-
-  // The deepest owned rung is fair game, and after burning it the one below
-  // becomes burnable in turn.
-  const st2 = fold([...earn(700_000), reply('buy season1'), reply('buy season2'),
-    reply('burn season2'), reply('burn season1')]);
-  check('the DEEPEST rung can be burned', !st2.owned.has('season2'));
-  check('and then the one under it', !st2.owned.has('season1'), [...st2.owned]);
-  check('seasoning unwinds all the way back', st2.seasoningNum === 1 && st2.seasoningDen === 1);
-}
-
-/* ── THE MOTIVATING CASE: burn the Sous Chef ──────────────────────────── */
-{
-  // He costs 2M and the STARTING bowl holds 1M, so a bowl comes first —
-  // without it the buy silently never happens and `!owned.has('autodip')`
-  // passes for the wrong reason. (It did, on the first run of this file.
-  // Asserting the absence of a thing is only meaningful once you have proved
-  // it was ever present.)
-  const bought = fold([...earn(30_000), reply('buy bowl1'), ...earn(2_500_000), reply('buy autodip')]);
-  check('sanity: the Sous Chef was actually bought', bought.owned.has('autodip'), [...bought.owned]);
-  const before = bought.crumbs;
-
-  const st = fold([...earn(30_000), reply('buy bowl1'), ...earn(2_500_000),
-    reply('buy autodip'), reply('burn autodip')]);
-  check('the Sous Chef can be burned — he is unchained, so at any time',
-    !st.owned.has('autodip'), [...st.owned]);
-  check('for 70% of 2M', st.crumbs === before + refundOf('autodip'),
-    { before, after: st.crumbs, refund: refundOf('autodip') });
-}
-
-/* ── you cannot burn what you do not have ─────────────────────────────── */
-{
-  const st = fold([...earn(50_000), reply('burn season1')]);
-  check('burning an unowned jar is refused',
+  check('refusing a jar you own is rejected',
     st.moves[st.moves.length - 1].outcome === 'rejected-unowned', st.moves[st.moves.length - 1]);
-  check('and pays nothing', st.crumbs === 50_000, st.crumbs);
-
-  const ghost = fold([...earn(50_000), reply('burn nosuchjar')]);
-  check('burning a jar that does not exist is refused',
-    ghost.moves[ghost.moves.length - 1].outcome === 'rejected-parse'
-    || ghost.moves[ghost.moves.length - 1].outcome === 'rejected-unowned');
-  check('and pays nothing either', ghost.crumbs === 50_000, ghost.crumbs);
+  check('and it stays owned', st.owned.has('season1'));
 }
 
-/* ── burning a bowl shrinks the bowl, and the crumbs must obey it ─────── */
+/* ── THE PRICE: a chain rung takes the whole ladder above it ──────────── */
 {
-  // Own bowl1 (3M cap), fill past the STARTING cap, then burn it. The cap
-  // drops back to 1M and crumbs cannot be left sitting above their own
-  // ceiling — every other path in the fold clamps, and so must this one.
-  const st = fold([...earn(2_500_000), reply('buy bowl1'), ...earn(2_500_000), reply('burn bowl1')]);
-  check('the cap falls back when its bowl is burned', st.bowlCap === START_BOWL_CAP, st.bowlCap);
-  check('and crumbs are clamped to it', st.crumbs <= START_BOWL_CAP, st.crumbs);
+  // season2 needs season1 owned. Refusing season1 ends the chain there.
+  const st = fold([...earn(600_000), reply('burn season1'), reply('buy season2')]);
+  check('you cannot climb past a rung you refused',
+    st.moves[st.moves.length - 1].outcome === 'rejected-order', st.moves[st.moves.length - 1]);
+  check('so the ladder really is forfeit', !st.owned.has('season2'));
+
+  // And you may only refuse a rung you had earned the right to buy.
+  const early = fold([reply('burn season2')]);
+  check('refusing a rung whose prefix you do not own is rejected',
+    early.moves[0].outcome === 'rejected-order', early.moves[0]);
+  check('and pays nothing', early.crumbs === 0, early.crumbs);
+
+  // Own the prefix, and the deeper rung's fatter payout is available.
+  const deep = fold([...earn(60_000), reply('buy season1'), reply('burn season2')]);
+  check('with the prefix owned, the deeper rung can be refused', deep.declined.has('season2'));
+  check('and it pays more than the shallow one', takeOf('season2') > takeOf('season1'));
 }
 
-/* ── only the owner ───────────────────────────────────────────────────── */
+/* ── the bowl still bounds what you can hold ──────────────────────────── */
 {
-  const bought = [...earn(60_000), reply('buy season1')];
+  // season4 refunds 2.8M into a 1M starting bowl.
+  const st = fold([...earn(60_000), reply('buy season1'), reply('buy season2'),
+    ...earn(600_000), reply('buy season3'), reply('burn season4')]);
+  check('a refusal cannot overfill the bowl', st.crumbs <= st.bowlCap, { crumbs: st.crumbs, cap: st.bowlCap });
+}
+
+/* ── a refusal is a RUN choice — the bowl going over clears it ────────── */
+{
+  const st = fold([...earn(60_000), reply('burn season1'),
+    ...earn(5_000_000), reply('tip'), ...earn(60_000), reply('buy season1')]);
+  check('after a tip the jar is available again', st.owned.has('season1'), [...st.owned]);
+  check('and nothing is still marked refused', st.declined.size === 0, [...st.declined]);
+}
+
+/* ── nonsense and strangers ───────────────────────────────────────────── */
+{
+  const ghost = fold([reply('burn nosuchjar')]);
+  check('refusing a jar that does not exist pays nothing', ghost.crumbs === 0, ghost.crumbs);
+
   const stranger: ChipsReply = { ...reply('burn season1'), author_id: 'b'.repeat(64) };
-  const st = fold([...bought, stranger]);
-  check('a stranger cannot burn your jar', st.owned.has('season1'));
+  const st = fold([stranger]);
+  check('a stranger cannot refuse on your table', st.crumbs === 0 && st.declined.size === 0);
 }
 
-/* ── the refund constant itself ───────────────────────────────────────── */
+/* ── the rate ─────────────────────────────────────────────────────────── */
 {
-  check('the refund is 70%', BURN_REFUND_NUM === 70 && BURN_REFUND_DEN === 100);
-  check('which is strictly less than what was paid', BURN_REFUND_NUM < BURN_REFUND_DEN);
+  check('the take is 70%', BURN_REFUND_NUM === 70 && BURN_REFUND_DEN === 100);
+  check('which is less than the price, so refusing everything is not free money',
+    BURN_REFUND_NUM < BURN_REFUND_DEN);
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
