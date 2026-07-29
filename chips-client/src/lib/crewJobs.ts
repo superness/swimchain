@@ -131,6 +131,44 @@ export function spendBlessing(_angel: AngelState): AngelState {
 /** Each job unlocks with its character's layer. */
 export const JOB_LAYER = { wing: 5, committee: 4, hermit: 5, oracle: 6 } as const;
 
+/**
+ * A JOB'S STATE AS IT APPLIES AT THIS DEPTH.
+ *
+ * Every job tick is gated on its character's layer, which stops a job
+ * ADVANCING too shallow but does nothing about one that is already running
+ * when the depth drops — and a tip drops it to zero. The wing places itself
+ * on its very first tick and never un-places; below its layer the tick simply
+ * stops being called, so `wing.at` kept pointing at a fryer forever.
+ *
+ * Live symptom (operator, 2026-07-28): tipped from the Abyss, and the wing
+ * stayed perched and kept paying x2 at Queso. It appeared to come and go,
+ * because with one fryer its stale index was out of range and rendered
+ * nothing — buying fryers back brought the index into range and the perch
+ * reappeared, "unlocked early", four tiers below where it belongs.
+ *
+ * The tick gate could not have fixed this. A gate on ADVANCE is not a gate on
+ * EFFECT, and the effect is what pays. These select what is true right now,
+ * so a stale state cannot express itself however it got stale.
+ */
+export function wingAtDepth(w: WingState, depth: number): WingState {
+  return depth >= JOB_LAYER.wing ? w : freshWing();
+}
+export function oracleAtDepth(o: OracleState, depth: number): OracleState {
+  return depth >= JOB_LAYER.oracle ? o : freshOracle();
+}
+export function voteAtDepth(v: VoteState, depth: number): VoteState {
+  return depth >= JOB_LAYER.committee ? v : freshVote();
+}
+export function hermitAtDepth(h: HermitState, depth: number): HermitState {
+  return depth >= JOB_LAYER.hermit ? h : freshHermit();
+}
+export function ratAtDepth(r: RatState, depth: number): RatState {
+  return depth >= JOBS_MIN_DIP_INDEX ? r : freshRat();
+}
+export function angelAtDepth(a: AngelState, depth: number): AngelState {
+  return depth >= JOBS_MIN_DIP_INDEX ? a : freshAngel();
+}
+
 /* ── the wing with no bird: it sits where it hurts ─────────────────────── */
 
 export const WING_HOP_EXPECT_S = 45;

@@ -13,7 +13,9 @@ import {
   freshVote, voteTick, lobby, motionBonus, MOTION_BONUS, VOTE_OPEN_S, MOTION_S,
   freshHermit, hermitTick, giveHermit, HERMIT_RETURNS, HERMIT_HOLD_S,
   freshOracle, oracleTick, PROPHECY_PAYS, PROPHECY_WINDOW_S,
-  dipBonusFor, type WingState,
+  dipBonusFor, JOB_LAYER, JOBS_MIN_DIP_INDEX,
+  wingAtDepth, oracleAtDepth, voteAtDepth, hermitAtDepth, ratAtDepth, angelAtDepth,
+  type WingState,
 } from './crewJobs';
 import { TICK_MS } from './cooking';
 
@@ -187,6 +189,48 @@ const ticksFor = (s: number) => Math.max(1, Math.round((s * 1000) / TICK_MS));
   check('the oracle alone pays its rate', dipBonusFor(1, freshWing(), oracle) === PROPHECY_PAYS);
   check('they STACK', dipBonusFor(1, wing, oracle) === WING_PAYS * PROPHECY_PAYS, dipBonusFor(1, wing, oracle));
   check('and only on the basket they are watching', dipBonusFor(0, wing, oracle) === 1);
+}
+
+// 6) DEPTH GATES — the bug that paid x2 four tiers early.
+//
+//    Every job tick is gated on its character's layer, which stops a job
+//    ADVANCING too shallow and does nothing about one already running when
+//    the depth DROPS. A tip drops it to zero. The wing places itself on its
+//    first tick and never un-places, so `wing.at` kept pointing at a fryer
+//    forever and kept paying (operator, 2026-07-28: tipped from the Abyss,
+//    wing still perched at Queso).
+//
+//    These pin the fix at the only place that can work: the EFFECT, derived
+//    from the depth you are at right now.
+{
+  const perched: WingState = { at: 2, since: 5, readyAt: 0 };
+  check('a perched wing survives at its own layer',
+    wingAtDepth(perched, JOB_LAYER.wing).at === 2);
+  check('THE FIX: it is gone one tier shallower',
+    wingAtDepth(perched, JOB_LAYER.wing - 1).at === null,
+    wingAtDepth(perched, JOB_LAYER.wing - 1));
+  check('and gone at the surface, which is where a tip puts you',
+    wingAtDepth(perched, 0).at === null);
+
+  // The payout is what actually matters — a stale perch that still doubles
+  // is the whole bug, and `dipBonusFor` is what pays it.
+  check('a stale perch pays NOTHING once gated',
+    dipBonusFor(2, wingAtDepth(perched, 0), freshOracle()) === 1,
+    dipBonusFor(2, wingAtDepth(perched, 0), freshOracle()));
+  check('sanity: ungated, that same perch really would have paid double',
+    dipBonusFor(2, perched, freshOracle()) === WING_PAYS);
+
+  // Every other job with a lingering effect, same rule.
+  check('the oracle stops pointing below its layer',
+    oracleAtDepth({ at: 1, ticks: 9 }, JOB_LAYER.oracle - 1).at === null);
+  check('a carried motion stops fattening ticks below the committee',
+    motionBonus(voteAtDepth({ phase: 'carried', ticks: 9, lobbied: true }, JOB_LAYER.committee - 1)) === 1);
+  check('the hermit is not still holding your chip at the surface',
+    hermitAtDepth({ phase: 'holding', ticks: 9, held: 5, payout: 0 }, 0).phase === 'idle');
+  check('the rat is not still latched below queso',
+    ratAtDepth({ latched: 1, hoard: 500, latchedTicks: 3, eaten: 0 }, JOBS_MIN_DIP_INDEX - 1).latched === null);
+  check('and the angel is not still glowing there',
+    !angelAtDepth({ glowing: true, cooldownTicks: 0 }, JOBS_MIN_DIP_INDEX - 1).glowing);
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
