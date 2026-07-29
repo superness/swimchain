@@ -44,3 +44,45 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-targets
+
+  # THE CLIENTS WERE NEVER TESTED BY ANYTHING. chips-client had 38 test suites
+  # and no workflow mentioned it, so they ran exactly when somebody remembered
+  # to — which, for the six added on 2026-07-28, was never: `npm test` was a
+  # hand-written chain of 32 files and the newest six were not in it.
+  #
+  # Separate job, not a step on `check`: a Rust clippy failure must not hide
+  # whether the game logic is sound, and vice versa. They fail independently
+  # because they are independent.
+  clients:
+    name: Client tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # chips-client ONLY for now. reef-client has no package-lock.json, so
+        # `npm ci` cannot run there, and a job that is red the day it lands is
+        # worse than no job — that is precisely how the Rust CI ended up
+        # unread for 19 runs. Commit a lockfile for reef and add it here; its
+        # `test` script is also a hand-written chain of 2 files against 4 on
+        # disk, so it wants the same glob runner first.
+        client: [chips-client]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ${{ matrix.client }}/package-lock.json
+
+      - name: Install
+        working-directory: ${{ matrix.client }}
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: ${{ matrix.client }}
+        run: npx tsc -b
+
+      - name: Test
+        working-directory: ${{ matrix.client }}
+        run: npm test
