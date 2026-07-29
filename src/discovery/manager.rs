@@ -90,8 +90,26 @@ impl DiscoveryManager {
             result.push(entry.wire_addr);
         }
 
-        // If we don't have enough cached peers, add seeds
-        if result.len() < self.seed_list.len() {
+        // ALWAYS append the seeds, however many peers are cached.
+        //
+        // This was `if result.len() < self.seed_list.len()` — a peer count
+        // compared against a SEED count, two unrelated quantities. Mainnet
+        // ships exactly one seed, so the condition reduced to "use seeds only
+        // when zero peers are cached": a node that had ever cached a single
+        // peer would never contact a seed again, however dead that peer was.
+        //
+        // Observed on a real handset, 2026-07-29. Its store held one entry — a
+        // stale LAN address from an earlier local test — and it dialled
+        // nothing else for hours:
+        //     [GETADDR-DISCOVERY] Trying to connect to stored peer 10.0.0.202:9735
+        //     [BLOCKS] Formation gate OPEN ... (our height 1094, best peer height 0)
+        // The seed was healthy and reachable throughout. The node simply never
+        // tried it, so no amount of fixing the seed could have recovered it.
+        //
+        // Seeds go LAST, so a good cache still wins and this costs a
+        // well-connected node nothing — the connect loop never reaches them. A
+        // fallback that is conditional on not needing it is not a fallback.
+        {
             for seed in &self.seed_list {
                 let wire_addr = seed.to_wire_addr();
                 // Avoid duplicates
@@ -288,6 +306,48 @@ mod tests {
         // First 10 should be the cached peers (sorted by score, highest first)
         for i in 0..10 {
             assert_eq!(peers[i].port, 9809 - i as u16);
+        }
+    }
+
+    /// THE SEEDS MUST SURVIVE A FULL PEER CACHE.
+    ///
+    /// Regression for the 2026-07-29 stranded-handset bug. The old condition
+    /// (`result.len() < self.seed_list.len()`) compared a peer count to a SEED
+    /// count, so on mainnet — which ships ONE seed — a node that had cached a
+    /// single peer never contacted a seed again. A phone sat for hours dialling
+    /// one stale LAN address with a healthy seed it would not try.
+    ///
+    /// `test_bootstrap_prefers_cached_peers` above asserts only `len() >= 10`,
+    /// which the bug satisfies (10 cached, 0 seeds). It cannot catch this, and
+    /// its own comment says "10 cached + 3 seeds = 13" — the behaviour was
+    /// documented and then not checked. This asserts it.
+    #[test]
+    fn test_bootstrap_always_includes_seeds_even_with_many_cached() {
+        let manager = DiscoveryManager::open_temporary().unwrap();
+
+        // Far more cached peers than seeds — the exact case that silenced them.
+        for i in 0..10 {
+            let entry = make_entry(9800 + i, 100 + i as i16);
+            manager.add_peer(&entry).unwrap();
+        }
+
+        let peers = manager.bootstrap().unwrap();
+
+        // Dev seeds are 127.0.0.1 on DEFAULT_PORT..+2; cached peers use 9800+.
+        for seed_port in [DEFAULT_PORT, DEFAULT_PORT + 1, DEFAULT_PORT + 2] {
+            assert!(
+                peers.iter().any(|p| p.port == seed_port && p.address[0..4] == [127, 0, 0, 1]),
+                "seed 127.0.0.1:{seed_port} missing from bootstrap despite 10 cached peers —                  a node with a full cache of dead peers can never reach the network"
+            );
+        }
+
+        // And the cache still comes FIRST: seeds are a fallback, not a preference.
+        for (i, peer) in peers.iter().take(10).enumerate() {
+            assert_eq!(
+                peer.port,
+                9809 - i as u16,
+                "cached peers must retain score order and priority"
+            );
         }
     }
 
