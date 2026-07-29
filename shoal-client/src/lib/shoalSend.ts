@@ -115,7 +115,75 @@ import { argon2id, createSHA256 } from 'hash-wasm';
 
 import type { Checkpoint, Vec } from './shoalTypes';
 import { encodeCheckpoint, encodeEat, encodePresence } from './shoalWire';
-import { assertWireSpaceId, rpcCall, type RpcAuth } from './shoalRpc';
+import { assertWireSpaceId, JsonRpcCallError, NodeUnreachableError, rpcCall, type RpcAuth } from './shoalRpc';
+
+// ---------------------------------------------------------------------------
+// Classifying a failed write (plan 2026-07-28-the-shoal-shallows, Task 3,
+// "Blocker 2" — a new swimmer cannot write at all, and the shell cannot tell why)
+// ---------------------------------------------------------------------------
+//
+// On testnet and mainnet, `submit_reply` (src/rpc/methods.rs:2895) runs
+// `check_identity_sponsored` (:753) before anything else. That check
+// short-circuits to `Ok(())` ONLY on regtest (:757-759); everywhere else an
+// unsponsored author's very first write is rejected at ingestion with the
+// JSON-RPC error code `RpcErrorCode::IdentityNotSponsored = -32015`
+// (src/rpc/error.rs:31, thrown at src/rpc/methods.rs:823-827). That is a real,
+// distinct numeric code — not a code shared with any other rejection reason —
+// so classifying on it is exact, not a guess: no other `submit_reply` failure
+// path returns -32015 (see src/rpc/error.rs's full `RpcErrorCode` list; every
+// other code there means something else entirely).
+//
+// `rpcCall` (shoalRpc.ts) now throws a distinct class per failure SHAPE
+// (`JsonRpcCallError`, `HttpStatusCallError`, `NodeUnreachableError`) rather
+// than one flat `Error` with the code baked into the message text — see that
+// module's header. That is what makes the classification below type-based
+// (`instanceof` + a numeric field) instead of a regex over human-readable
+// prose, per this task's requirement to read the code rather than guess it.
+//
+// This module deliberately produces only the TYPE, never player-facing copy
+// (this plan's global constraint reserves that for Task 4) — `SendFailure` is
+// consumed by a caller that decides what to show, not by this module.
+
+/** `RpcErrorCode::IdentityNotSponsored` — src/rpc/error.rs:31. The one code
+ *  `check_identity_sponsored` returns for an unsponsored author
+ *  (src/rpc/methods.rs:823-827); no other rejection reason shares it. */
+const IDENTITY_NOT_SPONSORED_CODE = -32015;
+
+export type SendFailureKind = 'not-sponsored' | 'unreachable' | 'unknown';
+
+/** A typed answer to "why did this write fail?" `cause` is the original thrown
+ *  value, kept for logging — nothing in this module reads text out of it. */
+export interface SendFailure {
+  readonly kind: SendFailureKind;
+  readonly cause: unknown;
+}
+
+/**
+ * Classify anything `sendPresence`/`sendEat`/`sendCheckpoint` (or `rpcCall`
+ * directly) can throw:
+ *
+ *   - `'not-sponsored'` — the node answered and refused this identity
+ *     specifically because it has no sponsor (`JsonRpcCallError` whose `code`
+ *     is exactly -32015). A DIFFERENT `JsonRpcCallError` — wrong PoW, bad
+ *     signature, malformed params, whatever — is real protocol feedback from
+ *     a reachable node and must NOT collapse into this bucket, or a "claim a
+ *     sponsor" flow would fire on unrelated failures.
+ *   - `'unreachable'` — `fetch()` itself never got a response
+ *     (`NodeUnreachableError`): offline, DNS failure, connection refused.
+ *   - `'unknown'` — anything else: a different JSON-RPC error code, an HTTP
+ *     status failure, a malformed-JSON response, a thrown value that isn't
+ *     even an `Error`. Exactly what the brief calls "everything else" — this
+ *     module does not pretend to have confidently classified it.
+ */
+export function classifySendFailure(err: unknown): SendFailure {
+  if (err instanceof JsonRpcCallError && err.code === IDENTITY_NOT_SPONSORED_CODE) {
+    return { kind: 'not-sponsored', cause: err };
+  }
+  if (err instanceof NodeUnreachableError) {
+    return { kind: 'unreachable', cause: err };
+  }
+  return { kind: 'unknown', cause: err };
+}
 
 // ---------------------------------------------------------------------------
 // Action PoW — byte layouts verified against src/crypto/action_pow.rs
