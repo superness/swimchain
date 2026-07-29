@@ -37,7 +37,7 @@
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { bodiesOf } from '../lib/shoalEngine';
 import { isExposed, shelterOf, type SwimmerBody } from '../lib/shelter';
-import { spreadPerMille } from '../lib/tension';
+import { outsideCore, spreadPerMille } from '../lib/tension';
 import { selectTaken } from '../lib/sweep';
 import { wildAt } from '../lib/wild';
 import { dist2 } from '../lib/fixed';
@@ -73,43 +73,64 @@ interface Frame {
   lastTaken: string[];
   tension: number;
   spread: number;
+  /** Ids outside the tension core — the count `spreadPerMille` is built from. */
+  outside: string[];
 }
 
 /**
  * Play the shallows the way `App.tsx` plays it, and hand back every frame.
  *
- * `follow` is the whole of the player's agency: when true, from `followAtMs`
- * onward the pointer is held on the gathering point, which is what "following a
- * visibly moving crowd" reduces to. When false the window still publishes —
- * a real idle client emits a keep-alive every `MAX_EMIT_GAP_MS` — and that is
- * exactly the difference between "the player did nothing" and "the player was
- * not there".
+ * `follow` is the whole of the player's agency, and there are three of them:
+ *
+ *   false     the player never touches anything. The window still publishes —
+ *             a real idle client emits a keep-alive every MAX_EMIT_GAP_MS — so
+ *             this is "did nothing", not "was not there".
+ *   true      from `followAtMs` onward the pointer is held on the gathering
+ *             point, which is what "following a visibly moving crowd" reduces to.
+ *   'away'    the same, in the opposite direction: the player runs for open
+ *             water. `dart` spends the burst on the first frame they move.
  */
-function playShallows(opts: { follow: boolean; untilMs: number; stepMs?: number; followAtMs?: number }): Frame[] {
+function playShallows(opts: {
+  follow: boolean | 'away';
+  untilMs: number;
+  stepMs?: number;
+  followAtMs?: number;
+  dart?: boolean;
+}): Frame[] {
   const sea = shallowsSea(0);
   let input: InputState = createInput(sea.spawn.x, sea.spawn.y, 0);
   const stepMs = opts.stepMs ?? 50;
   const frames: Frame[] = [];
+  let darted = false;
   for (let wall = 0; wall <= opts.untilMs; wall += stepMs) {
     const authorMs = sea.seaMs(wall) + TICK_MS;
-    if (opts.follow && wall >= (opts.followAtMs ?? 1_500)) {
+    if (opts.follow !== false && wall >= (opts.followAtMs ?? 1_500)) {
       const me = positionAt(input, authorMs);
+      const dx = SHALLOWS_GATHER.x - me.x;
+      const dy = SHALLOWS_GATHER.y - me.y;
+      const out = opts.follow === 'away';
       input = applyInput(input, {
         kind: 'steer',
-        heading: headingTo(SHALLOWS_GATHER.x - me.x, SHALLOWS_GATHER.y - me.y),
+        heading: headingTo(out ? -dx : dx, out ? -dy : dy),
       }, authorMs);
+      if (opts.dart === true && !darted) {
+        darted = true;
+        input = applyInput(input, { kind: 'dart' }, authorMs);
+      }
     }
     input = emitDue(input, authorMs, (vec, say) => sea.publish(vec, say));
     const s = sea.step(wall);
+    const bodies = bodiesOf(s);
     frames.push({
       atMs: sea.seaMs(wall),
-      bodies: bodiesOf(s),
+      bodies,
       hushStartMs: s.hushStartMs,
       lockedPositions: s.lockedPositions === null ? null : new Map(s.lockedPositions),
       lastSweepMs: s.lastSweepMs,
       lastTaken: [...s.lastTaken],
       tension: s.tension,
-      spread: spreadPerMille(bodiesOf(s)),
+      spread: spreadPerMille(bodies),
+      outside: outsideCore(bodies),
     });
   }
   return frames;
@@ -156,9 +177,18 @@ console.log('\n1. the newcomer starts OUTSIDE the school, tether already stretch
     // 389.6 by hand, above. Rounded because the fold quantizes to QUANT = 8.
     check('...the nearest being 389 cu away, as arranged',
       Math.round(nearest) === 390, Math.round(nearest));
-    check('...so the engine calls them exposed', isExposed(me, first.bodies));
-    check('...on a shelter score of exactly zero',
-      shelterOf(me, first.bodies) === 0, shelterOf(me, first.bodies));
+    // ONE CHECK, NOT TWO, AND THAT IS THE POINT. `isExposed` on its own was a
+    // separate check here and it PROVED NOTHING: under the brief's own mutation
+    // — spawn the player in the middle of the school — a swimmer with one
+    // neighbour holds a shelter score of 103 against a threshold of 300 and is
+    // still "exposed", so the check stayed green while the teaching moment it
+    // was guarding had been deleted. Nine other checks in this group caught the
+    // mutation, but a check that cannot fail is not one of the nine. Folded into
+    // the score, which discriminates: NOTHING is holding this swimmer, which is
+    // a strictly stronger statement than "not enough is".
+    check('...so the engine calls them exposed, on a shelter score of exactly zero',
+      shelterOf(me, first.bodies) === 0 && isExposed(me, first.bodies),
+      shelterOf(me, first.bodies));
 
     const t = readTether(me, first.bodies);
     check('...and the tether is drawn at full stretch',
@@ -248,21 +278,66 @@ console.log('\n2. a sweep is INBOUND — at a hand-derived instant, within a bou
   check('...which is within ten seconds of the window opening',
     sinceOpen > 0 && sinceOpen <= 10_000, sinceOpen);
 
-  // THE RATE IS CONSTANT, WHATEVER THE PLAYER DOES. This is the check that
-  // stands between the lesson and the defect that a player who followed the
-  // crowd across CORE_R dropped the outside-count to two, `trunc(2000 / 8)`
-  // cancelled TENSION_NEUTRAL exactly, and the sweep never came.
-  for (const follow of [false, true]) {
-    const run = playShallows({ follow, untilMs: sinceOpen });
-    const seen = new Set(run.filter((f) => f.bodies.length > 0).map((f) => f.spread));
-    check(`the spread is 333 on every tick up to the hush (player ${follow ? 'follows' : 'idle'})`,
-      seen.size === 1 && seen.has(spread), [...seen]);
+  // WHAT IS INVARIANT IS THE FLOOR, NOT THE RATE. This group used to check only
+  // the two behaviours that hold the rate at 333 and called that "constant,
+  // whatever the player does", which is false: swimming OUT of the core takes
+  // the count to four, `trunc(4000/9) = 444`, and the rate to +194. The three
+  // rows below are the whole story, and the third is the one that disproves the
+  // claim the comment used to make.
+  //
+  // The floor is what actually matters, because the failure it forecloses is the
+  // one that killed the first arrangement of this sea: a player who followed the
+  // crowd across CORE_R dropped the count to TWO, `trunc(2000/8) = 250`
+  // cancelled TENSION_NEUTRAL exactly, and the sweep never came at all.
+  for (const [label, run] of [
+    ['idle', playShallows({ follow: false, untilMs: sinceOpen })],
+    ['follows the crowd', playShallows({ follow: true, untilMs: sinceOpen })],
+    ['swims away from frame 0', playShallows({ follow: 'away', untilMs: sinceOpen, followAtMs: 0 })],
+  ] as Array<[string, Frame[]]>) {
+    const counts = new Set(run.filter((f) => f.bodies.length > 0).map((f) => f.outside.length));
+    check(`the outside count never drops below three (player ${label})`,
+      [...counts].every((n) => n >= 3), [...counts]);
   }
+  {
+    const idle = playShallows({ follow: false, untilMs: sinceOpen });
+    const towards = playShallows({ follow: true, untilMs: sinceOpen });
+    const away = playShallows({ follow: 'away', untilMs: sinceOpen, followAtMs: 0 });
+    check('...so a player who stays in the core holds the spread at 333, either way',
+      [idle, towards].every((r) => {
+        const seen = new Set(r.filter((f) => f.bodies.length > 0).map((f) => f.spread));
+        return seen.size === 1 && seen.has(spread);
+      }));
+    // trunc(1000 * 4 / 9) = 444, and 444 - 250 = 194 rather than 83.
+    const awaySpreads = new Set(away.filter((f) => f.bodies.length > 0).map((f) => f.spread));
+    check('...and a player who leaves it raises it to 444, which the rate follows',
+      awaySpreads.has(444) && Math.trunc((1000 * 4) / SHALLOWS_CAST.length) === 444,
+      [...awaySpreads]);
+  }
+
   const followed = playShallows({ follow: true, untilMs: 20_000 });
   const followedHush = followed.find((f) => f.hushStartMs >= 0);
   check('...so the hush arrives on the SAME tick when the player follows the crowd',
     followedHush !== undefined && followedHush.hushStartMs === expectedHush,
     { got: followedHush?.hushStartMs, expected: expectedHush });
+
+  // AND THE DIRECTION IT CAN MOVE IN IS ONE-WAY. A higher rate can only bring
+  // the hush FORWARD, so no behaviour delays it and none stalls it. Measured at
+  // the two extremes: swimming away from frame 0, and darting away from frame 0.
+  {
+    const away = playShallows({ follow: 'away', untilMs: 20_000, followAtMs: 0 });
+    const darted = playShallows({ follow: 'away', untilMs: 20_000, followAtMs: 0, dart: true });
+    const hushes = [away, darted].map((r) => (r.find((f) => f.hushStartMs >= 0) as Frame).hushStartMs);
+    check('a player who swims out of the core pulls the hush EARLIER, never later',
+      hushes.every((h) => h < expectedHush),
+      hushes.map((h) => h - SHALLOWS_OPEN_MS));
+    // 3_000 ms swimming and 2_750 darting, against 5_750 idle — so the whole of
+    // the player's influence is under three seconds, and it fails safe: greed
+    // calls the shark sooner, which is spec 2.11's own thesis.
+    check('...by under three seconds, and the sweep still arrives in every case',
+      hushes.every((h) => expectedHush - h <= 3_000)
+      && [away, darted].every((r) => r.some((f) => f.lastSweepMs >= 0)),
+      hushes.map((h) => expectedHush - h));
+  }
 
   // The lock and the resolution follow from HUSH's own constants, not from
   // anything this module chose.
@@ -380,6 +455,38 @@ console.log('\n4. someone FURTHER OUT than the newcomer is taken — either way'
   check('...and all three swimmers out in the open go instead, in front of them',
     followedTaken.length === MAX_TAKE && followedTaken.every((id) => id.startsWith('o')),
     followedTaken);
+
+  // THE ONE BEHAVIOUR WHERE §2.18's SPECIFIC PROMISE IS FALSE, checked rather
+  // than left as a promise the code does not keep. A player who darts straight
+  // out becomes the furthest-out body in the water, so "someone further out is
+  // scattered in front of them" cannot be true — there is nobody further out.
+  // What is still true is everything the lesson actually needs, and §2.18 names
+  // the fallback itself: "the frozen replay delivers the same lesson
+  // geometrically".
+  {
+    const fled = playShallows({ follow: 'away', untilMs: 20_000, followAtMs: 0, dart: true });
+    const swept = fled.find((f) => f.lastSweepMs >= 0) as Frame;
+    const locked = lockedBodiesOf(fled) as SwimmerBody[];
+    const me = locked.find((b) => b.id === SHALLOWS_SELF) as SwimmerBody;
+    const others = locked.filter((b) => b.id !== SHALLOWS_SELF);
+
+    check('a player who darts straight out is the furthest-out body in the water',
+      others.every((b) => outFrom(b) < outFrom(me)),
+      { mine: Math.round(outFrom(me)), others: others.map((b) => Math.round(outFrom(b))) });
+    check('...so NOBODY further out than them is taken — the promise does not hold here',
+      swept.lastTaken.every((id) => outFrom(locked.find((x) => x.id === id) as SwimmerBody) <= outFrom(me)),
+      swept.lastTaken);
+    check('...but they are still scattered, with two of the three out in the open',
+      swept.lastTaken.includes(SHALLOWS_SELF)
+      && swept.lastTaken.filter((id) => id.startsWith('o')).length === 2, swept.lastTaken);
+    // ...and the geometry is still delivered: a knot of five holding each other
+    // in the middle, and every fish the sweep took alone at the edge of it.
+    const ball = locked.filter((b) => b.id.startsWith('s'));
+    check('...and the frozen replay still carries the lesson: the knot held, the alone did not',
+      ball.every((b) => shelterOf(b, locked) >= SHELTER_THRESHOLD)
+      && swept.lastTaken.every((id) => shelterOf(locked.find((x) => x.id === id) as SwimmerBody, locked) === 0),
+      { ball: ball.map((b) => shelterOf(b, locked)), taken: swept.lastTaken });
+  }
 
   // The verdict is the ENGINE's, re-derivable from the frozen arrangement — so
   // this is a claim about `selectTaken`'s inputs rather than about its output.

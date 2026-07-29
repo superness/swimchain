@@ -66,20 +66,42 @@
  * every machine, at every frame rate, on every launch, forever. Nothing in the
  * first fifteen seconds depends on when the player pressed the icon.
  *
- * **2. Tension climbs at a constant rate the player cannot switch off.**
- * `stepTension` adds `spreadPerMille(bodies) - TENSION_NEUTRAL` each tick. The
- * cast is arranged so that EXACTLY three of nine swimmers sit outside the
- * tension core — and NONE OF THE THREE IS THE PLAYER. `trunc(1000 * 3 / 9)
- * = 333`, so the rate is `333 - 250 = +83` per tick, from the sea's first vector
- * to the hush, before the school converges and after it, with no exceptions to
- * reason about.
+ * **2. THE SWEEP ALWAYS ARRIVES, AND NEVER LATE.** That, and not a constant
+ * rate, is what is actually invariant here — an earlier version of this
+ * paragraph claimed tension climbs at "+83 per tick ... with no exceptions to
+ * reason about", and it was simply false. State the invariant exactly:
+ *
+ *   THE COUNT OF SWIMMERS OUTSIDE THE TENSION CORE IS NEVER BELOW THREE.
+ *
+ * Three scripted swimmers are outside it from the sea's first tick and never
+ * come in, and the player is not one of them. `stepTension` adds
+ * `spreadPerMille(bodies) - TENSION_NEUTRAL` each tick, so the count being
+ * floored at three floors the rate:
+ *
+ *   3 of 9 outside   trunc(1000 * 3 / 9) = 333   ->  333 - 250 = +83 per tick
+ *   4 of 9 outside   trunc(1000 * 4 / 9) = 444   ->  444 - 250 = +194 per tick
+ *
+ * The player can reach the second row, and only the second row, by swimming OUT
+ * of the core — which is the one thing a rate-based claim got wrong. Measured
+ * against the real fold across five behaviours (idle, into the school, away,
+ * away from frame 0, and a dart away from frame 0):
+ *
+ *   idle, or into the school   spread 333 throughout   hush at OPEN + 5_750
+ *   away from T+1.5 s          spread 333 then 444     hush at OPEN + 4_750
+ *   away from frame 0          spread 333 then 444     hush at OPEN + 3_000
+ *   dart away from frame 0     spread 333 then 444     hush at OPEN + 2_750
+ *
+ * SO THE PLAYER CAN PULL THE HUSH UP TO THREE SECONDS EARLIER AND CANNOT PUSH IT
+ * BACK BY A SINGLE TICK. It fails safe in exactly the direction that matters:
+ * greed calls the shark sooner, which is spec §2.11's whole thesis, and there is
+ * no behaviour at all that stalls it.
  *
  * THAT THE PLAYER IS NOT ONE OF THE THREE IS THE LOAD-BEARING PART, and it was
  * found by measurement rather than by design: the first arrangement had the
  * newcomer outside the core as well as outside the crowd, which reads naturally
  * and is fatal. `spreadPerMille` is a COUNT over a fixed population, so a player
  * who did the right thing — followed the crowd inward, crossing `CORE_R` on the
- * way — dropped the count from three to two, `trunc(2000 / 8) = 250` cancelled
+ * way — dropped the count from three to TWO, `trunc(2000 / 8) = 250` cancelled
  * `TENSION_NEUTRAL` exactly, and tension FROZE 875 short of the trigger. Driven
  * against the real fold, the sweep never came at all. Doing the thing the
  * tutorial is teaching would have deleted the lesson.
@@ -89,8 +111,9 @@
  * median against `CORE_R`'s 620). Those are two different measurements of two
  * different things — shelter is a weighted neighbour count, tension is a spread
  * statistic — and only the first one is what §2.18 means by "outside the
- * school". Nothing the player does moves the count, in or out, so the hush
- * arrives on the same tick whatever they do.
+ * school". The player's own membership of the core is therefore the ONLY term
+ * they can move, it can only move upward, and the floor of three is what makes
+ * that safe. All three rows are pinned in `shallows.test.ts` §2.
  *
  * **3. The sea has been running before the window opened.** The scenario's first
  * vectors are authored `SHALLOWS_PRELUDE_MS` before the instant the window opens
@@ -119,6 +142,20 @@
  * first launch. A player who never touches the mouse is scattered — and watches
  * two fish further out than them go with them.
  *
+ * THE ONE BEHAVIOUR THE SECOND HALF OF §2.18 DOES NOT COVER, stated rather than
+ * left as a promise the code does not keep: a player who swims — or darts —
+ * STRAIGHT AWAY from the school becomes the furthest-out body in the water
+ * themselves (1005 cu from the gathering point at the lock swimming, 1465
+ * darting, against 1200/1200/1137 for the three out in the open). They are still
+ * taken, and two of the three still go with them, but "someone further out is
+ * scattered in front of them" is false in that case for the plain reason that
+ * there is nobody further out. What lands instead is §2.18's own fallback — "the
+ * frozen replay delivers the same lesson geometrically" — and it lands harder:
+ * the replay's camera fits every body, so what they are shown is a knot of five
+ * safe fish in the middle and themselves ringed in red at the very edge of it.
+ * The lesson survives; only that one sentence about it does not. Pinned in
+ * `shallows.test.ts` §4.
+ *
  * =============================================================================
  * AND THEN IT KEEPS GOING
  * =============================================================================
@@ -127,10 +164,40 @@
  * `PRESENCE_TTL_MS` and the player is left alone in open water, which is the
  * dead end §2.16 forbids. So after the sweep the cast enters `LIFE` — a milling
  * schedule at fixed absolute instants, deterministic in sea time rather than in
- * frame time for the same reason the scenario is. The ball mills, the two out
- * in the open keep drifting, and one of the school stays restless, so tension
- * climbs again and the sweep comes back. The lesson is not a cutscene; it is
- * what this water does.
+ * frame time for the same reason the scenario is. The ball mills, the three out
+ * in the open keep drifting and feeding, so tension climbs again and the sweep
+ * comes back. The lesson is not a cutscene; it is what this water does.
+ *
+ * =============================================================================
+ * WHERE THIS SEA IS SHOWN, AND THE ONE PLACE IT IS NOT — READ THIS FIRST
+ * =============================================================================
+ *
+ * `App.tsx` selects the shallows whenever `chooseSeaSource` answers `'offline'`:
+ * no shell, or a node that has not synced `@shoal:main` yet, which is the state
+ * of every fresh install for its first several minutes. That is §2.16's "never
+ * let a downloader dead-end", and it is what this module was built for.
+ *
+ * IT IS NOT SHOWN TO A NEWCOMER WHOSE WRITE IS REFUSED, and that is a real gap
+ * rather than an oversight — spec §2.16 wants the shallows to be exactly where
+ * such a player waits, and the plan that commissioned this file says so. A
+ * shipped build with a healthy node reaches real water in seconds; the first
+ * write is refused for want of a voucher; `wayIn.afterWrite` raises
+ * `AT_THE_EDGE`; and what they get is `TheEdge` over the real water, not this.
+ *
+ * DO NOT CLOSE IT BY DRAWING THE SHALLOWS WHEN `standing.atTheEdge`. A chain
+ * write is the ONLY evidence this client ever has that a vouch has landed
+ * (`wayIn.ts`: "a write that goes through is what lifts the edge"), so a window
+ * that swapped to this sea would stop writing and the player would never find
+ * out they had been let in — permanently, and in silence. That is the same
+ * defect class as the cold-start lockout `SceneKind` documents.
+ *
+ * The honest fix is §2.16's other half — "unvouched newcomers appear as small
+ * fish circling at the edge of the real water, visible to everyone" — i.e. an
+ * independent circling presence written into the open water on the WALL clock
+ * while the player swims here on the sea's. Everything it needs already exists:
+ * this is a `Sea` like any other, and `chainSea` is alive and polling at that
+ * moment. It is a task, not a line, because it decides which sea the player's
+ * body belongs to.
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochStartMs } from '../lib/epoch';
@@ -518,17 +585,33 @@ export const SHALLOWS_LIFE_GAP_MS = 4_000;
  * `3 * SHALLOWS_LIFE_GAP_MS` = 12_000, comfortably past `EAT_COOLDOWN_MS`
  * (2_500), so no claim is ever wasted on a cooldown the fold would refuse.
  *
- * WHAT IT DOES NOT DO, measured rather than hoped: it does not hold them steady.
- * The sweep comes back about every 68 s and takes two of the three, and each
- * time costs `SCATTER_COST` (30) plus every bite inside `VOID_WINDOW_MS` — call
- * it another 0.6 a second averaged out. So the three out in the open still drift
- * downward, reaching `MIN_SIZE` around five minutes in rather than the four they
- * managed with no food at all, and the school — which cannot eat at all, and is
- * never taken — gets there sooner. That is the fold's own economy answering
- * correctly, not a defect to tune away: a swimmer who never leaves cover starves
- * and a swimmer who feeds in the open is eaten. The spread of sizes the shallows
- * OPENS with is a property of the opening, and the only swimmer in this water who
- * can actually get ahead is the one holding the mouse.
+ * WHAT IT DOES NOT DO, measured rather than hoped — and the figures below are
+ * the measurements, because an earlier version of this paragraph guessed and was
+ * a full two minutes optimistic. It does not hold anybody steady. The sweep
+ * comes back about every 68 s and takes two of the three, and each time costs
+ * `SCATTER_COST` (30) plus every bite inside `VOID_WINDOW_MS`. Driven against the
+ * real fold, minute by minute:
+ *
+ *   T+0     school 96 120 148 180 214   open water 300 250 84   player 110
+ *   T+1min  school 60  60  88 120 154   open water 249 212 76
+ *   T+2min  school 60  60  60  60  94   open water 186 162 71
+ *   T+3min  school 60  60  60  60  60   open water 136 111 70   <- school pinned
+ *   T+8min  school all 60                open water all near 60
+ *
+ * THE SCHOOL IS PINNED AT `MIN_SIZE` BY THREE MINUTES, not the five this comment
+ * used to claim, and the three out in the open follow it down by eight. A player
+ * who forages meanwhile goes the other way — 563 on a modest circuit, 1028 on a
+ * wide one, by T+10min — so the water ends as one whale and eight minnows.
+ *
+ * That is the fold's own economy answering correctly rather than a defect to tune
+ * away: a swimmer who never leaves cover starves, a swimmer who feeds in the open
+ * is eaten, and the only swimmer here who can do both is the one holding the
+ * mouse. The spread of sizes the shallows OPENS with is a property of the
+ * opening. IF IT EVER WANTS A REAL ANSWER the lever is a school that DRIFTS and
+ * grazes — a moving ball crosses untrampled water, so `canEat` would start
+ * answering yes for its members — and that belongs with the circling-presence
+ * task described in this module's header, not with a bigger forage rate. This is
+ * a tutorial someone passes through, not a world someone lives in.
  *
  * Foraging begins at `SHALLOWS_LIFE_FROM_MS`, after the teaching moment has
  * resolved, so nothing in the scenario proper is touched by it.
