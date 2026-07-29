@@ -59,15 +59,19 @@ than one built on less:
    ~1031). Freshness therefore needs a driver, which Surf provides while
    running (§2.3). Rev 1's claim that "followed spaces keep them synced while
    the set is off" was false and is deleted.
-2. **Watching is feeding.** *Only if we build the mechanic.* Content decays
-   without engagement, but the only viewer path that touches decay is
-   `submit_engagement` (`src/rpc/methods.rs` ~3827), which needs a specific
-   content hash, PoW over it, and a signature. Rev 1 asserted that tuning and
-   lingering feed the network; nothing in it did. §3.3 now specifies
-   **dwell-engage** as a real mechanic. If the operator rejects auto-engage
-   (D1 makes it sponsorship-dependent), the soul sentence must weaken honestly
-   to *"flaring feeds; tuning caches"* — the spec may not keep the claim
-   without the mechanic.
+2. **Watching is feeding — where your sponsorship reaches.** Content decays
+   without engagement, and the only viewer path that touches decay is
+   `submit_engagement` (`src/rpc/methods.rs` ~3827): specific content hash,
+   PoW over it, signature. Rev 1 asserted that tuning and lingering feed the
+   network while specifying no mechanic; §3.3 now specifies **dwell-engage**.
+   Its reach is bounded by the sponsorship model, which already answers this:
+   **an identity acts wherever its grants reach and nowhere else.** Grants are
+   space-scoped by design — the node refuses to mint an unscoped auto-approve
+   offer at all (`src/rpc/methods.rs` ~17447, `src/sponsorship/offer_store.rs`
+   ~87-95: *"auto_approve requires space_scope… grants unrestricted network
+   write access"*), which is the 2026-07-16 faucet-off decision in code. So
+   the dial has channels you can feed and channels you can only watch, and
+   that is the designed behavior, not a gap (§2.5).
 
 ### Product rules
 
@@ -84,7 +88,7 @@ than one built on less:
   (`src/rpc/auth.rs`), so on Windows it inherits directory ACLs. **v1 protects
   the seed at filesystem-permission level only.** That is defensible on
   Android app-private storage and *not* on a shared desktop — one more reason
-  for D3. Requirement: OS-keystore wrapping of the passphrase (Android
+  Android leads. Requirement: OS-keystore wrapping of the passphrase (Android
   Keystore; DPAPI/Keychain when desktop lands) is a **v1 requirement on any
   platform where the data dir is not app-private**, not a later hardening.
 
@@ -100,7 +104,7 @@ Android: in-process node, exactly `mobile-app`'s model — lib link, autostart,
 Kotlin `NodeForegroundService`, loopback-only cleartext, `ring` rustls backend.
 Mainnet hardcoded; the `network.magic` guard applies unchanged.
 
-Desktop (post-v1 per D3): `sw.exe` sidecar, `desktop-app`'s model — free
+Desktop (post-v1, §5 E): `sw.exe` sidecar, `desktop-app`'s model — free
 `(P2P, RPC)` port-pair scan, cookie auth, its own `swimchain-surf` data dir so
 it never fights the launcher's sled lock.
 
@@ -188,8 +192,14 @@ the mempool, never "waiting for a block."
 
 ### 2.4 The lineup
 
-**v1 (pending D2): baked only.** The existing clients' dist bundles ship in
-the binary. Build requirements, measured rather than assumed:
+**Decided: both halves ship.** A baked core so the set works instantly and
+offline, and the **on-chain dial** so the lineup grows without an app release.
+The dial is what makes Surf an entry to the network rather than a launcher
+with a nicer coat of paint — so its security work is v1 scope, not a deferred
+appendix, and the requirements below are gates, not aspirations.
+
+**The baked core.** The existing clients' dist bundles ship in the binary.
+Build requirements, measured rather than assumed:
 
 - **Sourcemaps must be excluded from the bake.** All client vite configs set
   `sourcemap: true`, and the *currently shipped* mobile APK already embeds a
@@ -202,12 +212,17 @@ the binary. Build requirements, measured rather than assumed:
   for sideload), never universal.
 - The `.so` embeds assets at cargo-build time, so with nine baked channels a
   one-line CSS fix in any client costs a full cross-compile + gradle + resign
-  + sideload redistribution. That tax is the argument for the v2 tier, not
-  for skipping it.
+  + sideload redistribution. That tax is precisely why the dial exists.
 
-**v2 — the on-chain dial**, as one workstream with its own threat model:
-registry, `url:`/`hash:` sources, per-channel origins, capability tokens,
-subscribe. Its non-negotiable requirements, all from confirmed findings:
+**The on-chain dial.** A channel registry read from the chain; each entry
+carries name, category, depth band, icon, and a source: `baked:<id>`,
+`url:<https://…>`, or `hash:<content-hash>` (fetched through the node's own
+content store — no web server involved). New channels appear on the dial
+without an app release; that is the whole point.
+
+**Its gates.** Every item below came out of the security review as a
+confirmed finding, and each one is load-bearing — a dial that ships without
+them hands strangers your identity:
 
 - **Never the cookie.** A channel grant is a shell-minted **capability token**
   with a registry-declared method allowlist, session expiry, and shell-side
@@ -242,20 +257,40 @@ subscribe. Its non-negotiable requirements, all from confirmed findings:
   fake of the sign-on card and harvest the real gesture.
 - **Exit criterion:** a purpose-built hostile test channel proves it cannot
   inject config into a sibling, cannot reach the shell's IPC, and cannot open
-  a non-https scheme.
+  a non-https scheme. **No dialed channel is ever mounted before this passes.**
 
-### 2.5 Identity
+**Sequencing within v1.** The baked core ships first and stands alone (§5 A1,
+B); the dial lands after the hostile-channel gate passes (§5 D). A slipped
+dial delays the lineup growing, never the set working.
+
+### 2.5 Identity and what it may do
 
 All channels share the node identity via `nodeAddress`, so name, reputation
-and game standing are the same everywhere. Implied work:
+and game standing are the same everywhere on the dial.
+
+**Capability follows sponsorship — this is already defined, not a new
+question.** An identity acts wherever its grants reach and nowhere else.
+Grants are space-scoped by design (the node refuses unscoped auto-approve
+outright), so on a given channel a viewer is in one of two states, and the
+set says which diegetically rather than failing:
+
+- **Licensed to broadcast** — the channel's space grants this identity
+  action; posting, flaring and dwell-engage all work.
+- **Receive-only** — no grant reaches here; the channel plays, the viewer
+  watches, and feeding happens on the channels where they are licensed.
+  Getting sponsored for a space is an ordinary in-world act, not an error
+  state.
+
+Neither state blocks the watch-loop, which is every channel, always.
+
+Other implied work:
 
 - reef, chess and chips were built browser-first and contain **zero**
   `SWIMCHAIN_RPC_CONFIG` handling — adopting node identity is real per-client
   work, not a config flag.
-- Sponsorship is **D1** and blocks the act-loop, not the watch-loop.
 - Seed never leaves the node. Channels sign via RPC — and per §2.4 the
   purpose-scoped replacement for `sign_message` is required before any
-  non-baked channel signs anything.
+  dialed channel signs anything.
 
 ## 3. The experience
 
@@ -315,8 +350,9 @@ flare's target undefined on exactly the channels where it matters.)
 **Dwell-engage — the mechanic behind "watching is feeding."** After N seconds
 tuned, the shell mines (in a Worker) and submits low-weight `submit_engagement`
 actions against the most-recent K items actually rendered, rate-limited to
-once per content per 24h, honoring chain+mempool. Gated by D1. If D1 lands as
-(c), §1's soul sentence weakens as stated there.
+once per content per 24h, honoring chain+mempool. Runs only where the viewer
+is licensed to broadcast (§2.5); on receive-only channels it is silently
+absent — no error, no nag, the channel simply plays.
 
 ### 3.4 The Chart (guide)
 
@@ -349,12 +385,17 @@ video eventually lives.
 
 ### 3.6 Interference
 
-**Retargeted so it does not depend on the v2 registry:** the ghost-signal
-fires for channels the viewer has never tuned — **new-to-you, not
-new-to-chain** — preserving the moment with zero new machinery. Holding locks
-it in on a sign-on card. When the v2 registry lands, unsigned or unknown-key
-entries **never** auto-surface, and chain confirmation plus a signed publisher
-key are required before any entry may appear here.
+The ghost-signal fires in two cases, and the viewer needn't know which:
+**new-to-chain** (a freshly dialed registry entry) and **new-to-you** (a
+channel long on the dial that this viewer has never tuned). The second case
+carries the moment before the dial ships and keeps it alive on quiet network
+weeks afterward.
+
+Gate: unsigned or unknown-publisher-key entries **never** auto-surface;
+chain confirmation plus a signed publisher key are required before an entry
+may appear here at all. Holding locks it in on a sign-on card — and per §2.4,
+consent to *grant* anything is shell chrome reached by a second, distinct
+act, never by the tuning hold itself.
 
 ### 3.7 Power-Off
 
@@ -367,11 +408,11 @@ keeps the node running.
 - No video/live TV/movies (the Channel 0 timeslot is built; its programming
   is not).
 - No email/inbox channel.
-- **No non-baked channels at all** (pending D2): no registry, no `url:`, no
-  `hash:`, no sandbox tier, no subscribe. **No v1 mechanism grants any channel
-  the cookie beyond the baked same-origin bundles.**
+- **No desktop build.** Android only — the launcher already serves desktop
+  and is not deleted.
 - No cross-channel deep-linking.
-- No desktop build (pending D3); the launcher is not deleted.
+- **No dialed channel mounts before the hostile-channel gate passes** (§2.4).
+  The dial is in scope; shipping it unguarded is not.
 
 ## 5. Delivery phases
 
@@ -384,12 +425,20 @@ keeps the node running.
   a struct. Baked lineup: feed + wiki + one game. Power-on incl. first-signal
   acquisition, power-off. *Milestone: flip between live channels on a Pixel.*
 - **B — the soul.** Honest static, OSD overlay, `get_space_health` RPC, Dead
-  Air + flare + dwell-engage (D1), the Chart with health glow and mooring.
+  Air + flare + dwell-engage, the Chart with health glow and mooring.
 - **C — the fleet.** Remaining baked channels incl. reef/chess/chips node-
-  identity adoption, config-handover hardening across all clients, sourcemap
-  exclusion + size gate, release signing, replace `mobile-app`.
-- **D — desktop** (D3) and **E — the on-chain dial** (D2), each with its own
-  spec and, for E, its own threat model.
+  identity adoption, **config-handover hardening across all clients** (exact
+  origin, `event.source`, first-wins — a prerequisite for anything dialed),
+  sourcemap exclusion + size gate, release signing, replace `mobile-app`.
+- **D — the dial.** Signed registry format + publisher keys baked in;
+  registry reader with revocation and sequence numbers; per-channel origins;
+  capability tokens + the purpose-scoped signing RPC replacing `sign_message`;
+  origin-bound handshake delivery; foreground-only credentials with revoke and
+  indicator; shell-chrome consent; Interference on new-to-chain entries.
+  **Exit gate: the hostile test channel (§2.4).** This is the phase that
+  turns Surf from an app into an entry to the network — and the one that
+  needs its own threat model reviewed before a single dialed channel mounts.
+- **E — desktop**, post-v1, when the dial is proven on one platform.
 
 ## 6. Error handling
 
@@ -430,56 +479,29 @@ keeps the node running.
 - Trench on the phone dial: include, desktop-only, or v2 channel?
 - Exact `get_space_health` shape (what `compute.rs` already yields vs what the
   Chart needs).
-- Dwell-engage tuning: N seconds, K items, weight, and whether the operator
-  wants it at all (D1).
+- Dwell-engage tuning: N seconds, K items, weight.
 - **Answered:** never import a launcher identity into a no-password store
   unless that store is keystore-backed (§1).
 
-## 10. Decisions the operator must make
+## 10. Decisions on record (2026-07-28)
 
-**D1 — Sponsorship, and what a fresh Surf identity may do.** *(blocker)*
-Rev 1 assumed Surf's first run reuses "the existing N2 auto-sponsor flow" to
-make a new identity able to act. It cannot: **every standing mainnet offer is
-space-scoped** (`tools/swim-bot/game-offer-keeper.mjs` sets `space_scope`;
-reef/chess/chips all pin `requiredSpaceId`), a scoped grant is useless outside
-its space (`src/sponsorship/storage.rs` `is_authorized_in_space`), and the node
-**hard-refuses to mint an unscoped auto-approve offer at all** —
-`src/rpc/methods.rs` ~17447 and `src/sponsorship/offer_store.rs` ~87-95:
-*"auto_approve requires space_scope… grants unrestricted network write
-access."* That guard is the 2026-07-16 faucet-off decision in code form.
-So "watching is feeding," flares, and posting are all dead for a new identity
-until one of:
+**Capability follows sponsorship — not an open question.** An identity does
+what its sponsorship allows; that model is already defined and Surf inherits
+it unchanged. The dial therefore has channels a given viewer can feed and
+channels they can only watch, expressed in-world as *licensed to broadcast* /
+*receive-only* (§2.5). No unscoped auto-approve offer is sought — the node
+refuses to mint one, and that guard is the faucet-off decision in code.
+Where a channel's space wants fresh identities to act, that space gets a
+scoped offer through the existing keeper, exactly as reef/chess/chips do.
 
-- **(a) Space-scoped offer per baked channel space** — keeps the guard intact;
-  the offer-keeper mints one offer per Surf channel space. New work, no
-  security regression. *Recommended.* Cost: general posting to arbitrary
-  user-chosen spaces still needs real sponsorship.
-- **(b) Mint a global unscoped auto-approve offer** — requires reverting a
-  deliberate node guard; hands every fresh install unrestricted network write.
-  Reopens exactly what faucet-off closed.
-- **(c) Watch-first** — v1 Surf is a receiver; acting requires an explicit
-  sponsorship step the user initiates. Cheapest, but guts "watching is
-  feeding" for v1.
+**The on-chain dial ships.** Not deferred, not a v2 appendix. The lineup grows
+without an app release, because that is what makes Surf an entry to the
+network rather than a launcher with a nicer coat of paint. The price is that
+§2.4's gates are v1 scope: capability tokens instead of the cookie, a
+purpose-scoped signing RPC instead of `sign_message`, a signed registry with
+baked publisher keys, per-channel origins, origin-bound handshake delivery,
+foreground-only credentials, shell-chrome consent — and a hostile test channel
+that must fail to break out before any dialed channel is ever mounted (§5 D).
 
-**D2 — Does v1 admit non-baked channels at all?** *(blocker, see §2.4)*
-The security review found that granting a remote channel "the standard config"
-is equivalent to **handing over the identity**: the RPC cookie has no method
-scoping, and `sign_message` (`src/rpc/methods.rs` ~8497) signs caller-chosen
-raw bytes with the node key — no domain separation — so a subscribed channel
-can forge RPC signature-auth against *any* node and author 466-byte Action
-preimages that never pass your node's blocklist. Meanwhile the whole
-third-party tier exists for publishers who **do not exist yet** (the operator
-curates everything today). Recommendation: **v1 is baked-only**; the entire
-non-baked tier — on-chain registry, `url:`/`hash:` sources, sandbox, subscribe
-— moves to v2 as one workstream with its own threat model (§2.4, §5). The
-hybrid *architecture* chosen up front stands; only its second half is
-sequenced later, and §3.6's Interference moment survives intact without it.
-
-**D3 — Desktop in v1, or Android-only?** *(scope)*
-Rev 1's Phase A built two node hosts on two platforms before any of the soul
-shipped, re-proving plumbing that already works in `mobile-app/` and
-`desktop-app/`, and tuning a 300ms transition through the slowest possible
-loop (cargo cross-compile → gradle → adb, with `tauri android dev` live-reload
-broken). Recommendation: **Android-only for v1**, desktop after (§5). The
-launcher already serves desktop, and deferring it also moots §9's last
-question.
+**Android only.** Desktop is post-v1; the launcher continues to serve it. The
+set gets built once, on the platform where flipping channels belongs.
