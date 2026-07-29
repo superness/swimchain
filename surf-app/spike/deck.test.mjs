@@ -49,7 +49,7 @@ test('pinned channels are never LRU-evicted', () => {
   assert.deepEqual(new Set(d.warm), new Set(['feed', 'wiki', 'chat']));
 });
 
-test('current channel is never evicted even at warmSize 2 with a pin', () => {
+test('pinned survives eviction pressure at warmSize 2', () => {
   const d = new Deck(IDS, 2);
   d.tune('feed'); d.pin('feed');
   d.tune('forum');
@@ -76,4 +76,26 @@ test('forced evict removes a warm channel but refuses the current one', () => {
   d.evict('feed');
   assert.deepEqual(d.warm, ['forum']);
   assert.throws(() => d.evict('forum'), /current/);
+});
+
+test('eviction never selects the channel being tuned', () => {
+  // Verify the current-protection invariant: after any sequence of tunes,
+  // the current channel is never in the evicted list, and always in the warm set.
+  // Runs ~20 scripted tunes across all 5 ids at warmSize 2 and 3, testing that
+  // the cid !== this.#current filter is load-bearing (even if only defensively).
+  const testWarmSizes = [2, 3];
+  for (const warmSize of testWarmSizes) {
+    const d = new Deck(IDS, warmSize);
+    // Scripted tune sequence: cycle through all ids multiple times
+    const tuneSequence = [...IDS, ...IDS, 'feed', 'chat', 'wiki', 'forum', 'reef', 'feed'];
+    for (const id of tuneSequence) {
+      const r = d.tune(id);
+      // Invariant 1: evicted list never contains the channel just tuned (current)
+      assert.ok(!r.evicted.includes(r.current),
+        `evicted should not contain current; got evicted=[${r.evicted}] current=${r.current} warmSize=${warmSize}`);
+      // Invariant 2: current is always in the warm set
+      assert.ok(d.warm.includes(d.current),
+        `warm set must include current; warm=[${d.warm}] current=${d.current} warmSize=${warmSize}`);
+    }
+  }
 });

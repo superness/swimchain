@@ -26,6 +26,10 @@ export class Deck {
     const evicted = [];
     while (this.#warm.size > this.#warmSize) {
       const candidates = [...this.#warm.entries()]
+        // Note: cid !== this.#current is currently redundant by construction
+        // (current always has the max tick and will never be LRU min), but this
+        // filter is defense-in-depth — it becomes load-bearing if tick assignment
+        // and eviction are ever reordered in the future.
         .filter(([cid]) => cid !== this.#current && cid !== this.#pinned)
         .sort((a, b) => a[1] - b[1]);
       if (candidates.length === 0) break; // warm = {current, pinned}; nothing evictable
