@@ -1,286 +1,485 @@
 # Surf — design spec
 
 **Date:** 2026-07-28
-**Status:** Draft for operator review
-**Codename/name:** **Surf** (decided)
+**Status:** Draft for operator review — **rev 2**, rewritten against a 28-agent
+adversarial review (22 confirmed findings, 7 of them blockers). Rev 1 is in
+git history; every change below is traceable to a verified finding.
+**Name:** **Surf** (decided)
+
+> Read §1 for what we're building. Three operator decisions are blocking;
+> they're at the back, in §10, where decisions belong.
 
 ## 1. What it is
 
-Surf is a phone + desktop app that replaces the "app launcher" model with a
-**television**: you open it and you are on a live channel, and you flip.
-Channels are the network's apps — the social feed, the games (Reef, chess,
-Chips & Dip, The Shoal, The Trench), the wiki, forums, chat — and, as the
-network grows, news, an inbox, and eventually streamed video, all arriving as
-channels on the dial rather than as app-store releases.
+**Somewhere out there, it's already on.**
 
-**The soul (one sentence):** *Somewhere out there, it's already on.*
+TikTok and Netflix are vending machines — you arrive, you demand, they
+dispense. Television was different, and everyone over thirty remembers why: TV
+was a place that existed *without you*. You didn't summon the broadcast; you
+joined it in progress. That's the loneliness-killer of late-night TV — not the
+content, the *company*. The knowledge that the signal was there before you
+turned the set on and will be there after.
 
-Two truths make the TV metaphor real here and fake everywhere else:
+Swimchain is the only network on earth where that can be **true instead of
+simulated**. Your node synced while you slept. The chain grew. The school
+moved. When you open Surf at 11pm you are not launching software — you are
+surfacing into a sea that has been alive all day without your permission or
+your attention. Every other app fakes liveness with a spinner and a fetch.
+Here the flip lands on something that was actually happening.
 
-1. **The broadcast continues without you.** Your node syncs whether or not a
-   channel's UI is mounted. Flipping lands on something that was genuinely
-   happening — not a fetch-on-open simulation of liveness.
-2. **Watching is feeding.** Content on Swimchain decays without engagement.
-   Tuning in, lingering, and flaring a channel are real engagement actions
-   that literally keep it alive. The viewer is life support.
+And there's a second truth under the first, and it's the one that beats
+Netflix at 11pm: **on this network, watching is feeding.** Content decays.
+Attention is oxygen. When you tune in you are not a viewership statistic — you
+are life support. Old TV asked nothing of you and gave you nothing back. This
+set knows you're there, and the channel *lives longer because you stayed.* No
+medium in history has been able to say that honestly.
 
-Product rules that follow from the soul:
+The mood, which every decision below serves: a warm rectangle of light in a
+dark room, tuned to an ocean that doesn't need you but is glad you came.
 
-- **No home screen, ever.** The app opens onto a live channel, always.
+### What it is, concretely
+
+Surf replaces the launcher grid with a **television**. You open it and you are
+on a live channel, and you flip. Channels are the network's apps — the social
+feed, the games, the wiki, forums, chat — and, as the network grows, news, an
+inbox, and eventually streamed video.
+
+### How true the two truths actually are
+
+The review tested both claims against the code. Here is exactly how far each
+one holds, because a product built on a lie about its own foundation is worse
+than one built on less:
+
+1. **The broadcast continues without you.** *True for the chain, with a
+   caveat.* Your node keeps syncing blocks and action gossip whether or not a
+   channel's UI is mounted. It does **not** fetch content *bodies* on its own
+   — `followed_spaces` buys cache retention only (`src/storage/cache.rs`;
+   zero uses in `src/sync/`, `src/node/`, `src/content/`), and content GETs
+   fire only for hashes explicitly requested (`src/node/router/router.rs`
+   ~1031). Freshness therefore needs a driver, which Surf provides while
+   running (§2.3). Rev 1's claim that "followed spaces keep them synced while
+   the set is off" was false and is deleted.
+2. **Watching is feeding.** *Only if we build the mechanic.* Content decays
+   without engagement, but the only viewer path that touches decay is
+   `submit_engagement` (`src/rpc/methods.rs` ~3827), which needs a specific
+   content hash, PoW over it, and a signature. Rev 1 asserted that tuning and
+   lingering feed the network; nothing in it did. §3.3 now specifies
+   **dwell-engage** as a real mechanic. If the operator rejects auto-engage
+   (D1 makes it sponsorship-dependent), the soul sentence must weaken honestly
+   to *"flaring feeds; tuning caches"* — the spec may not keep the claim
+   without the mechanic.
+
+### Product rules
+
+- **No home screen, ever.** The app opens onto a live channel — or, on a cold
+  first run, onto honest static that *is* the programming (§3.1).
 - **Nothing stands between the viewer and the sea.** No interstitials, no
-  loading cards; the only permitted "between" is the (meaningful) static seam.
-- **No password wall.** First power-on silently creates the node identity
-  (mobile-app's current behavior, extended to desktop). The seed is encrypted
-  at rest as today; device-level protection (Android keystore / OS user auth)
-  is a later hardening, not a v1 gate. *(Flagged for operator: this diverges
-  from desktop-launcher's password unlock.)*
+  loading cards. **One carved exception:** any consent dialog that grants
+  capability is shell chrome (v2 only; see §2.4).
+- **No password wall.** First power-on silently creates the node identity.
+  **Honest statement of what that protects:** in the code being copied, the
+  decryption passphrase is written in cleartext next to the encrypted seed
+  (`mobile-app/src-tauri/src/node_host.rs` — `identity.pass` beside
+  `identity.enc`), and the RPC cookie's `0600` mode is inside `#[cfg(unix)]`
+  (`src/rpc/auth.rs`), so on Windows it inherits directory ACLs. **v1 protects
+  the seed at filesystem-permission level only.** That is defensible on
+  Android app-private storage and *not* on a shared desktop — one more reason
+  for D3. Requirement: OS-keystore wrapping of the passphrase (Android
+  Keystore; DPAPI/Keychain when desktop lands) is a **v1 requirement on any
+  platform where the data dir is not app-private**, not a later hardening.
 
-Surf is a **new app** (`surf-app/`), not a rewrite of `mobile-app/` or
-`desktop-app/` in place. It replaces `mobile-app` as the shipped Android app
-when it reaches parity (feed channel works end-to-end); the desktop launcher
-continues to exist for the "node homestead / many windows" audience.
+Surf is a **new app** (`surf-app/`), not an in-place rewrite. It replaces
+`mobile-app` as the shipped Android app at parity; the desktop launcher
+continues to exist.
 
 ## 2. Architecture
 
-One Tauri v2 project, `surf-app/`, building both an Android APK and a Windows
-(later mac/Linux) desktop binary.
+### 2.1 Node host
 
-### 2.1 Node host — two backends, one interface
+Android: in-process node, exactly `mobile-app`'s model — lib link, autostart,
+Kotlin `NodeForegroundService`, loopback-only cleartext, `ring` rustls backend.
+Mainnet hardcoded; the `network.magic` guard applies unchanged.
 
-A Rust trait (`NodeHost`) with the operations the shell needs:
-`status()`, `rpc_endpoint()`, `rpc_auth()`, `node_address()`, plus
-lifecycle (`start`, `stop`).
+Desktop (post-v1 per D3): `sw.exe` sidecar, `desktop-app`'s model — free
+`(P2P, RPC)` port-pair scan, cookie auth, its own `swimchain-surf` data dir so
+it never fights the launcher's sled lock.
 
-- **Android:** in-process node, exactly `mobile-app`'s model — lib link,
-  autostart, Kotlin `NodeForegroundService` keeps it alive in the background,
-  loopback-only cleartext, rustls `ring` backend for Android targets.
-  Port: the mobile defaults.
-- **Desktop:** `sw.exe` sidecar, exactly `desktop-app`'s model — spawn with
-  free-port-pair scan (`find_free_port_pair` pattern), cookie auth, stderr to
-  `node.log`. Surf uses **its own data dir** (`swimchain-surf` app id) so it
-  never fights the launcher's node for the sled lock; the port scan already
-  handles coexistence.
-- **Network:** Mainnet, hardcoded (like `mobile-app` today). The
-  `network.magic` data guard applies as-is.
+**Not a trait yet.** With one backend, `NodeHost` is a struct. The trait is
+introduced when the second backend actually arrives — rev 1's
+trait-then-two-backends ordering was the single largest source of pre-soul
+work.
 
-The dial UI above the trait never knows which backend it runs on.
+### 2.2 The deck
 
-### 2.2 The deck — warm channel management
+Channels are iframes speaking the existing `SWIMCHAIN_RPC_CONFIG` postMessage
+contract (endpoint + cookie auth + `nodeAddress`). **Correction to rev 1:**
+"a client that speaks it today is a channel with zero changes" holds *only for
+same-origin baked bundles*. It is false cross-origin (§2.4) and it is unsafe
+as-is even same-origin (below).
 
-The shell renders channels as iframes speaking the **existing
-`SWIMCHAIN_RPC_CONFIG` postMessage contract** (endpoint + cookie auth +
-`nodeAddress`), i.e. the same contract `desktop-app` ClientFrame,
-`mobile-app`, and app-shell already use. A client that speaks it today is a
-channel with **zero changes**.
+**Warm set.** N most-recently-watched channels stay mounted; LRU eviction; one
+pinnable. **N is a memory bet, not a freshness knob:** on Android every iframe
+shares one WebView renderer process, so three mounted React apps sum into a
+single process Android kills *as a unit* — losing the whole deck, which LRU
+cannot prevent. N=3 is a hypothesis to be measured in the A0 spike (§5), with
+**N=2 (current + last) as the stated fallback**.
 
-- **Warm set:** N most-recently-watched channels stay mounted (N=3 Android,
-  N=5 desktop; tunable). LRU eviction. One channel is pinnable ("always
-  warm").
-- **Flip:** if target is warm → shown instantly; if cold → mounted, config
-  posted, shown when its first paint lands (the static seam covers mount
-  time, but is never artificially extended).
-- **Hidden channels** receive `SWIMCHAIN_CHANNEL_HIDDEN` / `_VISIBLE`
-  postMessages so well-behaved games pause render loops. Advisory; ignoring
-  it costs battery until eviction.
-- **Known risk (memory: hash-wasm event-loop starvation):** clients that mine
-  PoW must keep it in Workers; a synchronous await-hash loop in a warm hidden
-  channel starves its own event loop. Channel-side fix, but the deck must
-  survive an unresponsive iframe (eviction works regardless).
+Hidden channels receive `SWIMCHAIN_CHANNEL_HIDDEN` / `_VISIBLE` (advisory;
+ignoring it costs battery until eviction). Clients that mine PoW must do it in
+Workers — a synchronous await-hash loop starves its own event loop.
 
-### 2.3 Liveness is driven, not assumed
+**Readiness signal (new).** Rev 1 said a cold channel is "shown when its first
+paint lands" — an event the shell cannot observe; no such signal exists in the
+contract. Specified: a channel posts **`SWIMCHAIN_CHANNEL_READY`** after first
+meaningful render. Fallback for channels that don't: iframe `load` + one
+`requestAnimationFrame`. Hard timeout → the SIGNAL LOST card (§6), **never a
+blank frame**.
 
-DESIGN LAW (memory): nodes fetch content on demand only — keeping a space
-alive needs a driver. **Surf's tuner is that driver.** Tuning a channel:
+**Config-handover hardening (v1 prerequisite).** Today's shared client hook
+accepts `SWIMCHAIN_RPC_CONFIG` from any origin *starting with* one of four
+allowlisted strings, never checks `event.source`, and last-writer-wins
+(`feed-client/src/hooks/useParentRpcConfig.ts` and its copies in
+`swimchain-frontend`, `search-client`, `shoal-client`, plus `forum`, `wiki`,
+`chat`, and `app-shell/web/embed.js`). Any frame can therefore repoint a
+sibling's `rpcEndpoint` at an attacker's server — and the sibling will send
+the real cookie there — or spoof `nodeAddress` so the user acts under a false
+identity. Required changes, in every client listed, **before any non-baked
+channel is ever mounted**:
 
-1. adds its space(s) to `followed_spaces` (cache retention),
-2. fires `request_content` for recent content in those spaces,
-3. counts a real engagement signal (see Dead Air / flare).
+1. exact-origin equality (no prefix matching), and the allowlist must include
+   the real Tauri v2 origin (`http(s)://tauri.localhost`), which today's list
+   would reject;
+2. `event.source === window.parent`;
+3. **first-wins** — later configs ignored.
 
-This is what makes "it's already on" true for the channels you actually
-watch: the foreground service + followed spaces keep them synced while the
-set is off. Reads must honor **chain + mempool** (design law): a flare or
-post shows as real the moment it's in the mempool, never "waiting for a
-block."
+**Inbound contract (new section — rev 1 defined only outbound).** The shell
+enumerates every message type it accepts; for each, it resolves `event.source`
+to a specific mounted channel and requires `event.origin` to equal that
+channel's declared origin, dropping everything else. This matters because the
+two ancestors disagree: `desktop-app` gates external opens on origin and
+`^https?://`, while `mobile-app` checks **nothing** and forwards any string to
+the Android opener — so a hidden frame could fire `intent://`, `market://`,
+`tel:`, `file://` invisibly. Surf: **https-only, re-validated in Rust against
+a scheme allowlist, foreground channel only.** Surf also ships a real **CSP**
+(`frame-src` limited to approved origins, no top-level navigation from
+frames); `mobile-app`'s `"csp": null` is not inherited.
 
-### 2.4 The lineup — baked core + on-chain dial (hybrid)
+**Origin model (new).** Today every embedded client is same-origin with the
+shell and framed with `allow-same-origin`, so channels share storage and can
+reach `window.parent` — tolerable while all bundles are first-party, fatal
+otherwise. Rule: **the shell's origin never hosts non-baked channel code.**
+Frames carry `allow=""` (no camera/mic/geolocation riding the app's OS grants)
+and no `allow-top-navigation`. Per-channel origin isolation is a **stated
+prerequisite** of the `hash:` source kind, not a v2 implementation detail.
 
-**Baked (v1):** the existing clients' dist bundles ship in the binary —
-feed, wiki, forum, chat, reef, chess, chips, shoal, trench(*). On Android the
-bundles embed in the `.so` at cargo-build time (mobile-app's model and its
-known gotcha: frontend changes need a cargo rebuild).
+### 2.3 Liveness is driven
 
-(*) Trench's UI is `trench-client/ui` and needs `TAURI_ENV_PLATFORM` set at
-build (memory: grey-screen incident); whether Trench is a sensible *phone*
-channel is decided at plan time — it may be desktop-only in v1.
+DESIGN LAW: nodes fetch on demand only. **Surf's tuner is that driver.**
+Tuning a channel: (1) adds its space(s) to `followed_spaces` (cache retention
+only — that is all it does), (2) fires `request_content` for recent content,
+(3) starts the dwell-engage timer (§3.3). While the app is foregrounded, a
+periodic driver refreshes moored channels. There is no background content
+driver today; if "already on" must hold for content bodies while the app is
+closed, that is a **separate node-side follow-and-fetch work item**, named
+here and not assumed.
 
-**On-chain dial (v1 = registry, v2 = bundles):** the shell reads a **channel
-registry** from a curated space (same allowlist pattern as /browse). Each
-entry: channel name, category, depth hint, icon, and a *source*:
+Reads honor **chain + mempool** — a flare or post is real the moment it is in
+the mempool, never "waiting for a block."
 
-- `baked:<id>` — points at a bundled client,
-- `url:<https://…>` — hosted client (swimchain.io already hosts reef, chess,
-  browse) — the v1 path for channels appearing without an app release,
-- `hash:<content-hash>` — bundle fetched through the node's own content
-  store — **v2**, no web server involved.
+### 2.4 The lineup
 
-**Trust line:** baked channels get full RPC config. `url:`/`hash:` channels
-render **sandboxed** — no RPC auth injected — until the viewer explicitly
-**subscribes** (a deliberate act, framed diegetically), after which they get
-the standard config. Subscription state is local.
+**v1 (pending D2): baked only.** The existing clients' dist bundles ship in
+the binary. Build requirements, measured rather than assumed:
 
-### 2.5 Identity — one self across every channel
+- **Sourcemaps must be excluded from the bake.** All client vite configs set
+  `sourcemap: true`, and the *currently shipped* mobile APK already embeds a
+  2.45 MB feed sourcemap. Across nine dists, maps are ~17 MB of ~32 MB on
+  disk. Tauri brotli-compresses embedded assets, so a maps-stripped
+  nine-channel APK lands ~21 MB (vs ~30 MB with maps) against today's 18.3 MB
+  single-client APK — maps still dominate compressed payload ~3.5:1, so
+  stripping them is the single biggest win.
+- **CI size gate** (release APK ≤ 40 MB per ABI) and **per-ABI APKs** (arm64
+  for sideload), never universal.
+- The `.so` embeds assets at cargo-build time, so with nine baked channels a
+  one-line CSS fix in any client costs a full cross-compile + gradle + resign
+  + sideload redistribution. That tax is the argument for the v2 tier, not
+  for skipping it.
 
-All channels share the node's identity via the `nodeAddress` handover: your
-name, reputation, sponsorship, and game standing are the same everywhere on
-the dial. Work items this implies (plan-time inventory):
+**v2 — the on-chain dial**, as one workstream with its own threat model:
+registry, `url:`/`hash:` sources, per-channel origins, capability tokens,
+subscribe. Its non-negotiable requirements, all from confirmed findings:
 
-- Every baked client must support parent-RPC-config + node-identity mode
-  (feed/forum/chat/wiki/search already do; reef/chess/chips were built
-  browser-first and must adopt the shared `useParentRpcConfig` /
-  `useNodeIdentity` hooks from `swimchain-react` — verify per client).
-- **Sponsorship:** a freshly minted identity can't act on mainnet until
-  sponsored. Surf's first power-on runs the existing N2 game-onboarding
-  auto-sponsor flow (standing genesis offer + proxy allowlist) in the
-  background during the phosphor bloom. If sponsorship is still pending when
-  the user first tries to *act*, the UI says so diegetically ("your signal is
-  still being picked up") rather than failing.
-- Seed never leaves the node; channels sign via `sign_message` RPC (desktop
-  parity model).
+- **Never the cookie.** A channel grant is a shell-minted **capability token**
+  with a registry-declared method allowlist, session expiry, and shell-side
+  revocation. `sign_message` is **never** in any channel grant — it is an
+  unrestricted signing oracle; it must be replaced by a purpose-scoped signing
+  RPC that domain-separates by verb and space.
+- **Signed registry, not a curated space id.** `/browse`'s allowlist is
+  server-side env config on a trusted gateway; on-device a space id confers
+  nothing, and any sponsored identity can post into a public space (there is
+  no write-ACL). Entries must be signed by publisher keys **baked into the
+  binary** (the `genesis_list.rs` precedent), with revocation entries and
+  monotonic sequence numbers so a revoked entry cannot be replayed.
+- **Grants bind to (channel id, exact origin, publisher key, method set,
+  granted-at).** Any change revokes and requires re-consent; the shell
+  revalidates on every mount. Otherwise repointing a registry `url:` silently
+  transfers every existing subscriber's grant.
+- **Delivery is origin-bound and handshake-gated.** Config goes only to the
+  exact scheme+host+port in the registry entry — never `'*'`, never a
+  prefix-derived value — after the channel posts `SWIMCHAIN_CLIENT_READY` and
+  the shell checks `event.source` and `event.origin`. The rev-1 retry loop
+  (re-post on every `load`, 1s × 10s) must go: it turns any navigation or 302
+  into a credential handoff at the new origin.
+- **Credentials are foreground-only.** On hide the shell revokes; a hidden
+  channel's calls fail. Pinning may keep a channel mounted, never
+  credentialed. A shell-drawn, channel-uncoverable indicator shows whenever
+  any channel holds auth, with one-tap revoke.
+- **Consent is shell chrome** — drawn over a blurred, `pointer-events:none`
+  channel surface, showing literal origin, publisher key and exact method set,
+  on a gesture distinct from tuning, with a minimum display time before input
+  is accepted. It may not be reachable from the passive Interference flow
+  without a second confirmation. Otherwise the channel can paint a convincing
+  fake of the sign-on card and harvest the real gesture.
+- **Exit criterion:** a purpose-built hostile test channel proves it cannot
+  inject config into a sibling, cannot reach the shell's IPC, and cannot open
+  a non-https scheme.
+
+### 2.5 Identity
+
+All channels share the node identity via `nodeAddress`, so name, reputation
+and game standing are the same everywhere. Implied work:
+
+- reef, chess and chips were built browser-first and contain **zero**
+  `SWIMCHAIN_RPC_CONFIG` handling — adopting node identity is real per-client
+  work, not a config flag.
+- Sponsorship is **D1** and blocks the act-loop, not the watch-loop.
+- Seed never leaves the node. Channels sign via RPC — and per §2.4 the
+  purpose-scoped replacement for `sign_message` is required before any
+  non-baked channel signs anything.
 
 ## 3. The experience
 
-### 3.1 Power-On
+### 3.1 Power-On, including the honest cold start
 
-No splash, no menu. Black screen → a phosphor-green point blooms from center
-(~700ms CSS over the already-mounted last channel) with a low hull-groan
-swell → you are on your **last channel, mid-broadcast, scrolled to now**.
-First-ever launch lands on the feed channel while identity mint + sponsorship
-run behind the bloom.
+Warm path: black → a phosphor-green point blooms (~700ms) over the
+already-mounted last channel → you are mid-broadcast, scrolled to now.
+
+**First-ever launch is different and rev 1 lied about it.** A fresh mainnet
+node has no peers and no content; the feed client would render its
+empty-state card (`feed-client/src/pages/Feed.tsx`) — an app screen, the exact
+thing §1 forbids. Specified: the bloom resolves into **first signal
+acquisition** — the honest static of §3.2, whose flecks and block-hash ghosts
+are driven by live node numbers, so the wait is watchably true and its
+character visibly changes as peers connect. The set locks onto the feed
+channel when N real items have landed locally. Partial content renders as it
+arrives; an empty-state card is never shown. A default follow-set bootstraps
+the first tune so acquisition has a target.
 
 ### 3.2 The Flip
 
-Vertical swipe (phone) / Up-Down keys or wheel (desktop) = next/prev channel
-in dial order. Between channels, ≤300ms of **honest static**: a canvas shader
-whose snow is driven by live node numbers — fleck density from peer/gossip
-activity, a ghost of the latest block hash drifting through, particle drift
-from mempool size. Busy network nights boil; quiet nights fall like marine
-snow. Sound: soft burble-hiss, sonar ping on lock.
+Vertical swipe (phone) = next/prev in dial order. Between channels, **honest
+static**: a canvas shader driven by live node numbers — fleck density from
+peer/gossip activity, a ghost of the latest block hash, drift from mempool
+size. Sound: burble-hiss, sonar ping on lock.
 
-**No interstitial card.** The channel number + name burn briefly in a corner
-**overlaying the live picture** (fat 1978 tuner type, slight underwater
-refraction), then fade.
+**Seam rule (corrected).** The static persists **exactly until the incoming
+channel's `SWIMCHAIN_CHANNEL_READY`** — never shorter, so an unpainted frame
+is never exposed; never artificially longer. ≤300ms is the *warm-flip target*;
+on a cold flip the static duration **is** the honest mount time, up to the 2s
+gate, then SIGNAL LOST. Rev 1's flat "≤300ms" against a 2s cold gate left up
+to 1.7s of blank frame undefined.
 
-### 3.3 Dead Air
+No interstitial card: channel number and name burn over the live picture in
+fat 1978 tuner type, slightly refracted, then fade.
 
-Channels whose content has decayed are **not hidden** — you flip through
-them. Test card: SMPTE bars re-colored as bleached coral, channel name, and:
+### 3.3 Dead Air, the flare, and dwell-engage
 
-> LAST SIGNAL: 6 DAYS AGO. THIS CHANNEL IS DYING.
+Decayed channels are not hidden — you flip through them. Test card: bleached
+coral SMPTE bars, channel name, `LAST SIGNAL: 6 DAYS AGO. THIS CHANNEL IS
+DYING.`
 
-One action: **Send up a flare** — a real engagement action (existing engage
-verb, real PoW, submitted to mempool). Staying tuned + flaring visibly
-re-saturates the bars over time. Data source: `space_health` metrics /
-engagement recency via RPC (exact RPC inventory at plan time; if a compact
-"channel health" aggregate is missing, add one node-side).
+**Data source (corrected).** No space-health RPC exists — `src/space_health/`
+feeds only the notification service and a P2P query; the dispatch table has no
+entry. **Phase B includes a node-side `get_space_health` RPC** exposing
+`compute.rs` metrics plus last-engagement recency per space. This works for
+channels you have *never tuned*: engagement records ride the globally-synced
+consensus chain (`ContentBlock.actions` carries `Engage`; block data is stored
+unfiltered by follows), so recency measures the channel, not your node's
+ignorance — a claim the review specifically tested and upheld.
+
+**Flare, with a defined target.** `request_content` for the space's most
+recent surviving item, engage it on arrival. Fallback when nothing is
+retrievable: the card says the channel is beyond flares. (Rev 1 left the
+flare's target undefined on exactly the channels where it matters.)
+
+**Dwell-engage — the mechanic behind "watching is feeding."** After N seconds
+tuned, the shell mines (in a Worker) and submits low-weight `submit_engagement`
+actions against the most-recent K items actually rendered, rate-limited to
+once per content per 24h, honoring chain+mempool. Gated by D1. If D1 lands as
+(c), §1's soul sentence weakens as stated there.
 
 ### 3.4 The Chart (guide)
 
-Pull down from any channel → **The Chart**: a single vertical water column,
-descending from sunlit surface to trench black. Channels sit at depths by
-kind (news/feed near surface; forums/chat mid-water; games at the reef;
-The Trench in the black; Channel 0 below everything). Scrolling down is
-descending; water darkens; channel numbers ascend with depth.
+Pull down → a vertical water column from sunlit surface to trench black.
+Channels sit at depths by kind; scrolling down is descending.
 
-- **Brightness is truth:** each channel's glow = its real engagement health
-  (same data as Dead Air). The guide is a rescue map — you can *see* what
-  dies without viewers tonight.
-- **Warmth is memory:** warm-deck channels carry phosphor afterglow that
-  fades over minutes.
-- **Mooring:** favoriting = mooring a buoy at a depth; moored channels are
-  one flick away. Tap any light → drop in, in progress, always.
+- **Brightness is truth:** glow = real engagement health (same RPC as §3.3),
+  making the guide a rescue map.
+- **Warmth is memory:** warm-deck channels carry fading phosphor afterglow.
+
+**Numbering (decided here, not deferred).** One canonical sequence: dial order
+= Chart order = depth order. Numbers are **sparse and fixed per band** —
+surface 2–19, mid-water 20–49, reef 50–79, trench 80–98 — assigned at
+registry-entry time and **never renumbered**, so a new signal never changes
+what "CH 7" means; gaps are period-correct for a real dial. Within-band order
+is registry timestamp. **Channel 0 is the spec's one explicit exception**,
+sold diegetically as *below the numbered water*. Mooring is a **distinct
+horizontal flick** cycling moored buoys only, leaving the vertical swipe as
+the immutable physical dial. (§9's numbering question is struck — rev 1 both
+decided and deferred it.)
 
 ### 3.5 Night Swim & Channel 0
 
-After local midnight the set drops into deep-water dress: darker palette,
-slower static, quieter pings. **Channel 0 surfaces** — a lean-back ambient
-station assembled client-side: posts from followed/allowlisted spaces read
-out slowly in large type, a live Reef board panning, chain telemetry as
-bioluminescence. Zero interaction. This is the standing timeslot where
-streamed video eventually lives; text and game-state are its first
-programming. (Channel 0 exists at all hours on the dial's far end; it only
-*auto-surfaces* at night.)
+After local midnight: darker palette, slower static, quieter pings, and
+**Channel 0** surfaces — a lean-back station assembled client-side from posts,
+a panning Reef board, and chain telemetry as bioluminescence. On a fresh
+install its source set is empty, so it inherits §3.1's acquisition state
+rather than rendering blank. This is the standing timeslot where streamed
+video eventually lives.
 
 ### 3.6 Interference
 
-New registry entries are never announced with badges. While flipping, the
-static occasionally resolves into a half-tuned, desaturated ghost of the new
-channel: "NEW SIGNAL DETECTED — hold to tune." Holding locks it into a
-station sign-on card (FIRST BROADCAST + name + born-on date) and offers the
-subscribe act if it's a `url:`/`hash:` channel.
+**Retargeted so it does not depend on the v2 registry:** the ghost-signal
+fires for channels the viewer has never tuned — **new-to-you, not
+new-to-chain** — preserving the moment with zero new machinery. Holding locks
+it in on a sign-on card. When the v2 registry lands, unsigned or unknown-key
+entries **never** auto-surface, and chain confirmation plus a signed publisher
+key are required before any entry may appear here.
 
 ### 3.7 Power-Off
 
-On close/background: picture collapses to the CRT white dot; the dot shrinks
-to a steady lantern-point with the line *"Still broadcasting."* — because the
-node (foreground service on Android) genuinely keeps running. ~10 lines of
-CSS; teaches the deepest technical truth on every exit.
+Picture collapses to the CRT white dot; the dot shrinks to a steady
+lantern-point: *"Still broadcasting."* — true, because the foreground service
+keeps the node running.
 
-## 4. What Surf is not (v1 scope fences)
+## 4. What Surf is not (v1 fences)
 
-- **No video/live TV/movies.** The Channel 0 timeslot is built; its video
-  programming is not. Streaming over content chunks is its own future
-  workstream.
-- **No email/inbox channel.** DMs/private-space primitives exist; the inbox
-  channel is a future registry entry, not v1.
-- **No `hash:` bundle loading** (v2). V1 on-chain dial = registry + `url:`
-  channels + sandbox/subscribe.
-- **No cross-channel deep-linking** in v1 (the launcher's Phase-4 gap is not
-  inherited as a requirement; a `SWIMCHAIN_NAVIGATE` from one channel may
-  simply flip the dial if trivial, else deferred).
-- **Desktop launcher is not deleted.** Surf ships alongside it.
+- No video/live TV/movies (the Channel 0 timeslot is built; its programming
+  is not).
+- No email/inbox channel.
+- **No non-baked channels at all** (pending D2): no registry, no `url:`, no
+  `hash:`, no sandbox tier, no subscribe. **No v1 mechanism grants any channel
+  the cookie beyond the baked same-origin bundles.**
+- No cross-channel deep-linking.
+- No desktop build (pending D3); the launcher is not deleted.
 
 ## 5. Delivery phases
 
-1. **Phase A — the set:** `surf-app/` scaffold, NodeHost trait + both
-   backends, deck (warm set, flip, RPC-config handover), baked lineup with
-   feed + wiki + one game, power-on/power-off moments. *Milestone: flip
-   between live channels on a Pixel and on Windows.*
-2. **Phase B — the soul:** honest static, OSD overlay, Dead Air + flare,
-   The Chart with health glow + mooring.
-3. **Phase C — the dial:** registry space + reader, `url:` channels,
-   sandbox/subscribe, Interference, Channel 0 / Night Swim.
-4. **Phase D — the fleet:** remaining baked channels (incl. games'
-   node-identity adoption), Android release build + signing (existing
-   keystore recipe), replace `mobile-app` as the shipped APK.
+- **A0 — the spike (browser, hours not days).** The deck as a plain web page:
+  iframes, LRU, config handover, power-on/off CSS, flip feel, static shader —
+  pointed at an existing dev node. **Measures first:** renderer RSS with 3
+  warm channels incl. one game, flip-to-paint, event-loop health. Decides N.
+  Iterating here costs seconds; iterating in an APK costs ~30 minutes.
+- **A1 — the set.** Promote the deck into `surf-app/` (Android). Node host as
+  a struct. Baked lineup: feed + wiki + one game. Power-on incl. first-signal
+  acquisition, power-off. *Milestone: flip between live channels on a Pixel.*
+- **B — the soul.** Honest static, OSD overlay, `get_space_health` RPC, Dead
+  Air + flare + dwell-engage (D1), the Chart with health glow and mooring.
+- **C — the fleet.** Remaining baked channels incl. reef/chess/chips node-
+  identity adoption, config-handover hardening across all clients, sourcemap
+  exclusion + size gate, release signing, replace `mobile-app`.
+- **D — desktop** (D3) and **E — the on-chain dial** (D2), each with its own
+  spec and, for E, its own threat model.
 
-Each phase gets its own implementation plan (writing-plans skill) and is
-independently shippable.
+## 6. Error handling
 
-## 6. Error handling & testing
+- **Node fails to start:** full-screen honest static with a diegetic line and
+  a plain-text details toggle.
+- **Node started, nothing synced:** §3.1 acquisition state — never an
+  empty-state card.
+- **Channel wedges or times out:** SIGNAL LOST variant with retune; eviction
+  must work even when an iframe is unresponsive.
+- **Sponsorship pending:** explained in-world, never a raw error.
+- **Renderer killed (Android):** the whole deck dies as a unit; on relaunch,
+  restore the last channel and treat it as a warm power-on.
 
-- **Node fails to start:** the set shows full-screen honest static with a
-  diegetic diagnostic line (and a plain-text details toggle — production
-  bar, but debuggable). Desktop: tail of `node.log` behind the toggle.
-- **Channel bundle fails to load / iframe wedges:** channel shows Dead Air
-  variant "SIGNAL LOST" with retune (remount) action; deck eviction must
-  work even when an iframe is unresponsive.
-- **Sponsorship pending / RPC auth missing:** act-blocking states are
-  explained in-world, never as raw errors.
-- **Tests:** NodeHost trait unit tests per backend (regtest, like
-  mobile-app's `node_host.rs` tests); deck logic (LRU, pinning, eviction,
-  config handover) as TS unit tests; registry parsing (malformed entries,
-  unknown source kinds → skipped, never crash) unit-tested; per the
-  mutation-test rule, every load-bearing test is proven to fail against the
-  bug it names. E2E smoke per platform: power-on → flip through 3 channels →
-  post from feed channel → flare a dead channel, verified against regtest.
-- **Perf gates (phone-first):** flip-to-paint ≤300ms warm, ≤2s cold on a
-  Pixel-class device; static shader ≤1 canvas at 30fps; no event-loop
-  starvation with 3 warm channels including one game.
+## 7. Testing
 
-## 7. Open questions (non-blocking, decided at plan time)
+- Node host unit tests on regtest; deck logic (LRU, pin, evict, handover,
+  READY/timeout) as TS unit tests; **config-handover security tests** —
+  sibling frame cannot inject config, prefix-origin is rejected, non-parent
+  source is rejected, second config ignored.
+- Per the mutation-test rule, every load-bearing test must be proven to fail
+  against the bug it names.
+- E2E smoke: power-on cold → acquisition → flip 3 channels → post → flare,
+  against regtest.
 
-- Trench on the phone dial: include, desktop-only, or registry `url:` later?
-- Channel numbering scheme (stable per registry order vs. depth-derived).
-- Exact RPC inventory for health/static (what exists vs. small additions).
-- Whether Surf desktop should offer "adopt existing launcher identity"
-  (import path) or stay cleanly separate in v1.
+## 8. Perf & size gates
+
+- Flip-to-paint ≤300ms warm; ≤2s cold, then SIGNAL LOST.
+- **Memory: 3 warm channels incl. one game must hold renderer RSS under the
+  A0-measured ceiling and survive a backgrounded hour without renderer
+  death.** If not, N=2.
+- **Time-to-first-picture on a fresh install**, measured on regtest *and* a
+  real mainnet cold start.
+- Static shader: one canvas, 30fps.
+- Release APK ≤ 40 MB per ABI, sourcemaps excluded.
+
+## 9. Open questions
+
+- Trench on the phone dial: include, desktop-only, or v2 channel?
+- Exact `get_space_health` shape (what `compute.rs` already yields vs what the
+  Chart needs).
+- Dwell-engage tuning: N seconds, K items, weight, and whether the operator
+  wants it at all (D1).
+- **Answered:** never import a launcher identity into a no-password store
+  unless that store is keystore-backed (§1).
+
+## 10. Decisions the operator must make
+
+**D1 — Sponsorship, and what a fresh Surf identity may do.** *(blocker)*
+Rev 1 assumed Surf's first run reuses "the existing N2 auto-sponsor flow" to
+make a new identity able to act. It cannot: **every standing mainnet offer is
+space-scoped** (`tools/swim-bot/game-offer-keeper.mjs` sets `space_scope`;
+reef/chess/chips all pin `requiredSpaceId`), a scoped grant is useless outside
+its space (`src/sponsorship/storage.rs` `is_authorized_in_space`), and the node
+**hard-refuses to mint an unscoped auto-approve offer at all** —
+`src/rpc/methods.rs` ~17447 and `src/sponsorship/offer_store.rs` ~87-95:
+*"auto_approve requires space_scope… grants unrestricted network write
+access."* That guard is the 2026-07-16 faucet-off decision in code form.
+So "watching is feeding," flares, and posting are all dead for a new identity
+until one of:
+
+- **(a) Space-scoped offer per baked channel space** — keeps the guard intact;
+  the offer-keeper mints one offer per Surf channel space. New work, no
+  security regression. *Recommended.* Cost: general posting to arbitrary
+  user-chosen spaces still needs real sponsorship.
+- **(b) Mint a global unscoped auto-approve offer** — requires reverting a
+  deliberate node guard; hands every fresh install unrestricted network write.
+  Reopens exactly what faucet-off closed.
+- **(c) Watch-first** — v1 Surf is a receiver; acting requires an explicit
+  sponsorship step the user initiates. Cheapest, but guts "watching is
+  feeding" for v1.
+
+**D2 — Does v1 admit non-baked channels at all?** *(blocker, see §2.4)*
+The security review found that granting a remote channel "the standard config"
+is equivalent to **handing over the identity**: the RPC cookie has no method
+scoping, and `sign_message` (`src/rpc/methods.rs` ~8497) signs caller-chosen
+raw bytes with the node key — no domain separation — so a subscribed channel
+can forge RPC signature-auth against *any* node and author 466-byte Action
+preimages that never pass your node's blocklist. Meanwhile the whole
+third-party tier exists for publishers who **do not exist yet** (the operator
+curates everything today). Recommendation: **v1 is baked-only**; the entire
+non-baked tier — on-chain registry, `url:`/`hash:` sources, sandbox, subscribe
+— moves to v2 as one workstream with its own threat model (§2.4, §5). The
+hybrid *architecture* chosen up front stands; only its second half is
+sequenced later, and §3.6's Interference moment survives intact without it.
+
+**D3 — Desktop in v1, or Android-only?** *(scope)*
+Rev 1's Phase A built two node hosts on two platforms before any of the soul
+shipped, re-proving plumbing that already works in `mobile-app/` and
+`desktop-app/`, and tuning a 300ms transition through the slowest possible
+loop (cargo cross-compile → gradle → adb, with `tauri android dev` live-reload
+broken). Recommendation: **Android-only for v1**, desktop after (§5). The
+launcher already serves desktop, and deferring it also moots §9's last
+question.
