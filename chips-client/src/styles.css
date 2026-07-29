@@ -1979,14 +1979,22 @@ h1, h2, h3, p { margin: 0; }
   /* order 0: an armed vendor is waiting on YOUR next tap — nothing outranks
      it. Anchoring now belongs to `.crier`. */
   position: static; translate: none; order: 0; width: 100%;
-  display: flex; align-items: center; gap: 12px;
+  /* WRAPS. Both buttons are `flex: none` and only the text could shrink, so
+     any control that got wider pushed "never mind" clean off the right edge
+     instead of moving it to the next line — measured at 390px: clipped by
+     30px, unreachable. Wrapping makes a wider control cost a row, which is
+     recoverable, rather than a button, which is not. */
+  display: flex; flex-wrap: wrap; align-items: center; gap: 12px 12px;
   background: rgba(14, 10, 7, .95);
   border: 1px solid rgba(255, 226, 180, .35);
   border-radius: 12px; padding: 9px 14px;
   box-shadow: 0 14px 34px rgba(0, 0, 0, .55);
   animation: say-in .25s ease-out;
 }
-.feed-text { font-family: var(--chalk); font-size: 12.5px; line-height: 1.45; color: #efe0c2; }
+/* Takes the whole first row and lets the controls sit under it. `min-width: 0`
+   so a long vendor line can wrap instead of forcing the row wider than the
+   banner — the other half of why the cancel button used to be pushed out. */
+.feed-text { flex: 1 1 100%; min-width: 0; font-family: var(--chalk); font-size: 12.5px; line-height: 1.45; color: #efe0c2; }
 .feed-text strong { color: #ffd88f; }
 /* THE OTHER ANSWER, beside "never mind". Reads as a price tag rather than a
    sentence: this sits in a banner that already has two controls and a line of
@@ -2000,6 +2008,29 @@ h1, h2, h3, p { margin: 0; }
 }
 .feed-refuse b { font-weight: 400; color: #fff; }
 .feed-refuse:hover { color: #fff; border-color: rgba(255, 190, 130, .9); background: rgba(48, 22, 8, .6); }
+/* A REFUSAL THAT ENDS A LADDER LOOKS DIFFERENT FROM ONE THAT DOES NOT.
+   Two lines only in the costly case, so the ordinary refusal keeps the small
+   pill it has always had — the warning must not become furniture, or it stops
+   being a warning. Column, not a wider row: the banner is a flex row on a
+   phone and growing this sideways is what pushed its siblings off screen the
+   last time something was added to it. */
+.feed-refuse.costly {
+  /* Two rows: the offer, then what it costs. Column flex is enough now that
+     "refuse +8.4M" is a single element — as two children they drifted apart
+     whenever the warning made the button wider than the label needed, and no
+     amount of justify-* fixed it because the TRACK was stretching, not the
+     item inside it. */
+  flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+  padding: 5px 12px; border-style: solid;
+  border-color: rgba(255, 140, 90, .75); background: rgba(48, 22, 8, .45);
+}
+.feed-refuse-line { white-space: nowrap; }
+/* Capped so the warning can never be what makes the row too wide — the point
+   is to inform the press, not to reflow the banner around itself. */
+.feed-forfeit {
+  font-style: normal; font-size: 9.5px; letter-spacing: .04em; line-height: 1.15;
+  color: #ffab7a; max-width: 30ch;
+}
 
 .feed-cancel {
   flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;

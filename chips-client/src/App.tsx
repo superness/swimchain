@@ -44,7 +44,7 @@ import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
-import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, forfeitsOnRefuse } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
@@ -1153,13 +1153,17 @@ export function App() {
    * the hermit's trade is not a jar at all, and a chain rung whose prefix is
    * unowned is something the fold would reject anyway.
    */
-  function refusableNow(jarKey: string): { crumbs: string; onRefuse: () => void } | null {
+  function refusableNow(jarKey: string): { crumbs: string; forfeits: string[]; onRefuse: () => void } | null {
     const jar = UPGRADES[jarKey];
     if (!jar || !state || state.owned.has(jarKey) || state.declined.has(jarKey)) return null;
     const chain = UPGRADE_CHAINS.find((c) => c.includes(jarKey));
     if (chain && chain.slice(0, chain.indexOf(jarKey)).some((p) => !state.owned.has(p))) return null;
     return {
       crumbs: compact(Math.floor(jar.cost * BURN_REFUND_NUM / BURN_REFUND_DEN)),
+      // What the press really costs. The refund was the only number on the
+      // button, which made an irreversible ladder-ending choice read as a
+      // small one.
+      forfeits: forfeitsOnRefuse(jarKey, state.owned),
       onRefuse: () => { setFeeding(null); setBubble(null); onDecline(jarKey); },
     };
   }
