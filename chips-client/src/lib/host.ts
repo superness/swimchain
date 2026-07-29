@@ -45,6 +45,20 @@ export interface Identity {
 const RPC_URL = (import.meta.env?.VITE_CHIPS_RPC as string | undefined)?.trim() || '';
 const CHIPS_SPACE = (import.meta.env?.VITE_CHIPS_SPACE as string | undefined)?.trim() || '';
 const GAME_SPONSOR = (import.meta.env?.VITE_GAME_SPONSOR as string | undefined)?.trim() || '';
+/**
+ * Where the ⚑ report goes to DIE ON THE RECORD rather than in a clipboard.
+ *
+ * The report button's own comment claimed this already worked. It did not:
+ * nothing read this variable and no code posted anywhere, so every report a
+ * player ever filed existed only as long as they did not copy anything else.
+ * The operator hit exactly that — pressed the flag mid-bug, and the state at
+ * the moment of the bug was one Ctrl-C away from gone.
+ *
+ * OPTIONAL by design. Unset (a local dev build, a fork) means clipboard-only,
+ * which is the old behaviour and still works; it must never stop the game
+ * from running.
+ */
+const DEBUG_SPACE = (import.meta.env?.VITE_CHIPS_DEBUG_SPACE as string | undefined)?.trim() || '';
 
 /**
  * Reef runs these "testnet" PoW params live on mainnet today (see
@@ -86,7 +100,25 @@ export interface ChipsHost {
   loadTable(tableId: string): Promise<ChipsReply[]>;
   listTables(): Promise<TableSummary[]>;
   requestContent(contentId: string): Promise<void>;
+  /**
+   * File a ⚑ report to the debug space, durably. Resolves to the content id,
+   * or to null when no debug space is configured — NOT a throw, because a
+   * missing debug space is a valid deployment and the caller's clipboard copy
+   * has already succeeded by then.
+   */
+  reportBug(id: Identity, text: string, onProgress?: ProgressCallback): Promise<string | null>;
 }
+
+/** Whether reports can be filed at all — lets the UI promise only what it can do. */
+export const CAN_FILE_REPORTS = DEBUG_SPACE !== '';
+
+/**
+ * A post body has to survive the node's size limits and stay readable in a
+ * feed. Reports are usually ~2-4 KB; a pathological one (a long error ring on
+ * a device with a huge queue) can run much longer, and a submission that fails
+ * on size is a report that does not exist.
+ */
+const REPORT_MAX = 12_000;
 
 // Re-exported for callers that only import the seam; the implementations
 // themselves live in chipsBody.ts, dependency-free (no RPC/PoW/WASM), so
@@ -323,6 +355,44 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
     },
 
     submitMove: (id, tableId, body, onProgress) => submitMinedReply(rpc, id, tableId, body, onProgress),
+
+    async reportBug(id, text, onProgress) {
+      if (!DEBUG_SPACE) return null;   // clipboard-only deployment; not an error
+
+      // Truncate rather than fail. A clipped report still names the build, the
+      // table and the queue — everything the first ten minutes of a diagnosis
+      // needs — whereas a rejected submission leaves nothing at all.
+      const clipped = text.length > REPORT_MAX
+        ? `${text.slice(0, REPORT_MAX)}\n\n[clipped ${text.length - REPORT_MAX} chars]`
+        : text;
+
+      // The title carries the author prefix so reports are greppable in a feed
+      // without opening each one. No newlines: the node splits title from body
+      // on the FIRST blank line, so a newline here would corrupt both.
+      const title = `chips report — ${id.publicKeyHex.slice(0, 8)}`;
+      const body = clipped;
+      // Same preimage contract as createTable: the node reconstructs
+      // `${title}\n\n${body}` to verify PoW, so hashing anything else fails
+      // verification. See the long note in createTable.
+      const content = `${title}\n\n${body}`;
+      const challenge = await createChallenge(
+        ActionType.Post,
+        new TextEncoder().encode(content),
+        hexToBytes(id.publicKeyHex),
+        getDifficulty(ActionType.Post, POW_TESTNET_PARAMS)
+      );
+      const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
+      const p = solutionToRpcParams(solution);
+      const contentHash = await contentHashForPost(title, body);
+      const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
+      const res = await rpc.submitPost({
+        spaceId: DEBUG_SPACE, title, body, authorId: id.publicKeyHex,
+        powNonce: Number(p.pow_nonce), powDifficulty: p.pow_difficulty,
+        powNonceSpace: p.pow_nonce_space, powHash: p.pow_hash,
+        signature, timestamp: p.timestamp,
+      });
+      return res.content_id;
+    },
 
     async loadTable(tableId) {
       // get_replies takes the content id positionally, not as a params

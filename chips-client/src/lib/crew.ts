@@ -233,15 +233,33 @@ export function jarAvailable(upgradeKey: string, dipIndex: number): boolean {
  * chain rungs that aren't next (the fold would reject those as
  * rejected-order anyway), minus anything not yet available.
  */
-export function openJarsOf(vendorId: string, owned: Set<string>, dipIndex: number): Upgrade[] {
+export function openJarsOf(
+  vendorId: string,
+  owned: Set<string>,
+  dipIndex: number,
+  /* A REFUSED JAR IS GONE FOR THE RUN. You took 70% of its price in crumbs
+     instead of the jar, and the fold will reject any later `buy` of it with
+     `rejected-owned`. Offering it again is the shop asking for money for
+     something it will not hand over — the same lie this file already refuses
+     to tell about `sold-out`, and the operator hit it live: refused the Sous
+     Chef, took the crumbs, and it was still sitting on the shelf.
+
+     Required, not optional-with-a-default: every caller must be made to think
+     about it. A default would have silently reintroduced this bug at each new
+     call site, which is exactly how it got in. */
+  declined: ReadonlySet<string>,
+): Upgrade[] {
   const v = CREW.find((m) => m.id === vendorId);
   if (!v) return [];
   const out: Upgrade[] = [];
   for (const key of v.sells) {
-    if (owned.has(key)) continue;
+    if (owned.has(key) || declined.has(key)) continue;
     if (!jarAvailable(key, dipIndex)) continue;
     const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
-    if (chain && chain.find((k) => !owned.has(k)) !== key) continue; // not the next rung
+    // Not the next rung. A REFUSED rung stays the "next" one forever — it is
+    // never owned — so this also, correctly, ends the ladder above it: the
+    // fold forfeits everything above a refusal, and the shelf must agree.
+    if (chain && chain.find((k) => !owned.has(k)) !== key) continue;
     out.push(UPGRADES[key]);
   }
   return out;
@@ -259,23 +277,34 @@ export type StallStatus =
   | { kind: 'open' }
   | { kind: 'none' }                       // sells nothing, ever
   | { kind: 'sold-out' }                   // genuinely owns the lot
+  | { kind: 'refused' }                    // nothing left because YOU turned it down
   | { kind: 'locked'; needs: Upgrade };    // waiting on an earlier rung
 
-export function stallStatus(vendorId: string, owned: Set<string>, dipIndex: number): StallStatus {
+export function stallStatus(
+  vendorId: string,
+  owned: Set<string>,
+  dipIndex: number,
+  declined: ReadonlySet<string>,
+): StallStatus {
   const v = CREW.find((m) => m.id === vendorId);
   if (!v || v.sells.length === 0) return { kind: 'none' };
-  if (openJarsOf(vendorId, owned, dipIndex).length > 0) return { kind: 'open' };
+  if (openJarsOf(vendorId, owned, dipIndex, declined).length > 0) return { kind: 'open' };
   if (v.sells.every((k) => owned.has(k))) return { kind: 'sold-out' };
+  // 'refused', NOT 'sold-out'. By this file's own rule a stall must not claim
+  // you bought what you did not buy, and a refusal is the exact opposite of a
+  // purchase. Everything here is settled — owned or turned down — and what you
+  // turned down comes back when the bowl goes over.
+  if (v.sells.every((k) => owned.has(k) || declined.has(k))) return { kind: 'refused' };
   // Something is held back. Name the shallowest rung actually blocking it —
   // that is the sentence the player needs.
   for (const key of v.sells) {
-    if (owned.has(key)) continue;
+    if (owned.has(key) || declined.has(key)) continue;
     const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
     if (!chain) continue;
     const next = chain.find((k) => !owned.has(k));
     if (next && next !== key) return { kind: 'locked', needs: UPGRADES[next] };
   }
-  return { kind: 'locked', needs: UPGRADES[v.sells.find((k) => !owned.has(k))!] };
+  return { kind: 'locked', needs: UPGRADES[v.sells.find((k) => !owned.has(k) && !declined.has(k))!] };
 }
 
 /* ── the daily drift of the dip: news ticker ─────────────────────────────── */
