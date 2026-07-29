@@ -81,6 +81,22 @@ export function brokeBody(ms: number): string {
   return `broke#${ms}~`;
 }
 
+/**
+ * Build a `burn` move body: `burn <upgrade-key>#<ms>~`.
+ *
+ * Names its key, unlike `broke` — here the CHOICE is the move, and naming it
+ * forges nothing: the fold still checks you own the jar and computes the
+ * refund from the catalog, so the worst a hostile body can do is burn its own
+ * property at the published rate.
+ */
+export function burnBody(key: string, ms: number): string {
+  if (!/^[a-z0-9]+$/.test(key)) throw new Error(`burnBody: bad key ${key}`);
+  if (!Number.isSafeInteger(ms) || ms <= 0) {
+    throw new Error(`burnBody: ms must be a positive safe integer, got ${ms}`);
+  }
+  return `burn ${key}#${ms}~`;
+}
+
 /** Build a `buy` move body: `buy <upgrade-key>#<ms>~`. */
 export function buyBody(key: string, ms: number): string {
   if (!/^[a-z0-9]+$/.test(key)) {

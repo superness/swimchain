@@ -198,6 +198,23 @@ export const DIP_TIERS: DipTier[] = [
   { key: 'abyss',   label: 'The Abyssal Dip', minLifetime: 1_000_000 },
 ];
 
+/**
+ * GIVING A JAR BACK. `burn <key>` returns this fraction of its price in
+ * crumbs and removes it, effect and all.
+ *
+ * 70% is what makes the verb safe to leave UNLIMITED: every round trip loses
+ * 30%, so there is no buy/burn cycle that ends up ahead and no cooldown or
+ * once-per-run rule is needed to stop one. The whole guard is the number.
+ *
+ * It exists because the shop had no reverse gear. A player who works out that
+ * the Sous Chef cashes at x32 and therefore cancels the 1.2B Long Fry they
+ * just bought should be able to get RID of him, not merely mute him
+ * (operator: "let them burn sous chef because they are smart and it annoys
+ * them").
+ */
+export const BURN_REFUND_NUM = 70;
+export const BURN_REFUND_DEN = 100;
+
 /* ── THE DESCENT ───────────────────────────────────────────────────────────
    Below the last dip tier the bowl runs out and the world starts. These are
    CONSENSUS numbers — the fold reads them to decide whether a `broke` is

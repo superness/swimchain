@@ -633,7 +633,7 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
+export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches, burnable }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
@@ -651,6 +651,9 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
    *  to look for it. App decides which vendor gets which; an empty list
    *  renders nothing. */
   switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
+  /** Jars on THIS stall you own and may give back, with what they refund.
+   *  Empty when the vendor has none, or when a chain rung stands on them. */
+  burnable?: { key: string; label: string; refund: number; onBurn: () => void }[];
 }) {
   const status = stallStatus(vendor.id, owned, dipIndex);
   return (
@@ -711,6 +714,31 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
               </li>
             ))}
           </ul>
+        )}
+        {burnable && burnable.length > 0 && (
+          <>
+            {/* THE SHOP'S REVERSE GEAR. A jar you own can go back over the
+                counter for 70% of what you paid. It lives on the stall that
+                sold it, next to the switches, because that is where a player
+                already goes looking for something they own.
+
+                Unlimited on purpose: every round trip loses 30%, so there is
+                no cycle that comes out ahead and nothing needs a cooldown. */}
+            <p className="burn-head">give one back</p>
+            <ul className="burn-list">
+              {burnable.map((b) => (
+                <li key={b.key}>
+                  <button type="button" className="burn-jar" onClick={b.onBurn}>
+                    <span className="burn-copy">
+                      <strong>{b.label}</strong>
+                      <em>you lose it, and its effect</em>
+                    </span>
+                    <span className="burn-back">+{compact(b.refund)}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
         <button type="button" className="sheet-close" onClick={onClose}>done</button>
       </div>

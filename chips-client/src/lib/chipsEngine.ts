@@ -26,6 +26,7 @@ import {
   TIP_FLOOR, SALT_PER_TIP,
   DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
   DEEP_BAND_COUNT, CHAR_PER_BAND, deepBandFloor,
+  BURN_REFUND_NUM, BURN_REFUND_DEN,
 } from './chipsConst';
 import { proofKey } from './proofKey';
 
@@ -51,7 +52,10 @@ export type Outcome =
   | 'dipped'
   | 'tipped' | 'rejected-shallow'
   | 'broke'
-  | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse';
+  | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse'
+  /** `burn` only: you do not have that jar. Distinct from `rejected-owned`,
+   *  which is a BUY failing because you already do. */
+  | 'burned' | 'rejected-unowned';
 
 export interface MoveResult {
   content_id: string;
@@ -136,6 +140,10 @@ export type ParsedMove =
    *  FOLD computes from lifetime — never the client (see parseMove). */
   | { kind: 'tip'; ms: number }
   | { kind: 'broke'; ms: number }
+  /** Give a jar back for BURN_REFUND of its price. Names its key — unlike
+   *  `broke`, the choice IS the move, and naming it forges nothing: the fold
+   *  still checks you own it and computes the refund from the catalog. */
+  | { kind: 'burn'; key: string; ms: number }
   /** Declared more than MAX_BATCH entries. Carried as a distinct kind so the
    *  fold can reject it whole WITHOUT verifying anything — see chipsConst. */
   | { kind: 'oversize'; count: number; ms: number };
@@ -149,6 +157,47 @@ export function authoringMs(body: string): number | null {
 }
 
 const ENTRY = /^(\d+):(\d+):([0-9a-fA-F]{1,16})$/;
+
+
+/**
+ * Recompute every upgrade-derived stat from `state.owned`, in catalog-chain
+ * order so a chain's deepest rung wins.
+ *
+ * Buying applies effects incrementally, which is fine because a buy only ever
+ * ADDS. Burning removes, and an incremental undo would have to know how to
+ * reverse each effect — a rule that drifts the moment a new effect field is
+ * added and nobody remembers to teach the undo about it. Recomputing cannot
+ * drift: `owned` is the only truth and this is the only reader.
+ */
+function applyOwned(state: ChipsState): void {
+  state.bowlCap = START_BOWL_CAP;
+  state.seasoningNum = 1;
+  state.seasoningDen = 1;
+  state.fryers = 1;
+  state.goldenBits = GOLDEN_BITS;
+  state.airtight = false;
+  state.sogBonus = 0;
+  state.doubleDipMod = 0;
+  // Chains first, in order, so a deeper rung overwrites a shallower one;
+  // then the unchained jars, whose effects are independent.
+  const chained = new Set(UPGRADE_CHAINS.flat());
+  const inOrder = [...UPGRADE_CHAINS.flat(), ...Object.keys(UPGRADES).filter((k) => !chained.has(k))];
+  for (const key of inOrder) {
+    if (!state.owned.has(key)) continue;
+    const u = UPGRADES[key];
+    if (!u) continue;
+    if (u.bowlCap !== undefined) state.bowlCap = u.bowlCap;
+    if (u.seasoningNum !== undefined && u.seasoningDen !== undefined) {
+      state.seasoningNum = u.seasoningNum;
+      state.seasoningDen = u.seasoningDen;
+    }
+    if (u.fryers !== undefined) state.fryers = u.fryers;
+    if (u.goldenBits !== undefined) state.goldenBits = u.goldenBits;
+    if (u.airtight) state.airtight = true;
+    if (u.sogBonus !== undefined) state.sogBonus += u.sogBonus;
+    if (u.doubleDipMod !== undefined) state.doubleDipMod = u.doubleDipMod;
+  }
+}
 
 export function parseMove(body: string): ParsedMove | null {
   const ms = authoringMs(body);
@@ -204,6 +253,9 @@ export function parseMove(body: string): ParsedMove | null {
 
   const buyM = /^buy\s+([a-z0-9]+)$/.exec(head);
   if (buyM) return { kind: 'buy', key: buyM[1], ms };
+
+  const burnM = /^burn\s+([a-z0-9]+)$/.exec(head);
+  if (burnM) return { kind: 'burn', key: burnM[1], ms };
 
   // `tip` — the bottom of the bowl. Takes NO argument on purpose: the salt
   // it awards is computed by the fold from the lifetime it can see, never
@@ -503,6 +555,43 @@ export function foldChips(
       state.dipIndex = 0;
       if (confirmed) state.lastBankAt = at;
       state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'tipped', salt: earned });
+      continue;
+    }
+
+    if (parsed.kind === 'burn') {
+      /* ── GIVE A JAR BACK, FOR BURN_REFUND OF ITS PRICE ──────────────────
+         Unlimited on purpose. Buy at C, burn at 0.7C — every round trip is a
+         30% loss, so there is no cycle that ends up ahead and nothing needs a
+         cooldown. The refund fraction IS the guard.
+
+         Two refusals. You must own it, and NOTHING OWNED MAY STAND ON IT:
+         chained jars are bought in order and out-of-order buys are rejected,
+         so burning a rung with a later owned rung above it would leave a
+         table that could never re-fold to the same state. The deepest owned
+         rung is always fair game. */
+      const jar = UPGRADES[parsed.key];
+      if (!jar || !state.owned.has(parsed.key)) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-unowned', upgradeKey: parsed.key });
+        continue;
+      }
+      const chain = UPGRADE_CHAINS.find((c) => c.includes(parsed.key));
+      if (chain) {
+        const idx = chain.indexOf(parsed.key);
+        const propped = chain.slice(idx + 1).some((k) => state.owned.has(k));
+        if (propped) {
+          state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-order', upgradeKey: parsed.key });
+          continue;
+        }
+      }
+
+      state.owned.delete(parsed.key);
+      // EVERY upgrade-derived stat is recomputed from what is left rather
+      // than un-applied field by field. An incremental undo has to know how
+      // to reverse each effect and would drift the moment one is added;
+      // recomputing cannot drift, because `owned` is the only truth.
+      applyOwned(state);
+      state.crumbs = Math.min(state.bowlCap, state.crumbs + Math.floor(jar.cost * BURN_REFUND_NUM / BURN_REFUND_DEN));
+      state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'burned', upgradeKey: parsed.key });
       continue;
     }
 

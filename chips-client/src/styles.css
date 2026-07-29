@@ -246,6 +246,35 @@ h1, h2, h3, p { margin: 0; }
 /* SWITCHES FOR JARS YOU ALREADY OWN. A bought jar leaves the shelf, so the
    stall is the only place a player thinks to look for it again. Reads as a
    line on the vendor's counter, not a settings row. */
+/* THE REVERSE GEAR. Deliberately plainer than a jar card — giving something
+   back should not look like shopping. */
+.burn-head {
+  margin: 12px 0 4px; font-family: var(--chalk); font-size: 10.5px;
+  letter-spacing: .12em; text-transform: uppercase; color: #8d7f6b;
+}
+.burn-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.burn-jar {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  padding: 7px 12px; border-radius: 10px; text-align: left;
+  background: rgba(26, 14, 9, .8);
+  border: 1px solid rgba(224, 120, 70, .28);
+  transition: border-color .2s, background .2s;
+}
+.burn-jar:hover { border-color: rgba(255, 140, 80, .6); background: rgba(40, 18, 10, .9); }
+.burn-copy { flex: 1; min-width: 0; }
+.burn-copy strong {
+  display: block; font-family: var(--chalk); font-size: 12px; color: #f0dcc8;
+}
+.burn-copy em {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: 10px; color: #b08c78;
+}
+.burn-back {
+  flex: none; font-family: var(--chalk); font-size: 11.5px; letter-spacing: .04em;
+  color: #ffc48a; padding: 3px 9px; border-radius: 999px;
+  background: rgba(0, 0, 0, .35); border: 1px solid rgba(255, 170, 110, .35);
+}
+
 .stall-switches { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
 .stall-switch {
   width: 100%; display: flex; align-items: center; gap: 12px;
