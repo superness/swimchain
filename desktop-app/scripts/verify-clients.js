@@ -27,4 +27,32 @@ if (missing.length > 0) {
   process.exit(1);
 }
 
-console.log(`[verify-clients] OK - all ${EXPECTED.length} clients bundled.`);
+// THE NODE BINARY IS AS LOAD-BEARING AS THE CLIENTS.
+//
+// Same failure, one layer down: on 2026-07-29 a desktop bundle was found to
+// carry NO node at all. `binaries/` is gitignored, so an empty directory made
+// the `binaries/*` resource match nothing and fail the build; #46 removed the
+// resource entry instead of staging the file, and every installer since shipped
+// an app that spawns `resource_dir()/binaries/sw.exe` and cannot find it.
+//
+// A missing client hangs one screen. A missing node means the app does nothing
+// at all — so it earns the same loud failure rather than a shipped bug.
+const nodeBin = process.platform === 'win32' ? 'sw.exe' : 'sw';
+const stagedNode = path.join(__dirname, '..', 'src-tauri', 'binaries', nodeBin);
+
+if (!fs.existsSync(stagedNode)) {
+  console.error(
+    `
+[verify-clients] REFUSING TO BUNDLE: no node binary at ${stagedNode}.` +
+    `
+  The app spawns resource_dir()/binaries/${nodeBin}; without it an installed` +
+    `
+  desktop app has no node and cannot start.` +
+    `
+  Run: node scripts/stage-node.js  (after cargo build --release --bin sw)
+`
+  );
+  process.exit(1);
+}
+
+console.log(`[verify-clients] OK - all ${EXPECTED.length} clients bundled, node binary staged.`);
