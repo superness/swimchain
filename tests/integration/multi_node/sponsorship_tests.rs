@@ -507,6 +507,11 @@ async fn test_claim_relays_across_multi_hop_topology() {
         requirements: SponsorshipRequirements::none(),
         signature: Signature::from_bytes([0u8; 64]),
         auto_approve: false,
+        // A GLOBAL grant. This test walks a claim across three nodes and
+        // asserts the sponsee can post afterwards, which is precisely what a
+        // scoped offer would NOT permit - `None` is the behaviour under test,
+        // not a placeholder.
+        space_scope: None,
     };
     for i in [0usize, 1] {
         harness.nodes[i]
