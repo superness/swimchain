@@ -84,9 +84,11 @@ export function watchReadiness(iframe, { timeoutMs = 2000, onReady, onTimeout, p
         // timer; the gate's settled guard dedupes whichever of the two fires
         // second, and the existing cleanup() (already wired to run whenever
         // the gate settles, via any path) cancels whichever handle is still
-        // pending — the loser.
+        // pending — the loser. The backstop reports a distinct via label so
+        // instrumentation can count backstop-settled samples, whose timing
+        // under-reports actual paint (it fires before rAF would have).
         rafHandle = requestAnimationFrame(() => gate.ready('dom-peek'));
-        backstopHandle = setTimeout(() => gate.ready('dom-peek'), 150);
+        backstopHandle = setTimeout(() => gate.ready('dom-peek-backstop'), 150);
       }
     } catch { /* cross-origin frame: only READY message or timeout apply */ }
   }, pollMs);
