@@ -13,6 +13,9 @@
  */
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
+/** The window's own reset — `index.html` may not carry one inline; shell.css
+ *  says at length why not. */
+import './shell.css';
 
 const host = document.getElementById('root');
 if (!host) throw new Error('index.html is missing its #root element');

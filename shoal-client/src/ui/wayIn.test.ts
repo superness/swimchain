@@ -24,15 +24,9 @@
  * deliberately bad string first, so a broken checker cannot pass the copy by
  * failing to look.
  */
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-
 import { rpcCall, type RpcAuth } from '../lib/shoalRpc';
 import { classifySendFailure, type SendFailure } from '../lib/shoalSend';
-import {
-  afterPassage, afterWrite, AT_THE_EDGE, bodyFor, EDGE_BODY, EDGE_TITLE, enterPassage,
-  OPEN_WATER, PASSAGE_BODY, passageFor, showsTheEdge, type Passage, type Standing,
-} from './wayIn';
+import { afterWrite, AT_THE_EDGE, EDGE_BODY, EDGE_TITLE, OPEN_WATER } from './wayIn';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -234,191 +228,11 @@ function theCopyIsDiegeticAndPinned(): void {
     EDGE_BODY.includes('someone already swimming'), EDGE_BODY);
 }
 
-// ---------------------------------------------------------------------------
-// 5. The passage: which beat a foreign phase string is
-// ---------------------------------------------------------------------------
-
-/**
- * The three strings `ensureSponsored` reports, read OUT OF ITS OWN SOURCE.
- *
- * This is the only thing standing between `passageFor` and silent rot. The
- * strings are written inline in a package this client depends on; there is no
- * symbol to import, nothing breaks at compile time if they are reworded, and a
- * mapping that had stopped recognising any of them would keep working — it
- * would just show the first beat forever, which looks exactly like a slow
- * network. Resolved through `require.resolve` so it follows the installed
- * package (a `file:` symlink to `../swimchain-react`) rather than a hand-typed
- * path that would silently stop pointing at anything.
- */
-function phasesInTheHelpersSource(): string {
-  // `import.meta.resolve` rather than `createRequire().resolve`: the package's
-  // `exports` map publishes only the ESM `"import"` condition, so the CJS
-  // resolver cannot see an entry point at all (and `./package.json` is not
-  // exported either). The source sits beside the `dist` this resolves to.
-  const entry = fileURLToPath(import.meta.resolve('@swimchain/react')); // …/dist/index.js
-  const src = entry.replace(/[/\\]dist[/\\]index\.js$/, '/src/lib/ensureSponsored.ts');
-  if (src === entry) throw new Error(`unexpected @swimchain/react entry point: ${entry}`);
-  return readFileSync(src, 'utf8');
-}
-
-function thePassageReadsTheHelpersOwnPhases(): void {
-  console.log('\n5. the passage: the helper\'s own phase strings, and what each one is');
-
-  const src = phasesInTheHelpersSource();
-  // SELF-TEST FIRST: if the file could not be read, or were read empty, every
-  // `includes` below would be trivially false and the section would fail loudly
-  // — but a check that the file is the RIGHT file cannot be skipped either.
-  check('SELF-TEST: the helper\'s source really was found and read',
-    src.length > 1000 && src.includes('export async function ensureSponsored'), src.length);
-  check('SELF-TEST: and it really is the module that reports progress',
-    src.includes('onProgress?.('), src.includes('onProgress?.('));
-
-  // The exact literals, each with the beat this client maps it to. If any of
-  // these disappears from the helper, this fails by name and `passageFor` has
-  // to be revisited — which is the entire point.
-  const PHASES: readonly (readonly [string, Passage])[] = [
-    ['Finding a sponsor', 'noticed'],
-    ['Requesting sponsorship (proof-of-work)', 'swimming'],
-    ['Waiting for approval', 'turning'],
-  ];
-  for (const [phase, beat] of PHASES) {
-    check(`the helper still reports ${JSON.stringify(phase)}`,
-      src.includes(`onProgress?.('${phase}')`), phase);
-    check(`...and this client reads it as "${beat}"`, passageFor(phase) === beat, passageFor(phase));
-  }
-
-  // NON-DEGENERACY: the three beats are three, not one. A `passageFor` that
-  // returned a constant would satisfy one of the three checks above and this
-  // is what catches it.
-  const beats = new Set(PHASES.map(([p]) => passageFor(p)));
-  check('NON-DEGENERACY: the three phases map to three DIFFERENT beats', beats.size === 3, [...beats]);
-
-  // An unrecognised string is the first beat, never `null` — `null` means "no
-  // attempt is running" and would take the boundary away mid-passage.
-  check('a phase this client has never seen degrades to the first beat, not to nothing',
-    passageFor('Something the helper was reworded to say') === 'noticed');
-  check('...and so does the empty string', passageFor('') === 'noticed');
-}
-
-// ---------------------------------------------------------------------------
-// 6. The passage: the folds
-// ---------------------------------------------------------------------------
-function thePassageFolds(): void {
-  console.log('\n6. the passage: entering it, and what its end concludes');
-
-  check('NON-DEGENERACY: a client starts with no attempt in flight',
-    OPEN_WATER.passage === null && AT_THE_EDGE.passage === null, [OPEN_WATER, AT_THE_EDGE]);
-  check('...so neither constant draws a boundary for a reason it does not have',
-    showsTheEdge(OPEN_WATER) === false && showsTheEdge(AT_THE_EDGE) === true,
-    [showsTheEdge(OPEN_WATER), showsTheEdge(AT_THE_EDGE)]);
-
-  // Entering. The boundary goes up for a player who was in open water, because
-  // there is now something to show them.
-  const looking = enterPassage(OPEN_WATER, 'Finding a sponsor');
-  check('a player in open water who enters a passage is shown the boundary',
-    showsTheEdge(looking) === true, looking);
-  check('...but is NOT recorded as having had a write refused, because none has been',
-    looking.atTheEdge === false, looking);
-
-  const working = enterPassage(looking, 'Requesting sponsorship (proof-of-work)');
-  check('the next beat moves the standing', working.passage === 'swimming', working);
-  check('...and the same beat reported twice returns the SAME object, so the '
-    + 'surface is not re-rendered by a repeated phase',
-    enterPassage(working, 'Requesting sponsorship (proof-of-work)') === working);
-
-  // A player who was ALREADY at the edge keeps that fact through the passage:
-  // an attempt says nothing about whether a write was refused.
-  const edgeThenPassage = enterPassage(AT_THE_EDGE, 'Waiting for approval');
-  check('a player already at the edge carries that through the attempt',
-    edgeThenPassage.atTheEdge === true && edgeThenPassage.passage === 'turning', edgeThenPassage);
-
-  // Ending, let in.
-  check('an attempt that succeeds puts the player in open water',
-    afterPassage(working, true).atTheEdge === false
-    && afterPassage(working, true).passage === null, afterPassage(working, true));
-  check('...and it lifts an edge that was already up',
-    afterPassage(edgeThenPassage, true).atTheEdge === false, afterPassage(edgeThenPassage, true));
-  check('...while a player who was never anywhere is left EXACTLY as they were, '
-    + 'same object, no re-render', afterPassage(OPEN_WATER, true) === OPEN_WATER);
-
-  // Ending, not let in.
-  check('an attempt that got as far as a beat and then failed leaves the player at the edge',
-    afterPassage(working, false).atTheEdge === true
-    && afterPassage(working, false).passage === null, afterPassage(working, false));
-
-  // THE ONE THAT IS EASY TO GET WRONG. An attempt that never reported a beat
-  // never asked the water anything about this swimmer, so it may not conclude
-  // that nobody has vouched for them. The first write decides, honestly.
-  check('an attempt that never began concludes NOTHING about a player in open water',
-    afterPassage(OPEN_WATER, false) === OPEN_WATER, afterPassage(OPEN_WATER, false));
-  check('...and nothing about one already at the edge either',
-    afterPassage(AT_THE_EDGE, false) === AT_THE_EDGE, afterPassage(AT_THE_EDGE, false));
-
-  // And a write still gets the last word, both ways, after any of this.
-  const stillRefused: Standing = afterPassage(working, false);
-  check('a write accepted after a failed attempt lifts the edge all the same',
-    afterWrite(stillRefused, null).atTheEdge === false, afterWrite(stillRefused, null));
-}
-
-// ---------------------------------------------------------------------------
-// 7. The passage copy
-// ---------------------------------------------------------------------------
-function thePassageCopyIsDiegeticAndPinned(): void {
-  console.log('\n7. the passage copy: three more lines, same rule');
-
-  const BEATS: readonly Passage[] = ['noticed', 'swimming', 'turning'];
-  check('NON-DEGENERACY: there is a line for every beat and no beat without one',
-    BEATS.every((b) => typeof PASSAGE_BODY[b] === 'string' && PASSAGE_BODY[b].length > 0)
-    && Object.keys(PASSAGE_BODY).length === BEATS.length, PASSAGE_BODY);
-
-  for (const beat of BEATS) {
-    const line = PASSAGE_BODY[beat];
-    check(`"${beat}" says nothing the diegetic rule forbids`,
-      offendingWords(line).length === 0, offendingWords(line));
-    check(`"${beat}" carries no digits`, !/\d/.test(line), line);
-  }
-
-  // Three DIFFERENT sentences. One line repeated three times would satisfy
-  // everything above and would be exactly the "sits there" this task exists to
-  // remove.
-  check('NON-DEGENERACY: the three lines are three different sentences',
-    new Set(BEATS.map((b) => PASSAGE_BODY[b])).size === 3, BEATS.map((b) => PASSAGE_BODY[b]));
-
-  // Pinned character for character, like the two lines above them.
-  check('the first beat is exactly the line that was reviewed',
-    PASSAGE_BODY.noticed === 'The shoal has caught sight of you.', PASSAGE_BODY.noticed);
-  check('the second beat is exactly the line that was reviewed',
-    PASSAGE_BODY.swimming === 'You are swimming hard to be counted.', PASSAGE_BODY.swimming);
-  check('the third beat is exactly the line that was reviewed',
-    PASSAGE_BODY.turning === 'An older swimmer is turning to bring you through.',
-    PASSAGE_BODY.turning);
-
-  // The last beat has to echo the standing line's own promise, or the boundary
-  // reads as a second wait rather than as the thing it said would happen,
-  // happening.
-  check('the last beat names the same act the standing line promised',
-    PASSAGE_BODY.turning.includes('bring you through')
-    && EDGE_BODY.includes('bring you through'), [PASSAGE_BODY.turning, EDGE_BODY]);
-
-  // What the view actually draws, through the one function it asks.
-  check('with no attempt in flight the view draws the standing line',
-    bodyFor(OPEN_WATER) === EDGE_BODY && bodyFor(AT_THE_EDGE) === EDGE_BODY);
-  for (const beat of BEATS) {
-    const s = enterPassage(OPEN_WATER, beat === 'turning' ? 'Waiting for approval'
-      : beat === 'swimming' ? 'Requesting sponsorship (proof-of-work)' : 'Finding a sponsor');
-    check(`during "${beat}" the view draws that beat's line instead`,
-      bodyFor(s) === PASSAGE_BODY[beat], bodyFor(s));
-  }
-}
-
 async function main(): Promise<void> {
   await theGateRaisesTheEdge();
   await anUnrelatedFailureDoesNotRaiseTheEdge();
   anAcceptedWriteLiftsTheEdge();
   theCopyIsDiegeticAndPinned();
-  thePassageReadsTheHelpersOwnPhases();
-  thePassageFolds();
-  thePassageCopyIsDiegeticAndPinned();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

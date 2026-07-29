@@ -1,0 +1,25 @@
+/*
+ * The window itself, before anything is drawn in it.
+ *
+ * THREE DECLARATIONS, AND THEY ARE NOT HERE FOR TIDINESS. They lived in an
+ * inline `<style>` block in `index.html` until it was found that that one
+ * block was the direct cause of the boundary shipping unstyled:
+ *
+ *   - `inject_nonce_token` (tauri-utils/src/html2.rs:75) stamps `nonce=` on
+ *     EVERY `<style>` element in the built HTML;
+ *   - `replace_csp_nonce` (tauri/src/manager/mod.rs:96) then appends the
+ *     matching `'nonce-…'` source to `style-src`;
+ *   - and a `style-src` list that contains a nonce IGNORES `'unsafe-inline'`
+ *     (CSP3 §6.7.3.2), which withdrew permission from every `<style>` element
+ *     React created at runtime — `TheEdge`'s among them.
+ *
+ * So a reset that had nothing to do with the boundary silently unstyled it.
+ * Moved here, Vite emits it into `dist/assets/*.css` and links it from
+ * `<head>`, `style-src 'self'` allows it whatever else is in the list, and it
+ * still applies before the first paint. `shippedStyles.test.ts` holds the
+ * invariant that keeps this true: no `<style>` element anywhere in `dist/`.
+ *
+ * The background is the colour the water settles to, so the window is never
+ * white for a frame while the bundle parses.
+ */
+html, body { margin: 0; padding: 0; background: #05161f; }

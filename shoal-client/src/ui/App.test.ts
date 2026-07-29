@@ -74,6 +74,13 @@ async function buildHarness(dev: boolean): Promise<{ observe: (s: Scenario) => P
     target: 'node18',
     jsx: 'automatic',
     define: { 'import.meta.env.DEV': dev ? 'true' : 'false' },
+    // `TheEdge` imports its stylesheet — a real file, so that a shipped build
+    // links it rather than building a `<style>` element the CSP will drop
+    // (`shippedStyles.test.ts`). Nothing under jsdom can apply CSS, so it is
+    // dropped from this bundle rather than emitted beside it: `empty` keeps the
+    // import resolvable without leaving a stray `.css` in `node_modules/.cache`
+    // that nothing loads.
+    loader: { '.css': 'empty' },
     external: ['react', 'react-dom', 'react-dom/client', 'jsdom'],
     logLevel: 'silent',
   });
@@ -89,9 +96,7 @@ async function buildHarness(dev: boolean): Promise<{ observe: (s: Scenario) => P
 import { roomContentId } from './shellConfig';
 /** The copy, imported rather than retyped — it has exactly one home, and this
  *  file compares the rendered DOM against it. */
-import { EDGE_BODY, PASSAGE_BODY } from './wayIn';
-
-const PASSAGE_BODY_LINES: string[] = Object.values(PASSAGE_BODY);
+import { EDGE_BODY } from './wayIn';
 
 const NODE_PUBKEY = 'c7'.repeat(32);
 
@@ -276,96 +281,69 @@ async function main(): Promise<void> {
   }
 
   // =======================================================================
-  console.log('\n6. THE WAY THROUGH runs once, and it runs BEFORE the first write');
+  console.log('\n6. A SWIMMER NOBODY HAS LET IN GETS A WHOLE GAME, and this client\n'
+    + '   never asks anyone to change that');
   // =======================================================================
   //
-  // Plan 4b Task 3b. The claim is made from the same place `setShell` is, and
-  // the ORDER is the whole point: a vector mined at mainnet's Argon2id cost and
-  // then refused for want of a voucher is work spent on nothing, and the
-  // boundary the player is shown while the claim runs is only honest if no
-  // write has already been refused underneath it.
+  // THE RULING THIS SECTION EXISTS TO HOLD. Being let into the water is part of
+  // being on the network; it is not something the game grants. A build that
+  // claimed a standing offer on the player's behalf existed for two commits
+  // (`passage.ts`, 725a8c06) and was removed. So there are two facts to keep
+  // true at once, and they pull in opposite directions:
+  //
+  //   - a refused player must still get everything except being heard — real
+  //     water, a real sea, a real fold, writes really attempted — because the
+  //     shallows are a complete experience and not a waiting room; and
+  //   - the window must not touch anyone's standing, not even to read it.
   //
   // `rpcCalls` is an ordered list of every method this window called, so the
-  // claim landing before the first `submit_reply` is a fact about the wire and
-  // not about React state.
+  // second is a fact about the wire rather than about which module got deleted.
   {
-    // (a) The first launch of a fresh install: nobody has vouched for this
-    //     node's identity, and the game's sponsor has a standing offer open.
+    // (a) THE UNSPONSORED PLAYER, end to end. Every `submit_reply` comes back
+    //     -32015 — the real code, from the real method — for the whole run.
+    // THE SETTLE IS DERIVED, NOT PICKED. `shoalEmit.MAX_EMIT_GAP_MS` is 8 s and
+    // is a ceiling, not an average: a sea that is still folding MUST publish
+    // again within it. So a window held open past that and seen to write only
+    // once has stopped, and one 9.5 s window is the cheapest interval in which
+    // "it kept going" and "it gave up after the first refusal" look different.
+    const refused = await observe({ writesRefused: true, awaitWrite: true, settleMs: 9_500 });
+    check('a refused swimmer still reaches real water and still writes into it',
+      reachedWater(refused, room), refused.submitted);
+    // NOT "it wrote once". A window that gave up after the first refusal would
+    // pass the check above and would be a game that stops. The sea publishes a
+    // vector every few seconds forever, refused or not.
+    check('...and KEEPS swimming — it is refused again and again, not once and out',
+      refused.submitted.length >= 2, refused.submitted.length);
+    check('...and the edge of the water is up, drawn over the live sea',
+      refused.edgeAtEnd === true, refused.edgeAtEnd);
+    check('...saying the one line this client owns for it, off the rendered DOM',
+      refused.edgeLine === EDGE_BODY, refused.edgeLine);
+
+    // (b) THE CLAIM FLOW IS GONE, and this is what says so. Not "the file is
+    //     deleted" — a check about the filesystem proves nothing about the
+    //     running window — but "the wire carries no such call", asked of the
+    //     window that has the strongest possible reason to make one: it is
+    //     being refused, right now, on every write.
     //
-    //     THE 1.2 s HOLD IS LOAD-BEARING, not padding. Without it the order
-    //     check below passed even for a version that built the sea FIRST — a
-    //     local node answers three sponsorship calls faster than one Argon2id
-    //     mine finishes, so the claim landed first by accident. See
-    //     `Scenario.sponsorshipDelayMs`.
-    const granted = await observe({
-      sponsorship: 'granted', sponsorshipDelayMs: 1_200, awaitWrite: true, settleMs: 200,
-    });
-    const claimAt = granted.rpcCalls.indexOf('claim_sponsorship_offer');
-    const writeAt = granted.rpcCalls.indexOf('submit_reply');
-    check('a newcomer nobody has vouched for claims the standing offer',
-      claimAt >= 0, granted.rpcCalls);
-    check('NON-DEGENERACY: and the window really did go on to write',
-      writeAt >= 0 && reachedWater(granted, room), granted.submitted);
-    check('THE ORDER: the claim is made BEFORE the first write, not after it',
-      claimAt >= 0 && writeAt >= 0 && claimAt < writeAt, { claimAt, writeAt });
-    check('...exactly once, however many writes follow',
-      granted.rpcCalls.filter((m) => m === 'claim_sponsorship_offer').length === 1,
-      granted.rpcCalls.filter((m) => m === 'claim_sponsorship_offer').length);
+    //     The harness answers `default: ok({})`, so a re-added call would be
+    //     ANSWERED and recorded rather than throwing; this check is the only
+    //     thing standing between that and a silent return of the flow.
+    const asked = refused.rpcCalls.filter((m) => m.includes('sponsor'));
+    check('THE RULING: a refused window never asks about sponsorship at all',
+      asked.length === 0, asked);
 
-    // WHAT THE PLAYER ACTUALLY SEES, off the rendered DOM. Every other check in
-    // this section is about the wire; this is the one that fails if `App.tsx`
-    // never wires the helper's progress into the standing — a boundary saying
-    // one sentence for a minute, which is the "sits there" this task exists to
-    // remove. The lines are compared against `wayIn.PASSAGE_BODY` rather than
-    // retyped, so the copy has exactly one home.
-    check('the boundary was drawn while the claim ran',
-      granted.edgeLines.length > 0, granted.edgeLines);
-    check('...and it MOVED — more than one line was shown, in the beats\' own order',
-      granted.edgeLines.length >= 2, granted.edgeLines);
-    check('...each of them a line this client owns, never the helper\'s own words',
-      granted.edgeLines.every((l) => PASSAGE_BODY_LINES.includes(l) || l === EDGE_BODY),
-      granted.edgeLines);
-    check('...ending on the beat that says someone is bringing them through',
-      granted.edgeLines.includes(PASSAGE_BODY.turning), granted.edgeLines);
-    check('...and the boundary is GONE once they are swimming',
-      granted.edgeAtEnd === false, granted.edgeAtEnd);
-
-    // (b) A returning player. The node reports a vouch on the first ask, so
-    //     `ensureSponsored` returns before reporting a phase and nothing is
-    //     claimed — which is what keeps a boundary from flashing at every
-    //     launch. (This is also the default every scenario above ran under.)
-    // The same 1.2 s hold, for the same reason: without it the flash a version
-    // that raised the boundary UP FRONT would produce is shorter than one 10 ms
-    // sample, and the check below passed for exactly that mutation.
-    const already = await observe({
-      sponsorship: 'already', sponsorshipDelayMs: 1_200, awaitWrite: true, settleMs: 200,
-    });
-    check('a swimmer the water already holds a vouch for claims nothing',
-      !already.rpcCalls.includes('claim_sponsorship_offer'), already.rpcCalls);
-    // THE FLICKER CHECK. `App.tsx` enters the passage from the helper's own
-    // progress reports rather than setting it before the call, precisely so
-    // that a returning player — every launch after the first — is never shown a
-    // boundary for the length of one RPC.
-    check('...and is never shown a boundary at all, not even for an instant',
-      already.edgeLines.length === 0 && already.edgeAtEnd === false,
-      { lines: already.edgeLines, atEnd: already.edgeAtEnd });
-    check('...and it cost them exactly one question',
-      already.rpcCalls.filter((m) => m === 'get_sponsorship_status').length === 1,
-      already.rpcCalls.filter((m) => m === 'get_sponsorship_status').length);
-    check('...and they are in the water', reachedWater(already, room), already.submitted);
-
-    // (c) THE ONE THAT MUST NOT COST A PLAYER THE GAME. Nothing is open, so the
-    //     claim fails. The window must still reach the water — the writes will
-    //     be refused and `wayIn.ts` will say so, which is exactly the state this
-    //     client shipped in before the claim existed. A failure here that
-    //     stopped the window would have traded a partial game for none.
-    const none = await observe({ sponsorship: 'none', awaitWrite: true, settleMs: 200 });
-    check('with no offer open the window STILL reaches the water',
-      reachedWater(none, room), none.submitted);
-    check('...having looked for one and found nothing to claim',
-      none.rpcCalls.includes('list_sponsorship_offers')
-      && !none.rpcCalls.includes('claim_sponsorship_offer'), none.rpcCalls);
+    // (c) NON-DEGENERACY for (a). The same window with a node that accepts
+    //     shows no boundary — so the boundary in (a) is the refusal being
+    //     recognised, not a surface that is always on screen.
+    const accepted = await observe({ awaitWrite: true, settleMs: 1_500 });
+    check('NON-DEGENERACY: a swimmer the water accepts is never shown a boundary',
+      accepted.edgeAtEnd === false && accepted.edgeLine === null,
+      { atEnd: accepted.edgeAtEnd, line: accepted.edgeLine });
+    check('...and asks about sponsorship no more than the refused one did',
+      accepted.rpcCalls.filter((m) => m.includes('sponsor')).length === 0,
+      accepted.rpcCalls);
   }
+
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

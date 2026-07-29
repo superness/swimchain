@@ -30,22 +30,13 @@
  *
  * ## The words
  *
- * Two lines, and they are not written here — they are `EDGE_TITLE` and the
- * `bodyFor` of the standing, in `wayIn.ts`, where `wayIn.test.ts` holds every
- * one of them to spec §1.1's diegetic rule by name. A string typed straight
- * into JSX is a string nothing checks, and this is the only player-facing copy
- * in the client apart from a player's own speech.
+ * Two lines, and they are not written here — they are `EDGE_TITLE` and
+ * `EDGE_BODY` in `wayIn.ts`, where `wayIn.test.ts` holds them to spec §1.1's
+ * diegetic rule by name. A string typed straight into JSX is a string nothing
+ * checks, and this is the only player-facing copy in the client apart from a
+ * player's own speech.
  *
- * THE SECOND LINE CHANGES WHILE THE WATER IS BEING OPENED. `wayIn.bodyFor`
- * returns the beat of an attempt in flight, or the standing condition when
- * there is none, and this layer draws whichever it gets. The `key` on that
- * paragraph is load-bearing rather than React housekeeping: it makes each new
- * line a NEW element, so `shoal-edge-line-in` runs again and one sentence
- * dissolves into the next instead of snapping. A boundary whose words change
- * without moving reads as a page reloading; one that breathes reads as
- * something happening to the player.
- *
- * ## Why a `<style>` element rather than inline styles
+ * ## Why a stylesheet rather than inline styles
  *
  * The rest of the shell styles itself with the inline `CSSProperties` objects
  * in `App.tsx`, which cannot express `@keyframes`, `@media
@@ -54,137 +45,18 @@
  * system for less motion must still get the picture, and the fade-in is what
  * keeps the boundary from snapping into existence mid-swim. The rules are
  * scoped under one `.shoal-edge` root so nothing here can reach the canvas.
+ *
+ * IT WAS A `<style>` ELEMENT AND THAT DID NOT SURVIVE BEING SHIPPED. Tauri
+ * stamps a nonce on the inline styles it finds in `index.html` and appends the
+ * matching source to `style-src`, which per CSP3 makes `'unsafe-inline'`
+ * ignored — so a `<style>` element React creates at runtime carries no nonce
+ * and is dropped, and this boundary reached a real player as unstyled black
+ * serif text in a corner. `theEdge.css` carries the whole argument and
+ * `shippedStyles.test.ts` is what stops it happening again.
  */
-import type { CSSProperties } from 'react';
-import { bodyFor, EDGE_TITLE, type Standing } from './wayIn';
+import { EDGE_BODY, EDGE_TITLE } from './wayIn';
+import './theEdge.css';
 
-/** How far, in px, the player's fish circles from the centre of its orbit.
- *  Small — this is a fish going nowhere, not a patrol. */
-const ORBIT_PX = 66;
-
-const CSS = `
-.shoal-edge {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  animation: shoal-edge-in 1400ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
-}
-
-/* Above the line: the open water, everyone else's. Touched only enough that
-   the eye knows which half it is being kept out of. */
-.shoal-edge-open {
-  position: absolute;
-  left: 0; right: 0; top: 0; height: 33%;
-  background: linear-gradient(to bottom, rgba(1, 6, 10, 0.16) 0%, rgba(1, 6, 10, 0.03) 60%, rgba(1, 6, 10, 0) 100%);
-}
-
-/* Below it: the same sea, one shade colder and a stop darker. The backdrop
-   filter works on the live canvas underneath, so wild fish drifting across the
-   boundary really do dim as they cross it. The mask softens the top edge over
-   ~64px so the transition is water, not a seam — the drawn line below is what
-   the eye actually reads as the boundary. */
-.shoal-edge-below {
-  position: absolute;
-  left: 0; right: 0; top: 31%; bottom: 0;
-  backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
-  -webkit-backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
-  background: linear-gradient(to bottom,
-    rgba(1, 8, 13, 0.04) 0%,
-    rgba(1, 8, 13, 0.24) 26%,
-    rgba(1, 6, 10, 0.54) 100%);
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
-}
-
-/* The line itself. Two waves, drawn 3x the viewport wide and drifting at
-   different speeds, so they never repeat visibly and never read as a horizon. */
-.shoal-edge-line {
-  position: absolute;
-  left: -100%; width: 300%;
-  top: 26%; height: 12%;
-  overflow: visible;
-}
-.shoal-edge-wave-far {
-  animation: shoal-edge-drift 41s linear infinite;
-  opacity: 0.30;
-}
-.shoal-edge-wave-near {
-  animation: shoal-edge-drift 27s linear infinite reverse;
-  opacity: 0.72;
-}
-.shoal-edge-glow { filter: blur(7px); opacity: 0.5; }
-
-/* The player: one small fish, circling. */
-.shoal-edge-orbit {
-  position: absolute;
-  left: 29%; top: 46%;
-  width: 0; height: 0;
-  animation: shoal-edge-circle 13s linear infinite;
-}
-.shoal-edge-arm { position: absolute; transform: translateX(${ORBIT_PX}px); }
-.shoal-edge-heading { transform: rotate(90deg) translate(-17px, -8px); }
-.shoal-edge-beat {
-  transform-origin: 4px 12px;
-  animation: shoal-edge-beat 1100ms ease-in-out infinite alternate;
-}
-
-.shoal-edge-copy {
-  position: absolute;
-  left: 50%; top: 79%;
-  transform: translateX(-50%);
-  width: min(74vw, 520px);
-  text-align: center;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-}
-.shoal-edge-title {
-  margin: 0 0 10px;
-  font: 500 20px/1.35 ui-sans-serif, system-ui, sans-serif;
-  letter-spacing: 0.012em;
-  color: rgba(211, 233, 240, 0.94);
-  text-shadow: 0 1px 12px rgba(0, 12, 18, 0.9);
-}
-.shoal-edge-body {
-  margin: 0;
-  font: 400 14px/1.62 ui-sans-serif, system-ui, sans-serif;
-  color: rgba(140, 178, 191, 0.86);
-  text-shadow: 0 1px 10px rgba(0, 12, 18, 0.9);
-  animation: shoal-edge-line-in 900ms ease-out both;
-}
-
-@keyframes shoal-edge-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-/* One sentence dissolving into the next, not snapping. Driven by the React
-   key on the paragraph — see the module header. */
-@keyframes shoal-edge-line-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-@keyframes shoal-edge-drift {
-  from { transform: translateX(0); }
-  to   { transform: translateX(-33.3333%); }
-}
-@keyframes shoal-edge-circle {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
-}
-@keyframes shoal-edge-beat {
-  from { transform: skewX(9deg); }
-  to   { transform: skewX(-9deg); }
-}
-
-/* Asked for less motion: the picture must still be complete, so the fish stays
-   where it is and everything simply stops. Nothing is hidden. */
-@media (prefers-reduced-motion: reduce) {
-  .shoal-edge,
-  .shoal-edge-wave-far,
-  .shoal-edge-wave-near,
-  .shoal-edge-orbit,
-  .shoal-edge-body,
-  .shoal-edge-beat { animation: none; }
-}
-`;
 
 /**
  * One period of the boundary, repeated three times across the 300%-wide svg so
@@ -244,11 +116,9 @@ function Fish() {
  * see `wayIn.afterWrite` for which of the three kinds of failed write gets
  * here and why the other two must not.
  */
-export function TheEdge({ standing }: { standing: Standing }) {
-  const body = bodyFor(standing);
+export function TheEdge() {
   return (
-    <div className="shoal-edge" style={ROOT}>
-      <style>{CSS}</style>
+    <div className="shoal-edge">
       <div className="shoal-edge-open" />
       <div className="shoal-edge-below" />
       <svg
@@ -273,12 +143,8 @@ export function TheEdge({ standing }: { standing: Standing }) {
       </div>
       <div className="shoal-edge-copy">
         <p className="shoal-edge-title">{EDGE_TITLE}</p>
-        <p className="shoal-edge-body" key={body}>{body}</p>
+        <p className="shoal-edge-body">{EDGE_BODY}</p>
       </div>
     </div>
   );
 }
-
-/** The one inline rule, so the layer is positioned even if the stylesheet has
- *  not been applied yet on the first paint. */
-const ROOT: CSSProperties = { position: 'absolute', inset: 0, pointerEvents: 'none' };
