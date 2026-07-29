@@ -373,6 +373,11 @@ impl NodeManager {
             max_outbound: self.config.max_outbound,
             target_peers: self.config.target_peers,
             min_peers: self.config.min_peers,
+            // The same seeds bootstrap_peers uses at startup, so the periodic
+            // discovery loop can fall back to them when the peer store yields
+            // nothing reachable. Without this the fallback list is empty and a
+            // node with a stale cache stays isolated for the life of the process.
+            seeds: self.config.seeds.iter().map(|s| s.addr).collect(),
             ..ConnectionConfig::default()
         };
         let connection_manager = ConnectionManager::new(conn_config, peer_store);
