@@ -10,11 +10,11 @@
 import {
   encodePresence, encodeEat, encodeCheckpoint,
   decodeBody, decodeCheckpointBody, saltFor, MAX_SAY, SALT_HEX_CHARS,
-  MAX_CHECKPOINT_SWIMMERS, MAX_CHECKPOINT_SIZE, MAX_RECENT_BITES,
+  MAX_CHECKPOINT_SWIMMERS, MAX_RECENT_BITES,
 } from './shoalWire';
 import {
   HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS,
-  EPOCH_MS, EAT_COOLDOWN_MS, VOID_WINDOW_MS, BITE_GROWTH,
+  EPOCH_MS, EAT_COOLDOWN_MS, VOID_WINDOW_MS, BITE_GROWTH, MAX_SIZE,
 } from './shoalConst';
 import { parseCheckpoint } from './checkpoint';
 // Imported so the future-time bound can be DEMONSTRATED rather than argued:
@@ -77,7 +77,7 @@ check('saltFor on a different key gives a different salt (the whole point)',
   const wire = encodePresence(vec, AUTHOR_HEX);
   check('encodePresence matches the hand-derived wire string', wire === expectedWire, wire);
 
-  const decoded = decodeBody(wire, 'author-x', 'hash-y');
+  const decoded = decodeBody(wire, AUTHOR_HEX, 'hash-y');
   check('decode round-trips every integer exactly',
     decoded !== null && decoded.kind === 'presence'
       && (decoded as Presence).vec.x === 1234
@@ -87,7 +87,7 @@ check('saltFor on a different key gives a different salt (the whole point)',
       && (decoded as Presence).vec.t === 999_983,
     decoded);
   check('decode carries the id and hash supplied by the caller, not the wire',
-    decoded !== null && decoded.id === 'author-x' && decoded.hash === 'hash-y', decoded);
+    decoded !== null && decoded.id === AUTHOR_HEX && decoded.hash === 'hash-y', decoded);
   check('no say on the wire decodes to no say on the Presence',
     decoded !== null && decoded.kind === 'presence' && (decoded as Presence).say === undefined, decoded);
 }
@@ -100,12 +100,12 @@ check('saltFor on a different key gives a different salt (the whole point)',
 // otherwise coincidentally special, to rule out a lucky accidental match.
 {
   const wireA = 'v1|presence|10|10|0|0|999983|a1b2c3d4e5f60718|';
-  const a = decodeBody(wireA, 'a', 'ha');
+  const a = decodeBody(wireA, AUTHOR_HEX, 'ha');
   check('ms === vec.t (value A, 999983)',
     a !== null && a.kind === 'presence' && a.ms === 999_983 && (a as Presence).vec.t === 999_983, a);
 
   const wireB = 'v1|presence|10|10|0|0|42|a1b2c3d4e5f60718|';
-  const b = decodeBody(wireB, 'b', 'hb');
+  const b = decodeBody(wireB, AUTHOR_HEX, 'hb');
   check('ms === vec.t (value B, 42, distinct from A)',
     b !== null && b.kind === 'presence' && b.ms === 42 && (b as Presence).vec.t === 42, b);
 }
@@ -121,7 +121,7 @@ check('saltFor on a different key gives a different salt (the whole point)',
   const wire = encodePresence(vec, AUTHOR_HEX, say);
   check('encodePresence with say matches the hand-derived wire string', wire === expectedWire, wire);
 
-  const decoded = decodeBody(wire, 'author-z', 'hash-z');
+  const decoded = decodeBody(wire, AUTHOR_HEX, 'hash-z');
   check('say rides along with a correctly-decoded vector',
     decoded !== null && decoded.kind === 'presence'
       && (decoded as Presence).say === 'hello world'
@@ -148,10 +148,10 @@ check('saltFor on a different key gives a different salt (the whole point)',
   const tooHigh = `v1|presence|10|10|${HEADING_STEPS}|1|1000|a1b2c3d4e5f60718|`; // heading 256: invalid
   const negative = 'v1|presence|10|10|-1|1|1000|a1b2c3d4e5f60718|'; // heading -1: invalid
 
-  check('heading 0 (lower boundary) is accepted', decodeBody(inRangeLow, 'i', 'h') !== null);
-  check('heading HEADING_STEPS-1 (upper boundary) is accepted', decodeBody(inRangeHigh, 'i', 'h') !== null);
-  check('heading === HEADING_STEPS is rejected', decodeBody(tooHigh, 'i', 'h') === null);
-  check('heading === -1 is rejected', decodeBody(negative, 'i', 'h') === null);
+  check('heading 0 (lower boundary) is accepted', decodeBody(inRangeLow, AUTHOR_HEX, 'h') !== null);
+  check('heading HEADING_STEPS-1 (upper boundary) is accepted', decodeBody(inRangeHigh, AUTHOR_HEX, 'h') !== null);
+  check('heading === HEADING_STEPS is rejected', decodeBody(tooHigh, AUTHOR_HEX, 'h') === null);
+  check('heading === -1 is rejected', decodeBody(negative, AUTHOR_HEX, 'h') === null);
 }
 
 // --- The eat claim -----------------------------------------------------
@@ -160,18 +160,18 @@ check('saltFor on a different key gives a different salt (the whole point)',
   const wire = encodeEat(5, 1000, AUTHOR_HEX);
   check('encodeEat matches the hand-derived wire string', wire === expectedWire, wire);
 
-  const decoded = decodeBody(wire, 'author-e', 'hash-e');
+  const decoded = decodeBody(wire, AUTHOR_HEX, 'hash-e');
   check('eat claim round-trips its cell and ms',
     decoded !== null && decoded.kind === 'eat'
       && (decoded as EatClaim).cell === 5 && decoded.ms === 1000
-      && decoded.id === 'author-e' && decoded.hash === 'hash-e',
+      && decoded.id === AUTHOR_HEX && decoded.hash === 'hash-e',
     decoded);
 
   // CELL_COUNT = BLOOM_COLS(32) * BLOOM_ROWS(24) = 768, valid cells 0..767.
   const lastValid = `v1|eat|${CELL_COUNT - 1}|1000|a1b2c3d4e5f60718`;
   const firstInvalid = `v1|eat|${CELL_COUNT}|1000|a1b2c3d4e5f60718`;
-  check('cell CELL_COUNT-1 (last valid cell) is accepted', decodeBody(lastValid, 'i', 'h') !== null);
-  check('a cell outside the grid (cell === CELL_COUNT) is rejected', decodeBody(firstInvalid, 'i', 'h') === null);
+  check('cell CELL_COUNT-1 (last valid cell) is accepted', decodeBody(lastValid, AUTHOR_HEX, 'h') !== null);
+  check('a cell outside the grid (cell === CELL_COUNT) is rejected', decodeBody(firstInvalid, AUTHOR_HEX, 'h') === null);
 }
 
 // --- The salt: two swimmers, one cell, one millisecond -------------------
@@ -200,55 +200,84 @@ check('saltFor on a different key gives a different salt (the whole point)',
     encodePresence(vec, AUTHOR_HEX, 'hi') !== encodePresence(vec, OTHER_AUTHOR_HEX, 'hi'));
 }
 
-// --- The salt is NEVER trusted as the author ------------------------------
-// The salt exists only to perturb sha256(body). `decodeBody` already receives
-// the TRUE id from the reply envelope (shoalRoom.ts sources it from
-// `author_id`), and a body's own claims about who wrote it are exactly what
-// this decoder must not believe. A body salted with someone ELSE's key must
-// still decode, and must decode with the ENVELOPE'S id — not the salt's owner,
-// and not a rejection either (a mismatching salt is a valid, if pointless,
-// body; rejecting it would make the decoder start adjudicating authorship).
+// --- The salt MUST match the envelope author ------------------------------
+// THIS BEHAVIOUR CHANGED, and the reason is worth stating where the test is.
+//
+// The salt used to be shape-checked and never compared to `id`, on the ground
+// that a body's claims about its own author are not a decoder's to adjudicate.
+// That left 16 unconstrained hex characters inside a body whose sha256 IS its
+// content id — 64 bits of free entropy with which any publisher could steer its
+// own content id offline, no key and no proof-of-work required. `adopt.ts` was
+// ordering checkpoints by exactly that id, and grinding a winning one was
+// measured at a handful of sha256 calls.
+//
+// So a body salted with someone ELSE's key is now REJECTED rather than decoded
+// under the envelope's id. What has NOT changed is where `id` comes from: the
+// envelope, never the body — the decoder still adjudicates nothing, it just
+// refuses to carry a field it cannot tie to the author the node named.
 {
   const envelopeAuthor = AUTHOR_HEX; // who the node says signed it
   const bodyWithForeignSalt = `v1|eat|5|1000|${OTHER_SALT}`; // salted as someone else
-  const decoded = decodeBody(bodyWithForeignSalt, envelopeAuthor, 'hash-q');
-  check('a body whose salt disagrees with the envelope author still decodes',
-    decoded !== null, decoded);
-  check('…and it decodes with the ENVELOPE\'s id, never the salt\'s owner',
-    decoded !== null && decoded.id === envelopeAuthor, decoded?.id);
-  check('…and the salt does not leak onto the decoded entry in any form',
-    decoded !== null && !JSON.stringify(decoded).includes(OTHER_SALT), decoded);
+  check('an eat body whose salt disagrees with the envelope author is REJECTED',
+    decodeBody(bodyWithForeignSalt, envelopeAuthor, 'hash-q') === null,
+    decodeBody(bodyWithForeignSalt, envelopeAuthor, 'hash-q'));
 
   const presenceForeign = `v1|presence|10|20|5|7|55555|${OTHER_SALT}|hi`;
-  const dp = decodeBody(presenceForeign, envelopeAuthor, 'hash-r');
-  check('same for a presence body: foreign salt, envelope id wins',
-    dp !== null && dp.id === envelopeAuthor, dp?.id);
+  check('same for a presence body: a foreign salt is rejected',
+    decodeBody(presenceForeign, envelopeAuthor, 'hash-r') === null);
+
+  // The SAME two bodies decode for the author whose key they are salted with,
+  // so the rejection above is the author comparison and not something else
+  // about those bodies.
+  const eatOwn = decodeBody(bodyWithForeignSalt, OTHER_AUTHOR_HEX, 'hash-q');
+  check('…while the very same eat body decodes for the author it IS salted with',
+    eatOwn !== null && eatOwn.id === OTHER_AUTHOR_HEX, eatOwn);
+  const presOwn = decodeBody(presenceForeign, OTHER_AUTHOR_HEX, 'hash-r');
+  check('…and so does the presence body',
+    presOwn !== null && presOwn.id === OTHER_AUTHOR_HEX, presOwn?.id);
+  check('…still carrying the ENVELOPE\'s id, which is where it has always come from',
+    presOwn !== null && presOwn.id === OTHER_AUTHOR_HEX && presOwn.hash === 'hash-r', presOwn);
+  // The salt is validated and DISCARDED — it is not a field on the decoded
+  // entry. Checked with the `id` blanked out, because the id now necessarily
+  // contains the salt as its own prefix (that is what the check above verifies),
+  // so a plain `includes` would be trivially true and prove nothing.
+  check('…and the salt does not leak onto the decoded entry as a field of its own',
+    eatOwn !== null
+      && !JSON.stringify({ ...eatOwn, id: '' }).includes(OTHER_SALT)
+      && !('salt' in eatOwn),
+    eatOwn);
+
+  // An envelope author that is not a real 64-hex id fails outright: there is no
+  // salt it could match. The only production caller already gates on this shape
+  // (shoalRoom.ts's AUTHOR_ID_RE) before a body ever reaches the decoder.
+  check('a body cannot decode under an envelope author that is not 64-hex at all',
+    decodeBody(`v1|eat|5|1000|${SALT}`, 'author-x', 'h') === null);
 }
 
 // --- The salt's SHAPE is enforced (16 lowercase hex, exactly) -------------
 // CONSENSUS: two clients checking different lengths would accept different sets
 // of writes and silently fold different rooms. Hand-written bodies only.
 check('a 15-character salt is rejected (one short)',
-  decodeBody(`v1|eat|5|1000|${SALT.slice(0, 15)}`, 'i', 'h') === null);
+  decodeBody(`v1|eat|5|1000|${SALT.slice(0, 15)}`, AUTHOR_HEX, 'h') === null);
 check('a 17-character salt is rejected (one long)',
-  decodeBody(`v1|eat|5|1000|${SALT}a`, 'i', 'h') === null);
+  decodeBody(`v1|eat|5|1000|${SALT}a`, AUTHOR_HEX, 'h') === null);
 check('an UPPERCASE salt is rejected (one spelling per value)',
-  decodeBody(`v1|eat|5|1000|${SALT.toUpperCase()}`, 'i', 'h') === null);
+  decodeBody(`v1|eat|5|1000|${SALT.toUpperCase()}`, AUTHOR_HEX, 'h') === null);
 check('a non-hex salt is rejected',
-  decodeBody('v1|eat|5|1000|zzzzzzzzzzzzzzzz', 'i', 'h') === null);
+  decodeBody('v1|eat|5|1000|zzzzzzzzzzzzzzzz', AUTHOR_HEX, 'h') === null);
 check('an empty salt field is rejected',
-  decodeBody('v1|eat|5|1000|', 'i', 'h') === null);
+  decodeBody('v1|eat|5|1000|', AUTHOR_HEX, 'h') === null);
 check('a presence body with a 15-character salt is rejected too',
-  decodeBody(`v1|presence|10|20|5|7|55555|${SALT.slice(0, 15)}|hi`, 'i', 'h') === null);
+  decodeBody(`v1|presence|10|20|5|7|55555|${SALT.slice(0, 15)}|hi`, AUTHOR_HEX, 'h') === null);
 check('a presence body with an empty salt field is rejected too',
-  decodeBody('v1|presence|10|20|5|7|55555||hi', 'i', 'h') === null);
+  decodeBody('v1|presence|10|20|5|7|55555||hi', AUTHOR_HEX, 'h') === null);
 // The pre-salt grammar must not still decode — otherwise an old client's
 // writes would keep folding and the collision this field closes would remain
 // open for exactly as long as one such client kept running.
 check('a PRE-SALT eat body (v1|eat|cell|ms) no longer decodes',
-  decodeBody('v1|eat|5|1000', 'i', 'h') === null);
+  decodeBody('v1|eat|5|1000', AUTHOR_HEX, 'h') === null);
 check('a PRE-SALT presence body (no salt field) no longer decodes',
-  decodeBody('v1|presence|10|20|5|7|55555|hi', 'i', 'h') === null);
+  decodeBody('v1|presence|10|20|5|7|55555|hi', AUTHOR_HEX, 'h') === null);
 
 // --- Determinism -------------------------------------------------------
 {
@@ -264,59 +293,59 @@ check('a PRE-SALT presence body (no salt field) no longer decodes',
 // Every case below is a hand-written wire string, not a corrupted output of
 // our own encoder (which would refuse to produce most of these in the first
 // place — see the encode-side checks further down).
-check('empty string is rejected', decodeBody('', 'i', 'h') === null);
+check('empty string is rejected', decodeBody('', AUTHOR_HEX, 'h') === null);
 check('unknown version tag is rejected',
-  decodeBody('v2|presence|100|100|0|10|1000|', 'i', 'h') === null);
+  decodeBody('v2|presence|100|100|0|10|1000|', AUTHOR_HEX, 'h') === null);
 check('too few fields (presence missing heading/speed/ms/say) is rejected',
-  decodeBody('v1|presence|100|100', 'i', 'h') === null);
+  decodeBody('v1|presence|100|100', AUTHOR_HEX, 'h') === null);
 check('too many fields (eat with an extra trailing field) is rejected',
-  decodeBody('v1|eat|5|1000|a1b2c3d4e5f60718|extra', 'i', 'h') === null);
+  decodeBody('v1|eat|5|1000|a1b2c3d4e5f60718|extra', AUTHOR_HEX, 'h') === null);
 check('a non-integer coordinate is rejected',
-  decodeBody('v1|presence|100.5|100|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100.5|100|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a negative ms is rejected',
-  decodeBody('v1|presence|100|100|0|10|-5|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100|100|0|10|-5|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a heading outside [0, HEADING_STEPS) is rejected (duplicated here for the exhaustive list)',
-  decodeBody(`v1|presence|100|100|${HEADING_STEPS}|10|1000|a1b2c3d4e5f60718|`, 'i', 'h') === null);
+  decodeBody(`v1|presence|100|100|${HEADING_STEPS}|10|1000|a1b2c3d4e5f60718|`, AUTHOR_HEX, 'h') === null);
 check('a coordinate outside the world (x > WORLD_W) is rejected',
-  decodeBody(`v1|presence|${WORLD_W + 1}|100|0|10|1000|a1b2c3d4e5f60718|`, 'i', 'h') === null);
+  decodeBody(`v1|presence|${WORLD_W + 1}|100|0|10|1000|a1b2c3d4e5f60718|`, AUTHOR_HEX, 'h') === null);
 check('a coordinate outside the world (y > WORLD_H) is rejected',
-  decodeBody(`v1|presence|100|${WORLD_H + 1}|0|10|1000|a1b2c3d4e5f60718|`, 'i', 'h') === null);
+  decodeBody(`v1|presence|100|${WORLD_H + 1}|0|10|1000|a1b2c3d4e5f60718|`, AUTHOR_HEX, 'h') === null);
 check('x === WORLD_W (inclusive boundary) is accepted',
-  decodeBody(`v1|presence|${WORLD_W}|100|0|10|1000|a1b2c3d4e5f60718|`, 'i', 'h') !== null);
+  decodeBody(`v1|presence|${WORLD_W}|100|0|10|1000|a1b2c3d4e5f60718|`, AUTHOR_HEX, 'h') !== null);
 // Review fix: the lower bound was missing entirely (only `x > WORLD_W` /
 // `y > WORLD_H` were checked). `-1` parses fine (parseIntField accepts
 // negative literals by design), so nothing stopped it reaching the
 // constructed Vec. x/y = 0 is the lower boundary and must still be
 // accepted; -1 is one past it and must be rejected, on both axes.
 check('x === 0 (lower boundary) is accepted',
-  decodeBody('v1|presence|0|100|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') !== null);
+  decodeBody('v1|presence|0|100|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') !== null);
 check('y === 0 (lower boundary) is accepted',
-  decodeBody('v1|presence|100|0|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') !== null);
+  decodeBody('v1|presence|100|0|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') !== null);
 check('a negative x coordinate is rejected',
-  decodeBody('v1|presence|-1|100|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|-1|100|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a negative y coordinate is rejected',
-  decodeBody('v1|presence|100|-1|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100|-1|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 // -0 is a second byte sequence for the same logical value 0. Deliberately
 // rejected at the lexer (parseIntField), not accepted-and-normalised: this
 // format has exactly one spelling per value (the same rule that already
 // rejects "007" for 7). Covered for both x and y, plus heading/speed/ms/cell
 // share the same lexer so one check here is representative of all of them.
 check('x = -0 (negative zero) is rejected, not silently accepted as 0',
-  decodeBody('v1|presence|-0|100|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|-0|100|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('y = -0 (negative zero) is rejected, not silently accepted as 0',
-  decodeBody('v1|presence|100|-0|0|10|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100|-0|0|10|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a bare -0 ms is rejected by the same no-negative-zero rule',
-  decodeBody('v1|presence|100|100|0|10|-0|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100|100|0|10|-0|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a negative speed is rejected',
-  decodeBody('v1|presence|100|100|0|-5|1000|a1b2c3d4e5f60718|', 'i', 'h') === null);
+  decodeBody('v1|presence|100|100|0|-5|1000|a1b2c3d4e5f60718|', AUTHOR_HEX, 'h') === null);
 check('a say exactly MAX_SAY long is accepted (boundary)',
-  decodeBody(`v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|${'a'.repeat(MAX_SAY)}`, 'i', 'h') !== null);
+  decodeBody(`v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|${'a'.repeat(MAX_SAY)}`, AUTHOR_HEX, 'h') !== null);
 check('a say longer than MAX_SAY is rejected',
-  decodeBody(`v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|${'a'.repeat(MAX_SAY + 1)}`, 'i', 'h') === null);
+  decodeBody(`v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|${'a'.repeat(MAX_SAY + 1)}`, AUTHOR_HEX, 'h') === null);
 check('a say containing the field delimiter is rejected',
-  decodeBody('v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|hi|there', 'i', 'h') === null);
+  decodeBody('v1|presence|100|100|0|10|1000|a1b2c3d4e5f60718|hi|there', AUTHOR_HEX, 'h') === null);
 check('an unrecognized kind tag is rejected',
-  decodeBody('v1|bogus|1|2', 'i', 'h') === null);
+  decodeBody('v1|bogus|1|2', AUTHOR_HEX, 'h') === null);
 
 // --- Encode-side validation (defensive, not part of the wire boundary) -----
 // decodeBody is the real hostile-input boundary (see above); these just
@@ -390,11 +419,11 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   const wire = encodeCheckpoint(CP, AUTHOR_HEX);
   check('encodeCheckpoint matches the hand-derived wire string', wire === CP_WIRE, wire);
 
-  const decoded = decodeCheckpointBody(CP_WIRE, 'author-c', 'hash-c');
+  const decoded = decodeCheckpointBody(CP_WIRE, AUTHOR_HEX, 'hash-c');
   check('a checkpoint body decodes to a checkpoint entry',
     decoded !== null && decoded.kind === 'checkpoint', decoded);
   check('…carrying the id and hash from the ENVELOPE, not the body',
-    decoded !== null && decoded.id === 'author-c' && decoded.hash === 'hash-c', decoded);
+    decoded !== null && decoded.id === AUTHOR_HEX && decoded.hash === 'hash-c', decoded);
   check('…and every field of the checkpoint round-trips exactly',
     decoded !== null
       && decoded.cp.epoch === CP_EPOCH
@@ -407,8 +436,13 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
       && decoded.cp.recent[0][2].length === 1
       && decoded.cp.recent[0][2][0] === 1_700_000_000_123,
     decoded);
-  check('…and the salt does not leak onto the decoded entry in any form',
-    decoded !== null && !JSON.stringify(decoded).includes(SALT), decoded);
+  // As for a move: blank the id first, since the id now contains the salt by
+  // construction. What must not appear is a salt FIELD.
+  check('…and the salt does not leak onto the decoded entry as a field of its own',
+    decoded !== null
+      && !JSON.stringify({ ...decoded, id: '' }).includes(SALT)
+      && !('salt' in decoded),
+    decoded);
 }
 {
   // The empty checkpoint — an epoch nobody swam. `recent` is written even
@@ -417,7 +451,7 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   const expected = `v1|checkpoint|${SALT}|{"epoch":0,"sizes":[],"recent":[]}`;
   check('an empty checkpoint matches its hand-derived wire string',
     encodeCheckpoint(empty, AUTHOR_HEX) === expected, encodeCheckpoint(empty, AUTHOR_HEX));
-  const d = decodeCheckpointBody(expected, 'i', 'h');
+  const d = decodeCheckpointBody(expected, AUTHOR_HEX, 'h');
   check('an empty checkpoint round-trips',
     d !== null && d.cp.epoch === 0 && d.cp.sizes.length === 0 && d.cp.recent.length === 0, d);
 }
@@ -442,21 +476,29 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     mine === `v1|checkpoint|${SALT}|${CP_JSON}`
     && theirs === `v1|checkpoint|${OTHER_SALT}|${CP_JSON}`, { mine, theirs });
   // …and yet they agree, because agreement is judged on the PAYLOAD.
-  const a = decodeCheckpointBody(mine, 'author-a', 'hash-a');
-  const b = decodeCheckpointBody(theirs, 'author-b', 'hash-b');
+  const a = decodeCheckpointBody(mine, AUTHOR_HEX, 'hash-a');
+  const b = decodeCheckpointBody(theirs, OTHER_AUTHOR_HEX, 'hash-b');
   check('…and both decode to the identical canonical payload (they agree)',
     a !== null && b !== null && JSON.stringify(a.cp) === JSON.stringify(b.cp), { a, b });
   check('…while remaining distinguishable as two different publishers',
     a !== null && b !== null && a.id !== b.id, { a, b });
 }
 {
-  // A body salted with someone ELSE's key still decodes, with the envelope's
-  // id — exactly as for a move. The decoder never adjudicates authorship.
+  // A checkpoint salted with someone ELSE's key is REJECTED — exactly as a move
+  // now is, and for the reason that matters most here: `adopt.ts` used to ORDER
+  // checkpoints by content hash, and an unconstrained salt let any publisher
+  // grind that hash offline for the price of a few sha256 calls.
   const foreign = `v1|checkpoint|${OTHER_SALT}|${CP_JSON}`;
-  const d = decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q');
-  check('a checkpoint whose salt disagrees with the envelope author still decodes', d !== null, d);
-  check('…and decodes with the ENVELOPE\'s id, never the salt\'s owner',
-    d !== null && d.id === AUTHOR_HEX, d?.id);
+  check('a checkpoint whose salt disagrees with the envelope author is REJECTED',
+    decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q') === null,
+    decodeCheckpointBody(foreign, AUTHOR_HEX, 'hash-q'));
+  const own = decodeCheckpointBody(foreign, OTHER_AUTHOR_HEX, 'hash-q');
+  check('…while the identical body decodes for the author it IS salted with',
+    own !== null && own.id === OTHER_AUTHOR_HEX, own?.id);
+  // A publisher therefore has exactly ONE legal body per payload. The salt is
+  // no longer a free parameter, so it cannot be used to move the content hash.
+  check('…so there is exactly one legal salt per publisher: 2^64 candidates down to 1',
+    encodeCheckpoint(CP, OTHER_AUTHOR_HEX) === foreign, encodeCheckpoint(CP, OTHER_AUTHOR_HEX));
 }
 
 // --- A checkpoint is not a move, and a move is not a checkpoint ------------
@@ -469,11 +511,11 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   const eatWire = `v1|eat|5|1000|${SALT}`;
 
   check('decodeBody rejects a checkpoint body (a checkpoint is not a log entry)',
-    decodeBody(CP_WIRE, 'i', 'h') === null, decodeBody(CP_WIRE, 'i', 'h'));
+    decodeBody(CP_WIRE, AUTHOR_HEX, 'h') === null, decodeBody(CP_WIRE, AUTHOR_HEX, 'h'));
   check('decodeCheckpointBody rejects a presence body',
-    decodeCheckpointBody(presenceWire, 'i', 'h') === null);
+    decodeCheckpointBody(presenceWire, AUTHOR_HEX, 'h') === null);
   check('decodeCheckpointBody rejects an eat body',
-    decodeCheckpointBody(eatWire, 'i', 'h') === null);
+    decodeCheckpointBody(eatWire, AUTHOR_HEX, 'h') === null);
 
   // Mis-tagged: a well-formed checkpoint payload wearing a MOVE's kind tag.
   // Everything after the kind tag is a valid checkpoint body's tail, so the
@@ -481,30 +523,30 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   const cpUnderEat = `v1|eat|${SALT}|${CP_JSON}`;
   const cpUnderPresence = `v1|presence|${SALT}|${CP_JSON}`;
   check('a checkpoint payload wearing the `eat` kind tag is rejected by decodeCheckpointBody',
-    decodeCheckpointBody(cpUnderEat, 'i', 'h') === null, decodeCheckpointBody(cpUnderEat, 'i', 'h'));
+    decodeCheckpointBody(cpUnderEat, AUTHOR_HEX, 'h') === null, decodeCheckpointBody(cpUnderEat, AUTHOR_HEX, 'h'));
   check('…and by decodeBody too',
-    decodeBody(cpUnderEat, 'i', 'h') === null, decodeBody(cpUnderEat, 'i', 'h'));
+    decodeBody(cpUnderEat, AUTHOR_HEX, 'h') === null, decodeBody(cpUnderEat, AUTHOR_HEX, 'h'));
   check('a checkpoint payload wearing the `presence` kind tag is rejected by decodeCheckpointBody',
-    decodeCheckpointBody(cpUnderPresence, 'i', 'h') === null,
-    decodeCheckpointBody(cpUnderPresence, 'i', 'h'));
+    decodeCheckpointBody(cpUnderPresence, AUTHOR_HEX, 'h') === null,
+    decodeCheckpointBody(cpUnderPresence, AUTHOR_HEX, 'h'));
   check('…and by decodeBody too',
-    decodeBody(cpUnderPresence, 'i', 'h') === null, decodeBody(cpUnderPresence, 'i', 'h'));
+    decodeBody(cpUnderPresence, AUTHOR_HEX, 'h') === null, decodeBody(cpUnderPresence, AUTHOR_HEX, 'h'));
 
   // Mis-tagged the other way: a well-formed eat body wearing `checkpoint`.
   const eatUnderCheckpoint = `v1|checkpoint|5|1000|${SALT}`;
   check('an eat body wearing the `checkpoint` kind tag is rejected by both decoders',
-    decodeCheckpointBody(eatUnderCheckpoint, 'i', 'h') === null
-    && decodeBody(eatUnderCheckpoint, 'i', 'h') === null);
+    decodeCheckpointBody(eatUnderCheckpoint, AUTHOR_HEX, 'h') === null
+    && decodeBody(eatUnderCheckpoint, AUTHOR_HEX, 'h') === null);
 
   check('an unknown version tag on a checkpoint is rejected',
-    decodeCheckpointBody(`v2|checkpoint|${SALT}|${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v2|checkpoint|${SALT}|${CP_JSON}`, AUTHOR_HEX, 'h') === null);
 }
 
 // --- Rejection, exhaustively ----------------------------------------------
 // Hand-written bodies throughout; the encoder would refuse to produce most of
 // these in the first place, which is the point.
 {
-  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, AUTHOR_HEX, 'h');
   // Every hand-written payload below uses REAL ids and epoch 7's own time
   // range (epoch 7 ends at 8 * 3_600_000 = 28_800_000 ms, so a bite time of 1
   // is well inside it). Anything else would be rejected by the domain check
@@ -589,22 +631,22 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
 
   // Truncation of the BODY rather than the payload: no payload field at all.
   check('a body truncated before the payload field is rejected',
-    decodeCheckpointBody(`v1|checkpoint|${SALT}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT}`, AUTHOR_HEX, 'h') === null);
   check('a body truncated to version|kind is rejected',
-    decodeCheckpointBody('v1|checkpoint', 'i', 'h') === null);
-  check('an empty body is rejected', decodeCheckpointBody('', 'i', 'h') === null);
+    decodeCheckpointBody('v1|checkpoint', AUTHOR_HEX, 'h') === null);
+  check('an empty body is rejected', decodeCheckpointBody('', AUTHOR_HEX, 'h') === null);
 
   // The salt's shape, exactly as for a move.
   check('a checkpoint with a 15-character salt is rejected',
-    decodeCheckpointBody(`v1|checkpoint|${SALT.slice(0, 15)}|${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT.slice(0, 15)}|${CP_JSON}`, AUTHOR_HEX, 'h') === null);
   check('a checkpoint with a 17-character salt is rejected',
-    decodeCheckpointBody(`v1|checkpoint|${SALT}a|${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT}a|${CP_JSON}`, AUTHOR_HEX, 'h') === null);
   check('a checkpoint with an UPPERCASE salt is rejected',
-    decodeCheckpointBody(`v1|checkpoint|${SALT.toUpperCase()}|${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT.toUpperCase()}|${CP_JSON}`, AUTHOR_HEX, 'h') === null);
   check('a checkpoint with an empty salt field is rejected',
-    decodeCheckpointBody(`v1|checkpoint||${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint||${CP_JSON}`, AUTHOR_HEX, 'h') === null);
   check('a checkpoint with a non-hex salt is rejected',
-    decodeCheckpointBody(`v1|checkpoint|zzzzzzzzzzzzzzzz|${CP_JSON}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|zzzzzzzzzzzzzzzz|${CP_JSON}`, AUTHOR_HEX, 'h') === null);
 }
 
 // --- The payload is LAST, so a delimiter inside it is not a field boundary --
@@ -628,7 +670,7 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
       return parsed !== null && parsed.sizes.length === 1 && parsed.sizes[0][0] === 'a|b';
     })(), parseCheckpoint(json));
   check('…and is then rejected on the id\'s SHAPE, not on the field split',
-    decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, AUTHOR_HEX, 'h') === null);
 }
 
 // --- The domain bounds ----------------------------------------------------
@@ -643,7 +685,7 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
 // accepted — a bound on a consensus wire that is one step too tight refuses
 // honest checkpoints forever.
 {
-  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, 'i', 'h');
+  const cp = (json: string) => decodeCheckpointBody(`v1|checkpoint|${SALT}|${json}`, AUTHOR_HEX, 'h');
   const A = '"' + ALICE + '"';
   const E = String(CP_EPOCH);
 
@@ -670,16 +712,16 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     cp(`{"epoch":${E},"sizes":[[${A},59]],"recent":[]}`) === null);
   check('…while MIN_SIZE itself is accepted (60 — clampSize\'s own floor)',
     cp(`{"epoch":${E},"sizes":[[${A},60]],"recent":[]}`) !== null);
-  check('a size past MAX_CHECKPOINT_SIZE is rejected (1_000_000_001)',
+  check('a size past MAX_SIZE is rejected (1_000_000_001)',
     cp(`{"epoch":${E},"sizes":[[${A},1000000001]],"recent":[]}`) === null);
-  check('…while MAX_CHECKPOINT_SIZE itself is accepted',
+  check('…while MAX_SIZE itself is accepted',
     cp(`{"epoch":${E},"sizes":[[${A},1000000000]],"recent":[]}`) !== null);
-  check('hand-derived: MAX_CHECKPOINT_SIZE is 1e9, which at the fold\'s fastest possible '
+  check('hand-derived: MAX_SIZE is 1e9, which at the fold\'s fastest possible '
     + 'growth (EPOCH_MS/EAT_COOLDOWN_MS + 1 = 1441 bites * BITE_GROWTH 12 = 17_292 an epoch) '
     + 'is 57_830 unbroken epochs of play',
-    MAX_CHECKPOINT_SIZE === 1_000_000_000
-      && Math.floor(MAX_CHECKPOINT_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)) === 57_830,
-    Math.floor(MAX_CHECKPOINT_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)));
+    MAX_SIZE === 1_000_000_000
+      && Math.floor(MAX_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)) === 57_830,
+    Math.floor(MAX_SIZE / ((EPOCH_MS / EAT_COOLDOWN_MS + 1) * BITE_GROWTH)));
 
   // 3. THE VOID LEDGER'S LENGTH. Derived, not chosen:
   // floor(VOID_WINDOW_MS 10_000 / EAT_COOLDOWN_MS 2_500) + 1 = 5, which is
@@ -689,10 +731,48 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   check('hand-derived: MAX_RECENT_BITES is floor(10_000 / 2_500) + 1 = 5',
     MAX_RECENT_BITES === 5 && MAX_RECENT_BITES === Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1,
     MAX_RECENT_BITES);
-  check('a six-bite ledger is rejected',
-    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},6,[1,2,3,4,5,6]]]}`) === null);
-  check('…while a five-bite ledger — the longest the fold can build — is accepted',
-    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},5,[1,2,3,4,5]]]}`) !== null);
+  // A well-formed five-bite ledger: EAT_COOLDOWN_MS(2_500) apart, ascending,
+  // spanning exactly VOID_WINDOW_MS(10_000), with lastBiteMs on the newest —
+  // the exact shape `foldTick` builds at its maximum.
+  const FIVE = '[2500,5000,7500,10000,12500]';
+  check('…and a five-bite ledger in exactly that shape is accepted',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},12500,${FIVE}]]}`) !== null);
+  // A six-bite ledger is rejected — but by the SPAN rule, not the length rule.
+  // Six entries at least EAT_COOLDOWN_MS apart span at least 12_500 ms, past
+  // VOID_WINDOW_MS, so the length check is provably redundant and NO input can
+  // isolate it (confirmed by mutation: removing it changes no answer). It is
+  // kept as the O(1) fast path — see `checkpointLedgerShape`. Named for what it
+  // actually guards, rather than for the bound it looks like it is testing.
+  check('a six-bite ledger is rejected — six bites 2.5 s apart cannot fit in a 10 s span',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},15000,[2500,5000,7500,10000,12500,15000]]]}`) === null);
+  check('...and a million-entry ledger is refused too, without being scanned',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},15000,[${Array.from({ length: 1_000_000 }, (_, i) => i * 2500).join(',')}]]]}`) === null);
+
+  // THE LEDGER'S SHAPE, not just its length. A length bound alone did not make
+  // the array well-formed, and the gap was reachable: five bites all at one
+  // millisecond, with an older `lastBiteMs`, is a shape the fold can never
+  // build — and `foldShoal` used to install it verbatim, after which the
+  // swimmer's next bite appended a SIXTH that every one of the five survived
+  // (they are a millisecond apart, so the VOID_WINDOW_MS filter drops none).
+  // Measured: a fold reaching six. Not exploitable — the six-entry array cannot
+  // be published back — but it made MAX_RECENT_BITES's own derivation untrue.
+  check('a degenerate all-at-one-ms ledger is rejected (the fold cannot build one)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},9999,[5000,5000,5000,5000,5000]]]}`) === null);
+  check('bites closer together than EAT_COOLDOWN_MS are rejected (canEat refuses them)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},7499,[5000,7499]]]}`) === null);
+  check('…while exactly EAT_COOLDOWN_MS apart is accepted (canEat admits that)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},7500,[5000,7500]]]}`) !== null);
+  check('a descending ledger is rejected (entries are appended in ms order)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},7500,[7500,5000]]]}`) === null);
+  check('a bite later than lastBiteMs is rejected (lastBiteMs IS the newest bite)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},5000,[7500]]]}`) === null);
+  check('…while lastBiteMs NEWER than every bite is accepted — a sweep voids the '
+    + 'tail out from under it and leaves lastBiteMs alone',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},99999,[5000,7500]]]}`) !== null);
+  check('a ledger spanning more than VOID_WINDOW_MS is rejected',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},12501,[2500,12501]]]}`) === null);
+  check('…while a span of exactly VOID_WINDOW_MS is accepted (the filter keeps <=)',
+    cp(`{"epoch":${E},"sizes":[],"recent":[[${A},12500,[2500,12500]]]}`) !== null);
 
   // 4. HOW MANY SWIMMERS ONE CHECKPOINT MAY NAME.
   // Ids are generated as zero-padded hex counters so they are 64-hex AND
@@ -765,8 +845,10 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
   const E = 472_222;
   const START = 1_699_999_200_000; // hand-derived: 472_222 * 3_600_000
   const PREV_END = START;          // epoch 472_221 ends where 472_222 begins
+  // Salted with ALICE's own key, since the decoder now requires the salt to
+  // match the envelope author — the swimmer whose size this case is about.
   const pres = decodeBody(
-    encodePresence({ x: 1000, y: 1000, heading: 0, speed: 0, t: START - 1000 }, AUTHOR_HEX),
+    encodePresence({ x: 1000, y: 1000, heading: 0, speed: 0, t: START - 1000 }, ALICE),
     ALICE, 'sha256:pres',
   );
   const sizeAfter = (lastBiteMs: number): number => {
@@ -788,14 +870,14 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     '{"epoch":472221,"sizes":[["' + ALICE + '",200]],'
     + '"recent":[["' + ALICE + '",9007199254740991,[]]]}';
   check('...so the body carrying it is refused at the wire, which is the only way in',
-    decodeCheckpointBody(`v1|checkpoint|${SALT}|${immortal}`, 'i', 'h') === null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${immortal}`, AUTHOR_HEX, 'h') === null);
   // The identical payload with an in-domain lastBiteMs decodes, so the
   // rejection above is the TIME bound and not some other thing about the body.
   const honest =
     '{"epoch":472221,"sizes":[["' + ALICE + '",200]],'
     + '"recent":[["' + ALICE + '",' + (PREV_END - 100_000) + ',[]]]}';
   check('...while the same payload with an in-domain lastBiteMs decodes normally',
-    decodeCheckpointBody(`v1|checkpoint|${SALT}|${honest}`, 'i', 'h') !== null);
+    decodeCheckpointBody(`v1|checkpoint|${SALT}|${honest}`, AUTHOR_HEX, 'h') !== null);
 }
 
 // --- Encode-side validation (defensive, not the hostile-input boundary) ----
@@ -825,9 +907,9 @@ const CP_WIRE = `v1|checkpoint|${SALT}|${CP_JSON}`;
     () => encodeCheckpoint({ epoch: 7, sizes: [['s1', 100]], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a size below MIN_SIZE',
     () => encodeCheckpoint({ epoch: 7, sizes: [[ALICE, 59]], recent: [] }, AUTHOR_HEX));
-  throws('encodeCheckpoint throws on a size past MAX_CHECKPOINT_SIZE',
+  throws('encodeCheckpoint throws on a size past MAX_SIZE',
     () => encodeCheckpoint(
-      { epoch: 7, sizes: [[ALICE, MAX_CHECKPOINT_SIZE + 1]], recent: [] }, AUTHOR_HEX));
+      { epoch: 7, sizes: [[ALICE, MAX_SIZE + 1]], recent: [] }, AUTHOR_HEX));
   throws('encodeCheckpoint throws on a bite time after the epoch ends',
     () => encodeCheckpoint(
       { epoch: 7, sizes: [], recent: [[ALICE, 28_800_001, []]] }, AUTHOR_HEX));

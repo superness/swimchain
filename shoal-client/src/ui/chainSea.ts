@@ -355,16 +355,16 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   function describeDivergence(closedEpoch: number, outcome: Adoption): Error {
     const lines = outcome.opinions.map(
       (o) => `  ${o.voters.length} voter(s) of ${o.publishers.length} publisher(s), `
-        + `lowest hash ${o.lowestHash}: ${o.payload}`,
+        + `lowest voter ${o.lowestVoter ?? "(none — self-contradicted)"}: ${o.payload}`,
     );
     return new Error(
       `epoch ${closedEpoch} has ${outcome.opinions.length} different checkpoint payloads. `
       + 'Every honest client computes the identical payload, so these clients did not close '
       + 'the hour holding the same entries — an attack, or an eat claim still in flight when '
       + 'one of them rolled. Adopted the payload with the most independent publishers — '
-      + 'the lowest content hash breaks a tie, and also decides outright when every '
-      + 'publisher contradicted itself (one player with two sessions does that honestly); '
-      + 'see adopt.ts.\n' + lines.join('\n'),
+      + 'the lowest publisher id breaks a tie, and the payload text decides outright when '
+      + 'every publisher contradicted itself (one player with two sessions does that '
+      + 'honestly); see adopt.ts.\n' + lines.join('\n'),
     );
   }
 

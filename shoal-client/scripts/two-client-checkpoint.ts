@@ -95,7 +95,7 @@ import { serialiseCheckpoint } from '../src/lib/checkpoint';
 import { encodeCheckpoint } from '../src/lib/shoalWire';
 import { cellCentre, cellIndex } from '../src/lib/bloom';
 import { fingerprint } from '../src/lib/shoalFixtures';
-import { EPOCH_MS, MIN_SIZE, PRESENCE_TTL_MS, START_SIZE } from '../src/lib/shoalConst';
+import { EAT_COOLDOWN_MS, EPOCH_MS, MIN_SIZE, PRESENCE_TTL_MS, START_SIZE } from '../src/lib/shoalConst';
 import type { Checkpoint, LogEntry } from '../src/lib/shoalTypes';
 
 // ---------------------------------------------------------------------------
@@ -270,7 +270,9 @@ async function main(): Promise<void> {
   const intoMs = startedMs - epochStartMs(EPOCH);
   // The fish must be gone before the boundary, or the next epoch's warm-up
   // reconstructs them and adoption would change nothing (see the header).
-  const NEED_LEFT_MS = PRESENCE_TTL_MS + 120_000;
+  // PRESENCE_TTL_MS for the swimmers to depart, plus a margin that now has to
+  // cover 14 mined writes rather than 4 (six bites each — see the fixture).
+  const NEED_LEFT_MS = PRESENCE_TTL_MS + 240_000;
   log(`epoch ${EPOCH}: ${Math.round(intoMs / 1000)} s in, ${Math.round(leftMs / 1000)} s left of ${EPOCH_MS / 1000}`);
   if (leftMs < NEED_LEFT_MS || intoMs < 5_000) {
     console.error(
@@ -317,28 +319,84 @@ async function main(): Promise<void> {
     authorIdHex: pb.publicKeyHex, sign: pb.sign, powProfile: profileB,
   };
 
-  // ── four real moves: two swimmers, each on its own bloom cell, each eating ──
-  // FAR APART, and that is not arbitrary. `markVisits` stamps every cell within
-  // BLOOM_VISIT_R (200 cu) of a swimmer and `isBloomReady` denies a cell that
-  // somebody ELSE has visited inside BLOOM_READY_MS, so two swimmers on
-  // ADJACENT cells (128 cu) trample each other's food: measured on the first
-  // run of this script, whoever claimed second was refused and stayed at
-  // START_SIZE. That is the engine behaving correctly; the fixture was wrong.
-  const cellA = cellIndex(1_024, 768);
-  const cellB = cellIndex(3_072, 2_304);
+  // ── two swimmers, each on its own bloom cell, 512 cu apart ────────────────
+  //
+  // THE SEPARATION IS A NARROW BAND, and both edges of it were measured.
+  //
+  // NOT TOO CLOSE. `markVisits` stamps every cell within BLOOM_VISIT_R (200 cu)
+  // of a swimmer and `isBloomReady` denies a cell somebody ELSE has visited
+  // inside BLOOM_READY_MS, so two swimmers on adjacent cells (128 cu) trample
+  // each other's food: measured on this script's first run, whoever claimed
+  // second was refused and stayed at START_SIZE. 512 cu is past 2 *
+  // BLOOM_VISIT_R (400), so neither stamps the other's cell.
+  //
+  // NOT TOO FAR, which is the edge this fixture used to be on the wrong side of.
+  // At the old corners-of-the-world placement (2_560 cu apart) BOTH swimmers sat
+  // outside CORE_R of the median, tension climbed to TENSION_TRIGGER in about
+  // 30 s, and the hush swept them — repeatedly, since nothing calmed down. Each
+  // sweep costs SCATTER_COST and voids the whole recent foraging trip, so both
+  // swimmers landed on the MIN_SIZE floor no matter how much they ate, and the
+  // checkpoint could not carry a real number. Measured across separations at
+  // six bites each: 384 cu -> 88, 512 -> 88, 640 -> 60, 768 -> 60, 1_024 -> 60,
+  // 2_560 -> 60. The cliff is between 512 and 640; 512 sits below it with the
+  // bloom constraint still satisfied.
+  //
+  // Two swimmers can never shelter each other (SHELTER_THRESHOLD is three plain
+  // neighbours, by design — spec 2.11's floor of three), so staying inside the
+  // core is the only lever a two-player fixture has, and it is the honest one:
+  // the pair is not being exempted from the hush, it is simply not provoking it.
+  const cellA = cellIndex(2_048 - 256, 1_536);
+  const cellB = cellIndex(2_048 + 256, 1_536);
   const cA = cellCentre(cellA);
   const cB = cellCentre(cellB);
 
+  // ── SIX BITES EACH, NOT ONE, AND THE BITE TIMES ARE CHOSEN NOT SAMPLED ─────
+  //
+  // WHY SIX. With one bite each, both swimmers checkpointed at exactly
+  // MIN_SIZE, and that made this whole script unable to prove the thing it is
+  // named for. Measured: mutating `foldShoal`'s seed step to floor EVERY
+  // adopted size to MIN_SIZE left this run ALL PASS, because the true value was
+  // MIN_SIZE anyway. The script proved a record's EXISTENCE crossed the hour,
+  // not its VALUE.
+  //
+  // The floor is not an accident of the fixture, it is arithmetic: a swimmer
+  // must DEPART before the boundary for this test to mean anything (see the
+  // header), departure is PRESENCE_TTL_MS after its last write, and hunger runs
+  // at HUNGER_AMOUNT per second for that whole 90 s. One bite is +12 against
+  // -90. Six is +72, which clears MIN_SIZE with room to spare:
+  //   START_SIZE 100 + 6 * BITE_GROWTH 12 - about 90 hunger ticks = about 82,
+  // and a hunger tick is skipped for each bite, so the real figure is a little
+  // above that. It is asserted as a BAND rather than a number because the
+  // authoring instants come from a wall clock (`scripts/` may read one;
+  // `src/lib/` may not) and the exact tick alignment moves run to run.
+  //
+  // WHY THE TIMES ARE COMPUTED. `sendEat(ctx, cell, ms)` takes the instant the
+  // claim is FOR, and the fold judges spacing on that value, not on when the
+  // write landed. Sampling `Date.now()` per write would make the spacing depend
+  // on how long Argon2id took and could fall under EAT_COOLDOWN_MS, silently
+  // dropping bites. Spacing them EAT_COOLDOWN_MS apart from the presence
+  // instant makes the fixture deterministic in the only dimension that matters.
+  // Every value still lands inside the node's action validity window and inside
+  // epoch E, which the guard above already required.
+  const BITES = 6; // BLOOM_BITES — one full bloom, the most a cell will yield
   const hashes: string[] = [];
   const t1 = Date.now();
   hashes.push(await sendPresence(ctxA, { x: cA.x, y: cA.y, heading: 0, speed: 0, t: t1 }));
   const t2 = Date.now();
   hashes.push(await sendPresence(ctxB, { x: cB.x, y: cB.y, heading: 0, speed: 0, t: t2 }));
-  const t3 = Date.now();
-  hashes.push(await sendEat(ctxA, cellA, t3));
-  const t4 = Date.now();
-  hashes.push(await sendEat(ctxB, cellB, t4));
-  log(`four moves authored at ${t1}, ${t2}, ${t3}, ${t4}`);
+  const biteMsA: number[] = [];
+  const biteMsB: number[] = [];
+  for (let i = 1; i <= BITES; i++) {
+    const msA = t1 + i * EAT_COOLDOWN_MS;
+    const msB = t2 + i * EAT_COOLDOWN_MS;
+    biteMsA.push(msA);
+    biteMsB.push(msB);
+    hashes.push(await sendEat(ctxA, cellA, msA));
+    hashes.push(await sendEat(ctxB, cellB, msB));
+  }
+  const t3 = biteMsA[biteMsA.length - 1];
+  const t4 = biteMsB[biteMsB.length - 1];
+  log(`${hashes.length} moves; presences at ${t1}, ${t2}; last bites at ${t3}, ${t4}`);
 
   // Both nodes must hold ALL FOUR before either client rolls. Two clients that
   // close an hour holding different entry sets legitimately publish different
@@ -348,8 +406,8 @@ async function main(): Promise<void> {
     const room = await fetchRoom(auth, spaceId, roomId);
     return hashes.every((h) => room.log.some((e) => e.hash === h));
   };
-  const bothHaveAll = await waitUntil(async () => (await haveAll(authA)) && (await haveAll(authB)), 60_000);
-  check('both nodes serve all four moves — gossip carried each client\'s writes to the other',
+  const bothHaveAll = await waitUntil(async () => (await haveAll(authA)) && (await haveAll(authB)), 120_000);
+  check(`both nodes serve all ${hashes.length} moves — gossip carried each client's writes to the other`,
     bothHaveAll);
 
   const roomA = await fetchRoom(authA, spaceId, roomId);
@@ -363,10 +421,10 @@ async function main(): Promise<void> {
   const midMs = Math.max(t4, t3) + 1_000;
   const midA = advance(createLoop(EPOCH, null), roomA.log, midMs).loop.state;
   check('NON-DEGENERACY: both swimmers are in the sea', midA.fish.size === 2, midA.fish.size);
-  check('NON-DEGENERACY: A\'s bite was credited on its cell', midA.bitesTaken.get(cellA) === 1,
-    midA.bitesTaken.get(cellA));
-  check('NON-DEGENERACY: B\'s bite was credited on its cell', midA.bitesTaken.get(cellB) === 1,
-    midA.bitesTaken.get(cellB));
+  check(`NON-DEGENERACY: all ${BITES} of A's bites were credited on its cell`,
+    midA.bitesTaken.get(cellA) === BITES, midA.bitesTaken.get(cellA));
+  check(`NON-DEGENERACY: all ${BITES} of B's bites were credited on its cell`,
+    midA.bitesTaken.get(cellB) === BITES, midA.bitesTaken.get(cellB));
   check('NON-DEGENERACY: and both grew past START_SIZE on it',
     (midA.fish.get(pa.publicKeyHex)?.size ?? 0) > START_SIZE
       && (midA.fish.get(pb.publicKeyHex)?.size ?? 0) > START_SIZE,
@@ -387,9 +445,27 @@ async function main(): Promise<void> {
   check('CANONICALITY: two clients on two nodes computed the IDENTICAL payload',
     payloadA === serialiseCheckpoint(cpB), { a: payloadA, b: serialiseCheckpoint(cpB) });
   check('the checkpoint names both swimmers', cpA.sizes.length === 2, cpA.sizes);
-  check('NON-DEGENERACY: and carries sizes that are not START_SIZE — a real hour of '
-    + 'eating and hunger, banked at the MIN_SIZE floor',
-    cpA.sizes.every(([, s]) => s !== START_SIZE && s === MIN_SIZE), cpA.sizes);
+  // THE ASSERTION THIS SCRIPT EXISTS FOR, and the one it used to be unable to
+  // make. Every carried size must be a REAL number that this run computed —
+  // neither START_SIZE (which is what an unseeded joiner invents) nor MIN_SIZE
+  // (which is what a fold that discarded the value would floor to). With one
+  // bite each the true value WAS MIN_SIZE, so flooring every adopted size to
+  // MIN_SIZE left this run ALL PASS: it proved a record crossed the hour, not
+  // its value. Hand-derived band: START_SIZE 100 + 6 * BITE_GROWTH 12 = 172,
+  // less roughly PRESENCE_TTL_MS / 1_000 = 90 hunger ticks (a few of them
+  // skipped, one per bite), so about 82-90.
+  check('NON-DEGENERACY: every carried size is neither START_SIZE nor MIN_SIZE — '
+    + 'a real value, computed by this run',
+    cpA.sizes.length === 2
+      && cpA.sizes.every(([, s]) => s !== START_SIZE && s > MIN_SIZE),
+    cpA.sizes);
+  // Hand-derived exactly: START_SIZE 100 + 6 * BITE_GROWTH 12 = 172 at the last
+  // bite, then hunger at HUNGER_AMOUNT per second for the rest of the swimmer's
+  // PRESENCE_TTL_MS of life, with one tick skipped per bite. Measured in
+  // isolation against this exact fixture: 88, and no sweep.
+  check('hand-derived: each carried size is 88 — 100 + 6*12 = 172, less the hunger '
+    + 'of a 90 s life with one tick skipped per bite',
+    cpA.sizes.every(([, s]) => s === 88), cpA.sizes);
 
   // The bodies must DIFFER even though the payloads agree: each carries its own
   // author's salt, which is what keeps two agreeing publishers from collapsing
@@ -433,10 +509,25 @@ async function main(): Promise<void> {
     + 'fold to IDENTICAL fingerprints',
     fingerprint(stayed) === fingerprint(joined),
     { stayed: fingerprint(stayed), joined: fingerprint(joined) });
+  // VALUE, not just presence. Each remembered size is compared against the
+  // size the CHECKPOINT actually carried for that same id — the number this run
+  // computed, which the assertion above has already established is neither
+  // START_SIZE nor MIN_SIZE. A fold that adopted the record but discarded the
+  // number (say, by flooring it) passes the fingerprint check, since both
+  // clients floor identically; it cannot pass this one.
+  const carried = new Map(cpA.sizes);
   check('…and both remember both swimmers at the size they left',
     stayed.departed.size === 2 && joined.departed.size === 2
-      && [...joined.departed.values()].every((d) => d.size === MIN_SIZE),
-    { stayed: stayed.departed.size, joined: joined.departed.size });
+      && [...joined.departed.entries()].every(([id, d]) => d.size === carried.get(id))
+      && [...stayed.departed.entries()].every(([id, d]) => d.size === carried.get(id)),
+    {
+      carried: [...carried],
+      joined: [...joined.departed.entries()].map(([id, d]) => [id, d.size]),
+      stayed: [...stayed.departed.entries()].map(([id, d]) => [id, d.size]),
+    });
+  check('…and those sizes are the real ones, so the comparison above is not MIN_SIZE == MIN_SIZE',
+    [...joined.departed.values()].every((d) => d.size > MIN_SIZE && d.size !== START_SIZE),
+    [...joined.departed.values()].map((d) => d.size));
 
   // ── THE CONTROL: what the same joiner does with no checkpoint ─────────────
   const unseeded = advance(createLoop(EPOCH + 1, null), roomB.log, TARGET).loop.state;

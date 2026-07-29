@@ -193,31 +193,63 @@ console.log('\n4. two payloads: reported as a divergence, and the plurality is a
 }
 
 // ---------------------------------------------------------------------------
-// 5. A TIE IS BROKEN BY THE LOWEST CONTENT HASH — DECLARED, NEVER SILENT
+// 5. A TIE IS BROKEN BY THE LOWEST PUBLISHER ID — NOT BY THE CONTENT HASH
 //
-// One voter each. Hand-derived: P's only entry hashes to 'sha256:0a' and Q's
-// to 'sha256:0d'; '0a' < '0d' as plain strings, so P wins. The tie is still
-// reported as a divergence — the rule is what stops two joiners disagreeing
-// with EACH OTHER, it is not a claim that P is true.
+// This used to break on the lowest content hash, and that was an EXECUTED
+// vulnerability rather than a stylistic choice. `content_id = sha256(body)` and
+// the body carried 16 unconstrained hex characters of salt, so any publisher
+// could grind its own content id offline — no key, no proof-of-work, no chain
+// write — until it beat a chosen honest publisher's. Measured at a handful of
+// sha256 calls. And verifying the salt (which shoalWire.ts now does) is NOT
+// enough on its own: an attacker in a tie is publishing a fabrication, and it
+// can grind the FABRICATION just as cheaply, since any size in
+// [MIN_SIZE, MAX_SIZE] is another candidate body.
+//
+// The publisher id cannot be ground. It comes from the reply envelope, and an
+// identity cannot write into a room until it has been SPONSORED — so moving
+// your position in this ordering costs exactly one sponsored identity, the same
+// thing buying a vote costs.
+//
+// Hand-derived: PUB_A is 'a' * 64 and PUB_D is 'd' * 64, so PUB_A < PUB_D as
+// plain strings and P wins. The tie is still reported as a divergence — the
+// rule is what stops two joiners disagreeing with EACH OTHER, it is not a claim
+// that P is true.
 // ---------------------------------------------------------------------------
-console.log('\n5. a 1-1 tie breaks on the lowest content hash, and is still reported');
+console.log('\n5. a 1-1 tie breaks on the lowest publisher id, and is still reported');
 {
   const out = adoptCheckpoint([
     entry(CP_Q, PUB_D, 'sha256:0d'),
     entry(CP_P, PUB_A, 'sha256:0a'),
   ], FOLDING);
   check('the tie is reported as a divergence', out.diverged === true);
-  check('hand-derived: sha256:0a < sha256:0d, so P is adopted',
+  check('hand-derived: PUB_A < PUB_D, so P is adopted',
     out.seed !== null && serialiseCheckpoint(out.seed) === P_TEXT, out.seed);
+  check('...and the winning opinion names A as its lowest voter',
+    out.opinions[0]?.lowestVoter === PUB_A, out.opinions.map((o) => o.lowestVoter));
 
-  // Mirror it: give Q the lower hash and the answer must flip, or the rule is
-  // not the hash at all but "whichever payload the fixture happened to list".
+  // Mirror it: swap which publisher holds which payload and the answer must
+  // flip, or the rule is not the publisher at all but "whichever payload the
+  // fixture happened to list".
   const mirrored = adoptCheckpoint([
-    entry(CP_Q, PUB_D, 'sha256:0a'),
-    entry(CP_P, PUB_A, 'sha256:0d'),
+    entry(CP_Q, PUB_A, 'sha256:0d'),
+    entry(CP_P, PUB_D, 'sha256:0a'),
   ], FOLDING);
-  check('...and with the hashes swapped, Q is adopted instead',
+  check('...and with the publishers swapped, Q is adopted instead',
     mirrored.seed !== null && serialiseCheckpoint(mirrored.seed) === Q_TEXT, mirrored.seed);
+
+  // THE GRINDING CASE, and the one that fails the moment the tiebreak goes back
+  // to the content hash. The attacker (PUB_D, the HIGHEST publisher id here)
+  // has ground its body to the lowest content hash any entry carries. Under the
+  // old rule 'sha256:0000…' beat 'sha256:ffff…' and D won for free. Under this
+  // one D's ground hash buys it nothing at all.
+  const ground = adoptCheckpoint([
+    entry(CP_Q, PUB_D, 'sha256:0000000000000000'),
+    entry(CP_P, PUB_A, 'sha256:ffffffffffffffff'),
+  ], FOLDING);
+  check('a ground content hash does NOT win a tie — the publisher id decides',
+    ground.seed !== null && serialiseCheckpoint(ground.seed) === P_TEXT, ground.seed);
+  check('...and the ground entry is still reported, so the grind is visible',
+    ground.diverged === true && ground.opinions.length === 2, ground.opinions.length);
 }
 
 // ---------------------------------------------------------------------------
@@ -255,36 +287,43 @@ console.log('\n6. a publisher that published two payloads for one epoch votes fo
   check('P is adopted — 1 voter beats 0, no tiebreak needed',
     out.seed !== null && serialiseCheckpoint(out.seed) === P_TEXT, out.seed);
 
-  // ...and the griefer's fabrication must not win on the HASH either. This case
-  // is built so that the voters filter is the only thing that decides it —
-  // the previous version of it (D publishing P and Q, A publishing P) passed
-  // with the filter and without, because cancelling D's votes took a vote off
-  // BOTH payloads and left P ahead either way, so it could not discriminate the
-  // rule it is named for.
+  // ...and the griefer's fabrications must not win on the TIEBREAK either. This
+  // case is built so that the voters filter is the only thing that decides it —
+  // the original version (D publishing P and Q, A publishing P) passed with the
+  // filter and without, because cancelling D's votes took a vote off BOTH
+  // payloads and left P ahead either way, so it could not discriminate the rule
+  // it is named for.
   //
-  // Hand-derived: A publishes P at the HIGHEST hash. D — one key, two
-  // fabrications, neither of them P — publishes Q at the lowest hash of all and
-  // R just above it.
-  //   with rule 2:    P 1 voter, Q 0, R 0            -> P, on votes alone
-  //   without rule 2: P 1 voter, Q 1, R 1 — a three-way tie on votes, broken by
-  //                   the lowest hash 'sha256:00'    -> Q, the griefer's
+  // Hand-derived: the honest publisher is PUB_C ('c' * 64). The griefer is
+  // PUB_A ('a' * 64) — one key, two fabrications, neither of them P, and an id
+  // BELOW the honest one so the tiebreak would hand it the win if it were ever
+  // reached.
+  //   with rule 2:    P 1 voter (C), Q 0, R 0  -> P, on votes alone
+  //   without rule 2: P 1, Q 1, R 1 — a three-way tie on votes, broken by the
+  //                   lowest voter PUB_A       -> Q or R, the griefer's
   // So this check fails the moment the `voters` filter is removed.
-  const lowHash = adoptCheckpoint([
-    entry(CP_P, PUB_A, 'sha256:0f'),
-    entry(CP_Q, PUB_D, 'sha256:00'),
-    entry(CP_R, PUB_D, 'sha256:01'),
+  const lowPub = adoptCheckpoint([
+    entry(CP_P, PUB_C, 'sha256:0f'),
+    entry(CP_Q, PUB_A, 'sha256:00'),
+    entry(CP_R, PUB_A, 'sha256:01'),
   ], FOLDING);
-  check('a self-contradicting publisher cannot win on the hash tiebreak either',
-    lowHash.seed !== null && serialiseCheckpoint(lowHash.seed) === P_TEXT, lowHash.seed);
-  check('...and the honest payload wins on VOTES, not on its own hash — '
-    + "A's hash is the highest of the three",
-    lowHash.opinions[0]?.payload === P_TEXT && lowHash.opinions[0]?.voters.length === 1
-      && lowHash.opinions[0]?.lowestHash === 'sha256:0f',
-    lowHash.opinions.map((o) => [o.voters.length, o.lowestHash]));
+  check('a self-contradicting publisher cannot win on the tiebreak either',
+    lowPub.seed !== null && serialiseCheckpoint(lowPub.seed) === P_TEXT, lowPub.seed);
+  check('...and the honest payload wins on VOTES, not on its own key — '
+    + "the griefer's id is the LOWEST of the two",
+    lowPub.opinions[0]?.payload === P_TEXT && lowPub.opinions[0]?.voters.length === 1
+      && lowPub.opinions[0]?.lowestVoter === PUB_C && PUB_A < PUB_C,
+    lowPub.opinions.map((o) => [o.voters.length, o.lowestVoter]));
+  // The cancelled publisher must not set a key either: a voterless opinion has
+  // NO lowest voter, even though PUB_A published it.
+  check('a cancelled publisher does not get to set an opinion\'s tiebreak key',
+    lowPub.opinions.every((o) => (o.voters.length === 0) === (o.lowestVoter === null))
+      && lowPub.opinions.filter((o) => o.lowestVoter === null).length === 2,
+    lowPub.opinions.map((o) => [o.voters.length, o.lowestVoter, o.publishers.length]));
 }
 
 // ---------------------------------------------------------------------------
-// 7. WHEN EVERY OPINION IS SELF-CONTRADICTED, THE LOWEST HASH IS STILL ADOPTED
+// 7. WHEN EVERY OPINION IS SELF-CONTRADICTED, THE LOWEST PAYLOAD IS ADOPTED
 //
 // One publisher, two payloads, nobody else. This case USED to fold unseeded,
 // and that was wrong — not because the griefer deserved better, but because
@@ -299,52 +338,67 @@ console.log('\n6. a publisher that published two payloads for one epoch votes fo
 //
 // Rule 2 protects an honest vote from a self-contradicting one. With every
 // opinion self-contradicted there is no honest vote left to protect, so the
-// lowest hash decides — and an attacker gains nothing, since as the sole
-// publisher it would have won trust-on-first-sight for half the writes anyway.
+// lowest CANONICAL PAYLOAD decides — rule 3's own key (the lowest voter) does
+// not exist here, and the payload is the only thing left that every joiner
+// computes identically. It is attacker-chosen, but only where the attacker is
+// the sole publisher and would have won trust-on-first-sight anyway.
 //
-// Hand-derived: D publishes P at 'sha256:0d' and Q at 'sha256:0e'. Both have
-// zero voters, so the sort degenerates to lowest-hash-first; '0d' < '0e' as
-// plain strings, so P is adopted.
+// Hand-derived: both payloads differ in exactly one place — P carries size 112
+// and Q carries 100. Comparing the two texts character by character, they run
+// together until the size digits: '1' = '1', then '1' vs '0'. '0' < '1', so
+// Q_TEXT < P_TEXT and Q is adopted. (The content hashes are deliberately given
+// in the OPPOSITE order below, so a fallback that still read the hash would
+// pick P and fail this.)
 // ---------------------------------------------------------------------------
-console.log('\n7. nothing but a self-contradicting publisher — lowest hash, still reported');
+console.log('\n7. nothing but a self-contradicting publisher — lowest payload, still reported');
 {
+  check('hand-derived: Q_TEXT < P_TEXT, because "100" < "112" at the size digits',
+    Q_TEXT < P_TEXT, [Q_TEXT, P_TEXT]);
   const out = adoptCheckpoint([
     entry(CP_P, PUB_D, 'sha256:0d'),
     entry(CP_Q, PUB_D, 'sha256:0e'),
   ], FOLDING);
-  check('hand-derived: sha256:0d < sha256:0e, so P is adopted rather than nothing',
-    out.seed !== null && serialiseCheckpoint(out.seed) === P_TEXT, out.seed);
+  check('Q is adopted rather than nothing — a seed, where there used to be null',
+    out.seed !== null && serialiseCheckpoint(out.seed) === Q_TEXT, out.seed);
+  check('...and NOT on the content hash, which points the other way (0d < 0e picks P)',
+    out.seed !== null && serialiseCheckpoint(out.seed) !== P_TEXT, out.seed);
   check('...on a fallback, not on a vote — every opinion has zero voters',
-    out.opinions.every((o) => o.voters.length === 0),
-    out.opinions.map((o) => o.voters.length));
+    out.opinions.every((o) => o.voters.length === 0 && o.lowestVoter === null),
+    out.opinions.map((o) => [o.voters.length, o.lowestVoter]));
   check('...and it IS still reported', out.diverged === true);
   check('...with both payloads surfaced', out.opinions.length === 2, out.opinions.length);
 
-  // Mirror it: swap the hashes and the answer must flip, or the fallback is not
-  // the hash at all but "whichever payload the fixture happened to list first".
-  const mirrored = adoptCheckpoint([
-    entry(CP_P, PUB_D, 'sha256:0e'),
-    entry(CP_Q, PUB_D, 'sha256:0d'),
+  // Order-independence, which is what "the payload decides" has to mean: the
+  // same two entries listed the other way round must adopt the same thing.
+  const reversed = adoptCheckpoint([
+    entry(CP_Q, PUB_D, 'sha256:0e'),
+    entry(CP_P, PUB_D, 'sha256:0d'),
   ], FOLDING);
-  check('...and with the hashes swapped, Q is adopted instead',
-    mirrored.seed !== null && serialiseCheckpoint(mirrored.seed) === Q_TEXT, mirrored.seed);
+  check('...and arrival order changes nothing',
+    JSON.stringify(reversed) === JSON.stringify(out), { reversed, out });
 
-  // THE FALLBACK MUST NOT OUTRANK AN HONEST VOTE. One honest publisher (B on Q)
-  // against a self-contradicting one (D on P and R), with EVERY one of D's
-  // hashes below B's. Hand-derived: Q has 1 voter, P and R have 0, so votes
-  // decide before the hash is ever consulted and Q wins. If rule 4 were applied
-  // ahead of rule 3 — or instead of it — P ('sha256:00') would win here.
+  // THE FALLBACK MUST NOT OUTRANK AN HONEST VOTE. One honest publisher (B on P)
+  // against a self-contradicting one (D on Q and R), where D holds the LOWEST
+  // payload text of the three — so if rule 4 were ever applied ahead of rule 3,
+  // or instead of it, the griefer would win.
+  //
+  // Hand-derived ordering of the three texts, which differ only in the size
+  // digits: "100" < "112" ('0' < '1' at the second digit) and "112" < "77"
+  // ('1' < '7' at the first), so Q < P < R. The lowest is Q — D's.
+  // Votes decide first: P has 1 voter, Q and R have 0, so P wins.
+  check('hand-derived: Q_TEXT is the lowest of the three, so this case can discriminate',
+    Q_TEXT < P_TEXT && P_TEXT < R_TEXT, [Q_TEXT, P_TEXT, R_TEXT]);
   const withHonest = adoptCheckpoint([
-    entry(CP_Q, PUB_B, 'sha256:0f'),
-    entry(CP_P, PUB_D, 'sha256:00'),
+    entry(CP_P, PUB_B, 'sha256:0f'),
+    entry(CP_Q, PUB_D, 'sha256:00'),
     entry(CP_R, PUB_D, 'sha256:01'),
   ], FOLDING);
-  check('an honest vote still beats a self-contradicting publisher holding every lower hash',
-    withHonest.seed !== null && serialiseCheckpoint(withHonest.seed) === Q_TEXT, withHonest.seed);
-  check('hand-derived: Q is the only opinion with a voter',
-    withHonest.opinions[0]?.payload === Q_TEXT && withHonest.opinions[0]?.voters.length === 1
+  check('an honest vote still beats a self-contradicting publisher holding the lowest payload',
+    withHonest.seed !== null && serialiseCheckpoint(withHonest.seed) === P_TEXT, withHonest.seed);
+  check('hand-derived: P is the only opinion with a voter',
+    withHonest.opinions[0]?.payload === P_TEXT && withHonest.opinions[0]?.voters.length === 1
       && withHonest.opinions.filter((o) => o.voters.length > 0).length === 1,
-    withHonest.opinions.map((o) => [o.voters.length, o.lowestHash]));
+    withHonest.opinions.map((o) => [o.voters.length, o.lowestVoter]));
 }
 
 // ---------------------------------------------------------------------------

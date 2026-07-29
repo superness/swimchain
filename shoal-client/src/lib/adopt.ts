@@ -74,7 +74,10 @@
  *    cancel its OWN votes, never anyone else's — and both payloads are still
  *    listed in the report.
  * 3. Adopt the payload with the most remaining voters. Ties break on the lowest
- *    content hash of any entry carrying that payload.
+ *    PUBLISHER ID among the voters — the author id from the reply envelope, not
+ *    anything the body can choose. Where even that ties (which happens only
+ *    when one publisher holds several payloads), the lowest canonical payload
+ *    text decides, so the order is total.
  * 4. If rule 2 cancelled EVERY vote, fall back to the lowest-hash payload
  *    rather than adopting nothing. See below — this rule exists because rule 2
  *    fires on ordinary honest play, not only on a griefer.
@@ -101,9 +104,14 @@
  * outright for half the writes. What it buys the joiner is real: a size table
  * two live sessions are both folding from, instead of a world nobody is in.
  *
- * The fallback is the LOWEST HASH rather than "most publishers" or "first
- * seen": with every voter cancelled, hash is the only total order left that all
- * joiners compute identically, and it is the same tiebreak rule 3 already uses.
+ * The fallback key is the CANONICAL PAYLOAD TEXT rather than "most publishers"
+ * or "first seen". With every voter cancelled, rule 3's own key (the lowest
+ * voter) does not exist, and the payload is the only thing left that every
+ * joiner computes identically. It is attacker-chosen — but only in a situation
+ * where the attacker is the SOLE publisher and already controls the outcome
+ * under rule 3 anyway, so it concedes nothing that was not already conceded. It
+ * is deliberately NOT the content hash: see rule 3 for why that key was free to
+ * steer, which is the whole reason it is gone from this module.
  *
  * WHY PLURALITY. A joiner wants to agree with the clients that are still
  * playing, and each of those is folding from the payload IT published. Joining
@@ -112,19 +120,56 @@
  * actually expensive here: out-publishing the honest room needs more sponsored
  * identities than the honest room has, not more writes.
  *
- * WHY A HASH TIEBREAK RATHER THAN REFUSING TO PLAY. Refusing (folding unseeded)
- * was seriously considered and is defensible — it is the one outcome an
- * attacker cannot steer. It loses on two counts. First, in a tie both payloads
- * are already being folded by live peers, so adopting either agrees with about
- * half the room while adopting neither agrees with NOBODY — refusal is strictly
+ * WHY A TIEBREAK RATHER THAN REFUSING TO PLAY. Refusing (folding unseeded) was
+ * seriously considered and is defensible — it is the one outcome an attacker
+ * cannot steer. It loses on two counts. First, in a tie both payloads are
+ * already being folded by live peers, so adopting either agrees with about half
+ * the room while adopting neither agrees with NOBODY — refusal is strictly
  * worse on the property adoption exists to provide. Second, honest ties are not
  * rare: the boundary race above produces them whenever anyone eats in the last
  * second of an hour, so refusal would routinely hand every joiner the
- * everyone-at-START_SIZE world that Blocker 12 is about. The tiebreak is
- * deterministic, so all joiners facing one tie still agree with each other, and
- * it is not grindable any more cheaply than the plurality is: a body's hash is
- * `sha256(payload plus the publisher's own key prefix)`, so moving it means a
- * different sponsored identity — the same cost as buying a vote.
+ * everyone-at-START_SIZE world that Blocker 12 is about.
+ *
+ * WHY THE PUBLISHER ID AND NOT THE CONTENT HASH. **The content hash was the
+ * wrong key, and the argument that defended it was false.** It read: "a body's
+ * hash is `sha256(payload plus the publisher's own key prefix)`, so moving it
+ * means a different sponsored identity — the same cost as buying a vote." Both
+ * halves were wrong, and both were executed rather than reasoned about:
+ *
+ *  - The salt was only SHAPE-checked, never compared to the author
+ *    (shoalWire.ts), so all 2^64 salts were legal for any publisher. Grinding
+ *    one to beat a chosen honest hash took a handful of offline sha256 calls —
+ *    no key, no proof-of-work, no chain write. Mean 5.3 over 200 fixtures.
+ *  - Verifying the salt (now done) does NOT fix this, which is the part worth
+ *    keeping in mind. An attacker in a tie is publishing a FABRICATION, and the
+ *    fabrication's contents are its own: any size in `[MIN_SIZE, MAX_SIZE]` for
+ *    any swimmer is another candidate body. Grinding the PAYLOAD instead of the
+ *    salt is just as cheap — measured at mean 1.4 sha256, cheaper in fact. Any
+ *    tiebreak keyed on something the attacker authors is free to steer, and no
+ *    amount of validation changes that.
+ *
+ * The publisher id is not something the attacker authors. It is the ed25519
+ * public key the reply envelope names, gated to 64-hex by `splitRoomReplies`
+ * before a body is even decoded, and — the part that matters — **an identity
+ * cannot write into a room at all until it has been SPONSORED** (SPEC_11).
+ * Keypairs are free to generate, so an attacker can certainly find one whose id
+ * sorts below a given honest publisher's; what it cannot do is use that key
+ * without spending a sponsorship on it. So moving your position in this
+ * ordering costs exactly one sponsored identity — which is the same thing
+ * buying a vote costs, and is precisely the claim the old comment made falsely
+ * about the hash. The rule is now as expensive as the plurality it breaks ties
+ * for, rather than free.
+ *
+ * It is equally deterministic: every client sees the same envelope authors, so
+ * all joiners facing one tie still agree with each other.
+ *
+ * THE FINAL TIEBREAK IS THE PAYLOAD TEXT, and it is reachable only in one
+ * situation: two opinions whose lowest voter is the SAME publisher, which
+ * requires that publisher to hold both — i.e. the all-self-contradicted case of
+ * rule 4, where a sole publisher already controls the outcome by construction
+ * and would have won trust-on-first-sight anyway. Using the payload there
+ * concedes nothing that was not already conceded, and it makes the order total,
+ * which is what stops two joiners disagreeing with each other.
  *
  * IT IS NEVER SILENT. `diverged` is set on any epoch with more than one payload,
  * whatever the margin, and `opinions` carries every payload with both its full
@@ -146,8 +191,17 @@ export interface CheckpointOpinion {
   /** Those of `publishers` that published no OTHER payload for this epoch — the
    *  only ones that count toward the plurality. See the module header, rule 2. */
   readonly voters: readonly string[];
-  /** Lowest content hash among the entries carrying this payload; the tiebreak. */
-  readonly lowestHash: string;
+  /**
+   * Lowest publisher id among `voters` — the tiebreak key (rule 3), or `null`
+   * when rule 2 cancelled every one of this opinion's votes.
+   *
+   * VOTERS, NOT PUBLISHERS: a publisher that does not count toward the
+   * plurality does not get to set the key either. Otherwise a griefer could
+   * lend an opinion a low key by publishing it alongside something else, which
+   * is the same "cancel your own votes and still steer the outcome" that rule 2
+   * exists to remove.
+   */
+  readonly lowestVoter: string | null;
 }
 
 export interface Adoption {
@@ -157,7 +211,7 @@ export interface Adoption {
    *  yields a seed (module header, rule 4). */
   readonly seed: Checkpoint | null;
   /** Every payload published for `epoch - 1`, ranked exactly as the policy
-   *  ranks them (most voters first, then lowest hash). Empty when there were
+   *  ranks them (most voters, then lowest voter, then payload). Empty when there were
    *  none. The caller reports these; this module writes no copy. */
   readonly opinions: readonly CheckpointOpinion[];
   /** More than one distinct payload exists for `epoch - 1`. See the module
@@ -181,7 +235,6 @@ export function adoptCheckpoint(
     payload: string;
     cp: Checkpoint;
     publishers: Set<string>;
-    lowestHash: string;
   }
   const groups = new Map<string, Group>();
   /** publisher -> the set of payloads it published for this epoch. */
@@ -197,13 +250,13 @@ export function adoptCheckpoint(
     const payload = serialiseCheckpoint(e.cp);
     const g = groups.get(payload);
     if (g === undefined) {
-      groups.set(payload, {
-        payload, cp: e.cp, publishers: new Set([e.id]), lowestHash: e.hash,
-      });
+      groups.set(payload, { payload, cp: e.cp, publishers: new Set([e.id]) });
     } else {
       g.publishers.add(e.id);
-      if (e.hash < g.lowestHash) g.lowestHash = e.hash;
     }
+    // `e.hash` is deliberately NOT collected. It was the tiebreak key and it
+    // was steerable for free — see the module header, "WHY THE PUBLISHER ID AND
+    // NOT THE CONTENT HASH". Nothing in this module reads a content hash now.
     let seen = byPublisher.get(e.id);
     if (seen === undefined) { seen = new Set<string>(); byPublisher.set(e.id, seen); }
     seen.add(payload);
@@ -214,25 +267,36 @@ export function adoptCheckpoint(
     const publishers = [...g.publishers].sort();
     // Rule 2: a publisher holding two opinions about one epoch holds none.
     const voters = publishers.filter((id) => (byPublisher.get(id)?.size ?? 0) === 1);
+    // `publishers` is sorted, so the first survivor of that filter IS the
+    // lowest voter — no second scan, and no second definition of "lowest".
     opinions.push({
-      payload: g.payload, cp: g.cp, publishers, voters, lowestHash: g.lowestHash,
+      payload: g.payload, cp: g.cp, publishers, voters, lowestVoter: voters[0] ?? null,
     });
   }
 
-  // Rule 3. The hash tiebreak is applied to EVERY comparison, not only to an
-  // exact tie, so the order is total and identical on every client.
+  // Rule 3, applied to EVERY comparison and not only to an exact tie, so the
+  // order is total and identical on every client.
+  //
+  // The `lowestVoter` step is skipped exactly when both sides are `null`, which
+  // (given equal voter counts) means both have zero voters — the all-cancelled
+  // case of rule 4. The payload text then decides. Voter counts are compared
+  // first, so a `null` can never meet a non-`null` here.
   opinions.sort((a, b) => {
     if (a.voters.length !== b.voters.length) return b.voters.length - a.voters.length;
-    return a.lowestHash < b.lowestHash ? -1 : a.lowestHash > b.lowestHash ? 1 : 0;
+    if (a.lowestVoter !== null && b.lowestVoter !== null && a.lowestVoter !== b.lowestVoter) {
+      return a.lowestVoter < b.lowestVoter ? -1 : 1;
+    }
+    return a.payload < b.payload ? -1 : a.payload > b.payload ? 1 : 0;
   });
 
   // Rules 3 and 4 together, and they collapse into one line on purpose. The
-  // sort above is (voters descending, then lowest hash), so `opinions[0]` is
-  // ALWAYS the rule-3 winner when any opinion still has a voter; and when rule
-  // 2 cancelled every vote, every opinion ties at zero voters, the sort
-  // degenerates to lowest-hash-first, and `opinions[0]` is exactly the rule-4
-  // fallback. There is no third case: an empty `opinions` is the only way to
-  // reach `null`, which is the "nobody published for `epoch - 1`" absence.
+  // sort above is (voters descending, then lowest voter, then payload), so
+  // `opinions[0]` is ALWAYS the rule-3 winner when any opinion still has a
+  // voter; and when rule 2 cancelled every vote, every opinion ties at zero
+  // voters, the sort degenerates to lowest-payload-first, and `opinions[0]` is
+  // exactly the rule-4 fallback. There is no third case: an empty `opinions` is
+  // the only way to reach `null`, which is the "nobody published for
+  // `epoch - 1`" absence.
   const winner = opinions[0] ?? null;
   return {
     seed: winner === null ? null : winner.cp,

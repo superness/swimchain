@@ -76,17 +76,27 @@
  *    spends `25 * 21 * 17 = 8_925` extra bytes per minute across the whole
  *    space.
  *
- * WHAT IT DOES *NOT* DO, stated plainly rather than overclaimed. It does not
- * authenticate anything. A hostile client can put ANY 16 hex characters in
- * this field, including a victim's; the decoder checks the field's SHAPE and
- * never compares it to `id`, and `decodeBody`'s `id` keeps coming from the
- * reply envelope (`author_id`) exactly as before — see "Reject, never
- * repair" and shoalRoom.ts's module header. So a determined attacker who can
- * predict a victim's exact authoring millisecond AND cell can still author a
- * byte-identical body deliberately. That was equally true before this field
- * existed; what changes is that HONEST play can no longer collide by
- * accident, which is the failure this closes. Pinned by the
- * "salt disagreeing with the envelope author" case in shoalWire.test.ts.
+ * IT IS VERIFIED AGAINST THE ENVELOPE AUTHOR. Every decoder requires
+ * `salt === author_id.slice(0, 16)` and drops the body otherwise
+ * (`saltMatchesAuthor`). An earlier version of this module checked only the
+ * field's SHAPE, on the reasoning that a body's claims about its own author
+ * are not a decoder's to adjudicate. That reasoning was right about what the
+ * salt PROVES and wrong about what an unverified one COSTS: since
+ * `content_id = sha256(body)`, 16 unconstrained hex characters inside the body
+ * are 64 bits of free entropy with which any publisher can STEER ITS OWN
+ * CONTENT HASH — no key, no PoW, no chain write, just offline hashing. That
+ * was executed: a handful of sha256 calls bought a checkpoint a winning
+ * content id, and `adopt.ts` was ordering by exactly that. See
+ * `saltMatchesAuthor` for the full argument, including the one case that gets
+ * worse rather than better.
+ *
+ * WHAT IT STILL DOES *NOT* DO, stated plainly rather than overclaimed. It does
+ * not authenticate anything: 16 hex characters of a public key are a prefix,
+ * not a signature, and a hostile client that copies a victim's body verbatim
+ * copies a valid salt with it. `id` still comes from the reply envelope
+ * (`author_id`), never from the body — see "Reject, never repair" and
+ * shoalRoom.ts's module header. What the check removes is the FREEDOM, not the
+ * forgeability: a publisher now has exactly one legal salt instead of 2^64.
  *
  * The same-swimmer case needs no separate argument: one swimmer's two bodies
  * differ unless their `ms` is identical, and `ms` is the authoring instant a
@@ -228,7 +238,7 @@
  * On top of the canonical-form check, every VALUE in a checkpoint is held to
  * its real domain by `checkpointInDomain` — non-negative safe integers, no
  * bite time in the future of the epoch being summarised, sizes inside the
- * fold's own `[MIN_SIZE, MAX_CHECKPOINT_SIZE]`, bounded lengths, and ids of
+ * fold's own `[MIN_SIZE, MAX_SIZE]`, bounded lengths, and ids of
  * exactly the shape the envelope author is already held to. That function's
  * doc carries the justification for each bound, and it is not a formality:
  * a move body's worst case is one wrong swimmer for PRESENCE_TTL_MS, while a
@@ -406,7 +416,7 @@
 import type { Vec, LogEntry, Presence, EatClaim, Checkpoint } from './shoalTypes';
 import {
   HEADING_STEPS, WORLD_W, WORLD_H, BLOOM_COLS, BLOOM_ROWS,
-  MIN_SIZE, VOID_WINDOW_MS, EAT_COOLDOWN_MS,
+  MIN_SIZE, MAX_SIZE, VOID_WINDOW_MS, EAT_COOLDOWN_MS,
 } from './shoalConst';
 import { epochEndMs } from './epoch';
 import { serialiseCheckpoint, parseCheckpoint } from './checkpoint';
@@ -479,6 +489,66 @@ export function saltFor(authorIdHex: string): string {
   return authorIdHex.slice(0, SALT_HEX_CHARS);
 }
 
+/**
+ * Does this body's `salt` field match the author the ENVELOPE names? Every
+ * decoder calls this, and a body that fails it is rejected outright.
+ *
+ * =========================================================================
+ * THIS CHECK IS NEW, AND IT CLOSES A REAL, EXECUTED ATTACK
+ * =========================================================================
+ *
+ * The salt used to be SHAPE-checked and never compared to `id`, on the
+ * reasoning that a body's own claims about its author are not something a
+ * decoder should adjudicate. That reasoning is still right about what the salt
+ * PROVES — it is a prefix of a public key, not a signature, and it still
+ * authenticates nothing. It was wrong about what an unverified salt COSTS.
+ *
+ * `content_id = sha256(body)` and the salt is 16 free hex characters inside
+ * that body, so an unverified salt handed every publisher **64 bits of free
+ * entropy with which to steer its own content hash** — no key, no
+ * proof-of-work, no chain write, just offline hashing until the id comes out
+ * low. Measured: a handful of sha256 calls (mean 5.3 over 200 fixtures) to
+ * beat a chosen honest publisher's hash. Anything that ORDERS by content hash
+ * was therefore steerable for free — `adopt.ts`'s checkpoint tiebreak was
+ * (that is now fixed at its own end too, see that module), and `orderLog`'s
+ * `(ms, hash)` total order still is for two entries authored in the same
+ * millisecond.
+ *
+ * With the salt verified, a publisher has exactly ONE legal salt: the prefix
+ * of the key it must already hold to author anything at all. The free entropy
+ * is gone.
+ *
+ * WHAT IT STILL DOES NOT DO, so nobody mistakes this for more than it is:
+ * an attacker who is FABRICATING a payload can still steer its hash by varying
+ * the payload itself, which is just as cheap (measured: mean 1.4 sha256). That
+ * is why the checkpoint tiebreak had to stop being the content hash — see
+ * adopt.ts. This check removes the free entropy from every body on the wire,
+ * including honest ones whose payload is pinned; it does not make a fabricator
+ * honest.
+ *
+ * IT REQUIRES `id` TO BE A REAL AUTHOR ID. A caller that passes anything but
+ * 64 lowercase hex gets `false` for every body, which is deliberate: the only
+ * production caller is `splitRoomReplies`, which already gates `author_id` on
+ * exactly that shape (shoalRoom.ts's `AUTHOR_ID_RE`) before it ever gets here.
+ *
+ * THE ONE THING THAT GETS WORSE, recorded rather than glossed. A hostile
+ * client can still author a byte-identical copy of a victim's body (salt
+ * included — it is public). The node keeps one object and whichever action
+ * indexes last owns the metadata, so `author_id` for that object is
+ * nondeterministic across peers (methods.rs:9548-9551 vs :9446, chain.rs:482-483).
+ * Before this check, such an object decoded on every peer, sometimes credited
+ * to the wrong swimmer. Now it decodes on the peers that kept the victim as
+ * author and is DROPPED on the peers that kept the attacker — a divergence
+ * instead of a misattribution. Both are the same underlying node defect and
+ * neither is created here; a drop is the better of the two failures (no false
+ * credit), and the real fix is a node-side one that keys metadata by action
+ * rather than by content hash. Not silently better, though: stated so the next
+ * reader knows it was weighed.
+ */
+function saltMatchesAuthor(salt: string, id: string): boolean {
+  return PUBKEY_HEX_RE.test(id) && salt === id.slice(0, SALT_HEX_CHARS);
+}
+
 // ---------------------------------------------------------------------------
 // Parsing helpers
 // ---------------------------------------------------------------------------
@@ -540,28 +610,6 @@ function parseIntField(s: string): number | null {
 export const MAX_CHECKPOINT_SWIMMERS = 1000;
 
 /**
- * Ceiling on a carried size. CONSENSUS.
- *
- * `clampSize` (shoalEngine.ts) only FLOORS, at MIN_SIZE — nothing in the fold
- * bounds a size upward, so before this check an adopted checkpoint could seat
- * a swimmer at `Number.MAX_SAFE_INTEGER` for the price of one write.
- *
- * WHY 1e9. The fold's maximum possible growth is one BITE_GROWTH per
- * EAT_COOLDOWN_MS — `EPOCH_MS / EAT_COOLDOWN_MS + 1 = 1441` bites an epoch,
- * `1441 * 12 = 17_292` size an epoch — and that rate assumes a swimmer is
- * credited every 2.5 s for a solid hour, which rivalrous blooms (BLOOM_BITES
- * per cell, and a cell must be travelled to) put far out of reach. Reaching
- * 1e9 therefore takes at least 57_830 consecutive epochs: six and a half years
- * of never once being absent for a whole hour (`rollEpoch` prunes a `departed`
- * record after one epoch of absence, so a lapse forfeits the total) and never
- * missing a bite. It is not a game balance number and it is not reachable by
- * play; it is the point past which a size is provably a lie, and it is nine
- * million times below MAX_SAFE_INTEGER, which is what makes the check worth
- * having at all.
- */
-export const MAX_CHECKPOINT_SIZE = 1_000_000_000;
-
-/**
  * Ceiling on one swimmer's carried void ledger. CONSENSUS, and DERIVED rather
  * than chosen: `foldTick` re-prunes `recentBites` to the void window on every
  * credited bite (`[...f.recentBites, e.ms].filter((ms) => e.ms - ms <=
@@ -569,18 +617,66 @@ export const MAX_CHECKPOINT_SIZE = 1_000_000_000;
  * to the last, so the longest ledger the fold can build is bites at
  * `{e.ms - 10_000, -7_500, -5_000, -2_500, e.ms}` — exactly
  * `floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1 = 5`. shoalEngine.test.ts
- * already pins that the fold never exceeds it.
+ * pins that the fold never exceeds it.
  *
- * It is tight ON PURPOSE and it cannot refuse an honest checkpoint, because
- * both constants it is derived from are in the CONSENSUS block and therefore
- * permanent: if 5 could ever be wrong, so could the fold rule that produces it.
- * The one path that could put a longer array in front of the engine is the
- * seed itself — `foldShoal` installs `recentBites` from a checkpoint verbatim,
- * and it is only re-pruned when that swimmer next eats — which is precisely
- * why the bound belongs here rather than being left to the fold's own
- * invariant.
+ * THAT DERIVATION WAS FALSE FOR ONE RELEASE, and the correction is the reason
+ * `checkpointLedgerShape` below exists. The length bound alone did not make
+ * the array WELL-FORMED: a checkpoint could legally carry five bites all at
+ * the same millisecond, with a `lastBiteMs` older than any of them. `foldShoal`
+ * installs that verbatim, and the swimmer's very next bite appends a sixth —
+ * every one of the five survives the `e.ms - ms <= VOID_WINDOW_MS` filter
+ * because they are only a millisecond apart. Measured: a fold reaching SIX.
+ * Not exploitable (the six-entry array cannot be laundered back into a
+ * published checkpoint — `checkpointFrom` copies it and the wire then refuses
+ * it), but it made the sentence above untrue about the code beside it, which
+ * is its own defect. The shape rules restore it: with the ledger required to
+ * be ascending and EAT_COOLDOWN_MS-spaced, the seed can no longer be
+ * degenerate and the fold's own maximum is 5 again.
  */
 export const MAX_RECENT_BITES = Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1; // 5
+
+/**
+ * Is one swimmer's carried void ledger a shape the fold could have built?
+ *
+ * Four invariants, every one of them a property `foldTick` guarantees of a
+ * real `recentBites` array, so none of them can refuse an honest checkpoint:
+ *
+ *  1. **At most MAX_RECENT_BITES entries** — see above.
+ *  2. **Strictly ascending.** Entries are appended in `orderLog`'s ms order and
+ *     the array is only ever filtered afterwards, never reordered.
+ *  3. **Spaced at least EAT_COOLDOWN_MS apart.** `canEat` refuses a bite closer
+ *     than that to the last credited one (bloom.ts:245), so no two entries can
+ *     be nearer. This is the rule the degenerate all-at-one-ms ledger broke.
+ *  4. **Spanning at most VOID_WINDOW_MS, and never later than `lastBiteMs`.**
+ *     Every entry was within the window of the newest at the moment it was
+ *     appended, and the sweep's post-void filter only REMOVES entries; and
+ *     `lastBiteMs` is set to `e.ms` on the same line that appends `e.ms`, so it
+ *     is the newest bite — or newer still, when a sweep voided the tail out
+ *     from under it (`f.recentBites` is filtered, `f.lastBiteMs` is not).
+ *     Hence `>=`, not `===`.
+ *
+ * RULE 1 IS PROVABLY REDUNDANT, and that is stated here so nobody writes a test
+ * claiming otherwise. Rules 3 and 4 imply it: six entries at least 2_500 ms
+ * apart span at least 12_500 ms, which is already past VOID_WINDOW_MS, so rule
+ * 4 rejects every array rule 1 would have. Removing rule 1 changes no answer —
+ * verified by mutation, which is exactly how it was found — and there is no
+ * input that isolates it, so no test can discriminate it either.
+ *
+ * It is kept for two reasons, neither of them "it might catch something": it is
+ * the O(1) check and it fails first on the pathological input (a million-entry
+ * array is refused without being scanned), and it is the bound MAX_RECENT_BITES
+ * names, which is the number the rest of the codebase reasons about. If the
+ * span rule is ever relaxed, this one stops being redundant.
+ */
+function checkpointLedgerShape(lastBiteMs: number, bites: readonly number[]): boolean {
+  if (bites.length > MAX_RECENT_BITES) return false;
+  for (let i = 0; i < bites.length; i++) {
+    if (i > 0 && bites[i] - bites[i - 1] < EAT_COOLDOWN_MS) return false; // ascending AND spaced
+    if (bites[i] > lastBiteMs) return false;
+  }
+  if (bites.length > 0 && bites[bites.length - 1] - bites[0] > VOID_WINDOW_MS) return false;
+  return true;
+}
 
 /**
  * The real domain of a checkpoint — every bound an ADOPTED checkpoint's values
@@ -621,7 +717,7 @@ export const MAX_RECENT_BITES = Math.floor(VOID_WINDOW_MS / EAT_COOLDOWN_MS) + 1
  *     `epochEndMs(e) - TICK_MS`, so every honestly credited bite in epoch `e`
  *     has `ms <= epochEndMs(e) - TICK_MS`. A seed carried forward from `e - 1`
  *     is older still.
- *  4. **Sizes inside the fold's own range**, `[MIN_SIZE, MAX_CHECKPOINT_SIZE]`.
+ *  4. **Sizes inside the fold's own range**, `[MIN_SIZE, MAX_SIZE]`.
  *     The floor is exactly what `clampSize` guarantees, so no state the fold
  *     can reach is excluded; the ceiling is the half `clampSize` never had.
  *  5. **Lengths.** `sizes` and `recent` at MAX_CHECKPOINT_SWIMMERS, each
@@ -652,13 +748,13 @@ function checkpointInDomain(cp: Checkpoint): boolean {
   for (const [id, size] of cp.sizes) {
     if (!PUBKEY_HEX_RE.test(id)) return false;
     if (!ok(size)) return false;
-    if (size < MIN_SIZE || size > MAX_CHECKPOINT_SIZE) return false;
+    if (size < MIN_SIZE || size > MAX_SIZE) return false;
   }
   for (const [id, lastBiteMs, bites] of cp.recent) {
     if (!PUBKEY_HEX_RE.test(id)) return false;
     if (!ok(lastBiteMs) || lastBiteMs > endMs) return false;
-    if (bites.length > MAX_RECENT_BITES) return false;
     for (const b of bites) if (!ok(b) || b > endMs) return false;
+    if (!checkpointLedgerShape(lastBiteMs, bites)) return false;
   }
   return true;
 }
@@ -779,7 +875,7 @@ export function encodeCheckpoint(cp: Checkpoint, authorIdHex: string): string {
     throw new RangeError(
       'encodeCheckpoint: this checkpoint is outside the wire\'s domain and every peer would ' +
       'reject it — a number that is negative or past Number.MAX_SAFE_INTEGER, a bite time ' +
-      `after the epoch it summarises ends, a size outside [${MIN_SIZE}, ${MAX_CHECKPOINT_SIZE}], ` +
+      `after the epoch it summarises ends, a size outside [${MIN_SIZE}, ${MAX_SIZE}], ` +
       `more than ${MAX_CHECKPOINT_SWIMMERS} swimmers, more than ${MAX_RECENT_BITES} carried ` +
       'bites for one swimmer, or an id that is not 64-character lowercase hex. See ' +
       'checkpointInDomain.',
@@ -838,13 +934,12 @@ function decodePresenceTail(tail: string, id: string, hash: string): Presence | 
   const [xs, ys, hs, ss, ms, salt] = parsed.fields;
   const sayRaw = parsed.rest;
 
-  // `salt` is checked for SHAPE and never for VALUE. It is deliberately NOT
-  // compared against `id`: a body's own claims about its author are exactly
-  // what this decoder must not trust (see the module header and
-  // shoalRoom.ts's), and `id` already comes from the reply envelope. Its only
-  // job is to perturb `sha256(body)` so two different swimmers cannot hash to
-  // one content_id; a mismatching salt is a valid — if pointless — body.
+  // Shape, then AUTHOR. The second half is what stops a publisher steering its
+  // own content hash with 64 free bits — see `saltMatchesAuthor`. Both checks
+  // are kept: the shape check is what rejects a move body arriving at
+  // `decodeCheckpointBody` and vice versa, independently of who authored it.
   if (!SALT_RE.test(salt)) return null;
+  if (!saltMatchesAuthor(salt, id)) return null;
 
   const x = parseIntField(xs);
   const y = parseIntField(ys);
@@ -934,8 +1029,9 @@ export function decodeCheckpointBody(body: string, id: string, hash: string): Ch
   // move body is separately rejected on its salt field, so removing this check
   // is only visible against a mis-tagged body. See shoalWire.test.ts.
   if (kind !== 'checkpoint') return null;
-  // Shape only, never compared against `id` — see decodePresenceTail.
+  // Shape, then AUTHOR — see `saltMatchesAuthor` and decodePresenceTail.
   if (!SALT_RE.test(salt)) return null;
+  if (!saltMatchesAuthor(salt, id)) return null;
 
   // The payload is the whole remaining tail: it may contain DELIM (an id is
   // an arbitrary string) and is not delimiter-checked, because parseCheckpoint
@@ -965,7 +1061,8 @@ function decodeEatTail(tail: string, id: string, hash: string): EatClaim | null 
   if (cell === null || msVal === null) return null;
   if (cell < 0 || cell >= CELL_COUNT) return null;
   if (msVal < 0) return null;
-  // Shape only, never compared against `id` — see decodePresenceTail.
+  // Shape, then AUTHOR — see `saltMatchesAuthor` and decodePresenceTail.
   if (!SALT_RE.test(salt)) return null;
+  if (!saltMatchesAuthor(salt, id)) return null;
   return { kind: 'eat', id, cell, ms: msVal, hash };
 }

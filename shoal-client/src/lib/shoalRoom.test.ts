@@ -73,20 +73,28 @@ function reply(
 // hostile client can write to be literally anything — the node never validates
 // application semantics).
 //
-// The body now carries a SALT derived from an author key (shoalWire.ts), which makes
-// this case sharper rather than weaker: here the body is salted as `B` while the
-// envelope says `A`, so a bug that trusted the body would produce a visibly wrong id.
-// The salt is never adjudicated against the envelope — see shoalWire.test.ts's own
-// "the salt is NEVER trusted as the author" section.
+// The body carries a SALT derived from an author key (shoalWire.ts), and that salt is
+// now REQUIRED to match the envelope author — an unconstrained one handed every
+// publisher 64 free bits with which to steer its own content id, which `adopt.ts` was
+// ordering by. So a body salted as `B` under an envelope that says `A` no longer
+// decodes at all, and the mismatch case below asserts the DROP.
+//
+// The anti-spoofing property is unchanged and is asserted on the well-formed reply:
+// `id` still comes from `author_id`, never from the body.
 {
   const bodySaltedAsB = encodeEat(5, 2000, B);
-  const replies: RawReply[] = [reply('sha256:spoof1', A, bodySaltedAsB)];
-  const log = repliesToLog(replies);
-  check('exactly one entry decodes', log.length === 1, log);
-  check('the decoded id is the reply\'s author_id (A), not the body\'s salt owner (B)',
-    log.length === 1 && log[0].id === A, log[0]?.id);
+  const mismatched = repliesToLog([reply('sha256:spoof1', A, bodySaltedAsB)]);
+  check('a body salted as B under an envelope that says A is dropped entirely',
+    mismatched.length === 0, mismatched);
+
+  // The same body under B's OWN envelope decodes, so the drop above is the
+  // salt/author comparison and nothing else about that body.
+  const matched = repliesToLog([reply('sha256:spoof1', B, bodySaltedAsB)]);
+  check('…while the identical body under B\'s own envelope decodes', matched.length === 1, matched);
+  check('the decoded id is the reply\'s author_id, taken from the envelope',
+    matched.length === 1 && matched[0].id === B, matched[0]?.id);
   check('the decoded id is NOT the body text (the only thing a hostile client controls)',
-    log.length === 1 && log[0].id !== bodySaltedAsB, log[0]?.id);
+    matched.length === 1 && matched[0].id !== bodySaltedAsB, matched[0]?.id);
 }
 
 // --- An author_id of the wrong SHAPE is dropped ------------------------------------
