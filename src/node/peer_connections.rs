@@ -309,9 +309,49 @@ impl PeerConnectionPool {
         let conn = self.get(peer_id).await.ok_or(SendError::PeerNotFound)?;
         // Bound every peer send: a stuck/half-open TCP connection must never hang
         // the caller (e.g. an RPC handler broadcasting a self-originated action).
-        match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
+        //
+        // STRIKES COUNT HERE TOO. `broadcast` learned to drop a peer that will
+        // not take data, but this path — which carries PING, DHT I_HAVE,
+        // BOOTSTRAP I_HAVE, header/backfill sync and every other targeted send,
+        // a dozen call sites in all — kept score of nothing. A peer wedged
+        // against those paths alone was retried forever exactly as before, which
+        // is precisely what client2 was still logging after the fleet was
+        // upgraded:
+        //     [PING] Failed to send to a08a5c2f...: send timed out (stuck peer)
+        //     [DHT-DISCOVERY] Failed to send I_HAVE: send timed out (stuck peer)
+        // Eviction has to be a property of SENDING, not of one caller.
+        let result = match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
             Ok(res) => res.map_err(SendError::Transport),
             Err(_) => Err(SendError::Timeout),
+        };
+        self.note_send(peer_id, &conn, result.is_ok()).await;
+        result
+    }
+
+    /// Record the outcome of one send and drop the peer if it has failed
+    /// `MAX_SEND_STRIKES` times in a row.
+    ///
+    /// Consecutive is the load-bearing word: any success resets the counter, so
+    /// a peer is dropped for being persistently dead and never for one bad
+    /// moment. Shared by `send_to` and `broadcast_inner` so the two can never
+    /// disagree about when a peer is finished.
+    async fn note_send(&self, peer_id: &[u8; 32], conn: &Arc<PeerConnection>, ok: bool) {
+        if ok {
+            conn.send_strikes
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        let strikes = conn
+            .send_strikes
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+        if strikes >= MAX_SEND_STRIKES {
+            warn!(
+                "[PEER-POOL] Dropping {} after {} consecutive failed sends",
+                hex::encode(&peer_id[..8]),
+                strikes
+            );
+            self.remove(peer_id).await;
         }
     }
 
@@ -393,37 +433,20 @@ impl PeerConnectionPool {
                     false
                 }
             };
-            // CONSECUTIVE only: any success wipes the slate, so a peer is
-            // dropped for being persistently dead, never for one bad moment.
-            let strikes = if ok {
-                conn.send_strikes
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-                0
-            } else {
-                conn.send_strikes
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-                    + 1
-            };
-            (peer_id, ok, strikes)
+            (peer_id, conn, ok)
         });
 
         let results = futures::future::join_all(sends).await;
 
-        // EVICT WHAT WILL NOT TAKE DATA. After the lock-free sends, and via
-        // `remove` (which takes the write lock only briefly), so this cannot
-        // reintroduce the stall it exists to prevent.
-        for (peer_id, _, strikes) in results.iter().filter(|(_, ok, _)| !*ok) {
-            if *strikes >= MAX_SEND_STRIKES {
-                warn!(
-                    "[PEER-POOL] Dropping {} after {} consecutive failed sends",
-                    hex::encode(&peer_id[..8]),
-                    strikes
-                );
-                self.remove(peer_id).await;
-            }
+        // SCORE AND EVICT AFTER the lock-free sends, through the same helper
+        // `send_to` uses — so the two paths can never disagree about when a peer
+        // is finished. `remove` takes the write lock only briefly, so this
+        // cannot reintroduce the stall this function exists to prevent.
+        for (peer_id, conn, ok) in &results {
+            self.note_send(peer_id, conn, *ok).await;
         }
 
-        results.into_iter().filter(|(_, ok, _)| *ok).count()
+        results.into_iter().filter(|(_, _, ok)| *ok).count()
     }
 }
 
@@ -564,6 +587,65 @@ mod tests {
         assert!(
             pool.peer_ids().await.is_empty(),
             "a peer that failed {MAX_SEND_STRIKES} consecutive sends is still pooled —              it will be retried on every broadcast for the life of the process"
+        );
+    }
+
+    /// EVICTION MUST BE A PROPERTY OF SENDING, NOT OF ONE CALLER.
+    ///
+    /// `broadcast` learned to drop an undrainable peer; `send_to` did not, and
+    /// it carries PING, DHT I_HAVE, BOOTSTRAP I_HAVE and every targeted sync
+    /// send — a dozen call sites. A peer wedged against only those paths was
+    /// retried forever, which is what a droplet was still logging after the
+    /// fleet had been upgraded.
+    #[tokio::test]
+    async fn send_to_also_evicts_a_persistently_stuck_peer() {
+        let pool = PeerConnectionPool::new();
+        let (stuck, _keep) = pooled_peer(&pool, 1).await;
+        let _wedged = stuck.writer.try_lock().unwrap();
+
+        for i in 1..MAX_SEND_STRIKES {
+            let r = pool.send_to(&[1u8; 32], &envelope()).await;
+            assert!(
+                matches!(r, Err(SendError::Timeout)),
+                "expected a timeout on strike {i}"
+            );
+            assert_eq!(
+                pool.peer_ids().await.len(),
+                1,
+                "evicted early, on strike {i}"
+            );
+        }
+
+        let r = pool.send_to(&[1u8; 32], &envelope()).await;
+        assert!(matches!(r, Err(SendError::Timeout)));
+        assert!(
+            pool.peer_ids().await.is_empty(),
+            "send_to failed {MAX_SEND_STRIKES} times consecutively and the peer is still              pooled — PING/DHT/BOOTSTRAP will retry it for the life of the process"
+        );
+    }
+
+    /// The two paths must share one counter. Strikes from `send_to` and from
+    /// `broadcast` are the same peer failing, and must add up — otherwise a peer
+    /// that alternates between the two never reaches the threshold on either.
+    #[tokio::test]
+    async fn strikes_accumulate_across_send_to_and_broadcast() {
+        let pool = PeerConnectionPool::new();
+        let (stuck, _keep) = pooled_peer(&pool, 1).await;
+        let _wedged = stuck.writer.try_lock().unwrap();
+
+        // MAX_SEND_STRIKES is 3: two via one path, the decisive one via the other.
+        let _ = pool.send_to(&[1u8; 32], &envelope()).await;
+        pool.broadcast(&envelope()).await;
+        assert_eq!(
+            pool.peer_ids().await.len(),
+            1,
+            "evicted before the threshold"
+        );
+
+        let _ = pool.send_to(&[1u8; 32], &envelope()).await;
+        assert!(
+            pool.peer_ids().await.is_empty(),
+            "strikes did not accumulate across send_to and broadcast — a peer failing              alternately on both paths would never be dropped by either"
         );
     }
 
