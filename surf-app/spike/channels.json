@@ -1,0 +1,10 @@
+{
+  "warmSize": 3,
+  "channels": [
+    { "id": "feed",  "number": 2,  "name": "FEED",  "dist": "../../feed-client/dist-spike" },
+    { "id": "forum", "number": 3,  "name": "FORUM", "dist": "../../forum-client/dist-spike" },
+    { "id": "wiki",  "number": 4,  "name": "WIKI",  "dist": "../../wiki-client/dist-spike" },
+    { "id": "chat",  "number": 5,  "name": "CHAT",  "dist": "../../chat-client/dist-spike" },
+    { "id": "reef",  "number": 50, "name": "REEF",  "dist": "../../reef-client/dist-spike" }
+  ]
+}
