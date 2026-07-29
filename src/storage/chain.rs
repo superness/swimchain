@@ -1833,8 +1833,7 @@ impl ChainStore {
                 .insert(&content_hash, entry_data)?;
 
             // Author content index (unique author||ts||hash key)
-            let author_key =
-                Self::author_index_key(&action.actor, action.timestamp, &content_hash);
+            let author_key = Self::author_index_key(&action.actor, action.timestamp, &content_hash);
             self.author_content_index
                 .insert(&author_key, &content_hash)?;
 
@@ -1864,8 +1863,7 @@ impl ChainStore {
             };
 
             // Unique space content index key: space || ts || content_hash
-            let index_key =
-                Self::space_index_key(&space_id_16, action.timestamp, &content_hash);
+            let index_key = Self::space_index_key(&space_id_16, action.timestamp, &content_hash);
 
             self.space_content_index.insert(&index_key, &content_hash)?;
 
@@ -1906,8 +1904,7 @@ impl ChainStore {
                 .insert(&content_hash, entry_data)?;
 
             // Author content index (unique author||ts||hash key)
-            let author_key =
-                Self::author_index_key(&action.actor, action.timestamp, &content_hash);
+            let author_key = Self::author_index_key(&action.actor, action.timestamp, &content_hash);
             self.author_content_index
                 .insert(&author_key, &content_hash)?;
 
@@ -4282,18 +4279,17 @@ mod tests {
 
         let posts = store.get_posts_for_space(&space_16, 100, 0).unwrap();
         let hashes: Vec<[u8; 32]> = posts.iter().map(|(h, _)| *h).collect();
-        assert!(hashes.contains(&[0xA1u8; 32]), "first same-second post lost");
+        assert!(
+            hashes.contains(&[0xA1u8; 32]),
+            "first same-second post lost"
+        );
         assert!(
             hashes.contains(&[0xB2u8; 32]),
             "second same-second post lost"
         );
 
         let by_author = store.get_content_by_author(&author, 100, 0, None).unwrap();
-        assert_eq!(
-            by_author.len(),
-            2,
-            "author index lost a same-second action"
-        );
+        assert_eq!(by_author.len(), 2, "author index lost a same-second action");
     }
 
     // repair_content_indexes must resurrect posts erased by legacy-key
@@ -4338,10 +4334,7 @@ mod tests {
         // Simulate the legacy on-disk state: wipe the (correct) rows and leave
         // ONE legacy 24-byte row where the collision left only post_b visible.
         for tree in [&store.space_content_index, &store.posts_by_space_index] {
-            let keys: Vec<_> = tree
-                .scan_prefix(space_16)
-                .map(|r| r.unwrap().0)
-                .collect();
+            let keys: Vec<_> = tree.scan_prefix(space_16).map(|r| r.unwrap().0).collect();
             for k in keys {
                 tree.remove(&k).unwrap();
             }
@@ -4353,7 +4346,10 @@ mod tests {
             .posts_by_space_index
             .insert(&legacy_key, &[0xB2u8; 32])
             .unwrap();
-        assert_eq!(store.get_posts_for_space(&space_16, 100, 0).unwrap().len(), 1);
+        assert_eq!(
+            store.get_posts_for_space(&space_16, 100, 0).unwrap().len(),
+            1
+        );
 
         let repaired = store.repair_content_indexes().unwrap();
         assert!(repaired >= 2, "repair should re-index both posts");

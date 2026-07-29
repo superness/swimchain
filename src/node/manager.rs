@@ -2011,7 +2011,7 @@ impl NodeManager {
             // ≤1 MB images (base64 pushed the request body over the cap). Match the
             // RpcServerConfig default headroom.
             max_body_size: 7 * 1024 * 1024, // 7MB
-            tls: Default::default(),    // TLS disabled by default for local development
+            tls: Default::default(),        // TLS disabled by default for local development
         };
 
         // Use content store from self (opened in initialize())

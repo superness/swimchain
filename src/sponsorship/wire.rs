@@ -121,6 +121,7 @@ pub fn serialize_offer(offer: &PublicSponsorshipOffer) -> Result<Vec<u8>, WireEr
     buf.extend_from_slice(&requirements_bytes); // var
     buf.extend_from_slice(offer.signature.as_bytes()); // 64
     buf.push(if offer.auto_approve { 1 } else { 0 }); // 1 (trailing, optional)
+
     // space_scope: presence(1) [+ 32], trailing & optional like auto_approve so
     // legacy peers/offers (which stop after auto_approve) remain compatible.
     match offer.space_scope {
