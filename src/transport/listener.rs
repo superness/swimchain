@@ -161,9 +161,64 @@ impl TcpTransport {
         &self.local_info
     }
 
+    /// Take the next completed TCP connection WITHOUT handshaking it.
+    ///
+    /// THIS IS THE ONE THE ACCEPT LOOP SHOULD USE. `accept()` below does the
+    /// protocol handshake inline, so a caller looping on it serialises every
+    /// inbound connection behind the previous peer's round-trip — one slow,
+    /// stalled or hostile peer stops the node accepting anybody.
+    ///
+    /// Measured on the mainnet seed, 2026-07-29: 92 connections sat in the
+    /// listen backlog, each holding an unread 180-byte handshake, none owned by
+    /// any process because none had been accepted. The node's own fd count was
+    /// 42. The same starvation, taken far enough, is what pinned the backlog at
+    /// 4097/4096 that morning and took the only bootstrap node off the network.
+    ///
+    /// Pair with `handshake_inbound` on a spawned task.
+    ///
+    /// # Errors
+    /// Returns an error only if the underlying accept fails.
+    pub async fn accept_raw(&self) -> Result<(TcpStream, SocketAddr), TransportError> {
+        let (stream, remote_addr) = self.listener.accept().await?;
+        Ok((stream, remote_addr))
+    }
+
+    /// Complete the inbound handshake for a stream from `accept_raw`.
+    ///
+    /// Safe to run concurrently for many peers: the only shared state is the
+    /// nonce set and the observed-address learner, both already synchronised.
+    ///
+    /// # Errors
+    /// Returns an error if the handshake fails, times out, or the nonce
+    /// duplicates a live connection.
+    pub async fn handshake_inbound(
+        &self,
+        stream: TcpStream,
+        remote_addr: SocketAddr,
+    ) -> Result<Connection, TransportError> {
+        let our_nonce = generate_nonce();
+        let mut conn = Connection::new_inbound(stream, remote_addr, our_nonce);
+        let advertised = self.advertised_addr().await;
+        let peer_info = perform_inbound_handshake(&mut conn, &self.local_info, advertised).await?;
+
+        {
+            let mut nonces = self.active_nonces.write().await;
+            if nonces.contains(&peer_info.nonce) {
+                return Err(TransportError::DuplicateConnection);
+            }
+            nonces.insert(peer_info.nonce);
+        }
+
+        self.adopt_observed(&peer_info).await;
+        Ok(conn)
+    }
+
     /// Accept an incoming connection and complete handshake
     ///
     /// This blocks until a connection is accepted and the handshake completes.
+    ///
+    /// PREFER `accept_raw` + `handshake_inbound` in an accept loop — see
+    /// `accept_raw` for why looping on this starves the listener.
     ///
     /// # Errors
     /// Returns an error if:
@@ -363,6 +418,78 @@ impl std::fmt::Debug for TcpTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A PEER THAT NEVER HANDSHAKES MUST NOT STOP US ACCEPTING ANYONE ELSE.
+    ///
+    /// `accept()` performs the protocol handshake inline, so an accept loop
+    /// built on it serialises every inbound connection behind the previous
+    /// peer's round-trip. Measured on the mainnet seed 2026-07-29: 92
+    /// connections stranded in the listen backlog, each holding an unread
+    /// 180-byte handshake, none owned by any process because none had been
+    /// accepted — while the node itself held only 42 fds.
+    ///
+    /// This is why `accept_raw` exists. The check below is that a silent
+    /// connection (opened, never a byte sent) does NOT delay taking the next
+    /// one off the queue.
+    ///
+    /// MUTATION: swapping `accept_raw` for `accept()` here makes it time out,
+    /// because `accept()` would sit in the first peer's handshake forever.
+    #[tokio::test]
+    async fn silent_peer_does_not_block_accepting_the_next() {
+        let transport =
+            TcpTransport::bind("127.0.0.1:0".parse().unwrap(), LocalNodeInfo::default())
+                .await
+                .unwrap();
+        let addr = transport.local_addr();
+
+        // Peer A connects and says NOTHING — the pathological case.
+        let _silent = TcpStream::connect(addr).await.unwrap();
+        // Peer B connects right behind it.
+        let _second = TcpStream::connect(addr).await.unwrap();
+
+        // Both must come off the queue promptly. Neither has handshaked, so an
+        // implementation that handshakes inline cannot get past the first.
+        for which in ["first", "second"] {
+            let got =
+                tokio::time::timeout(std::time::Duration::from_secs(2), transport.accept_raw())
+                    .await;
+            assert!(
+                got.is_ok(),
+                "accepting the {which} connection blocked on a silent peer's handshake —                  one stalled peer stops the node accepting anybody"
+            );
+            assert!(
+                got.unwrap().is_ok(),
+                "accept_raw returned an error for the {which}"
+            );
+        }
+    }
+
+    /// The split must still produce a usable connection: `accept_raw` followed
+    /// by `handshake_inbound` has to be equivalent to the old inline `accept`.
+    #[tokio::test]
+    async fn accept_raw_then_handshake_matches_inline_accept() {
+        let server = TcpTransport::bind("127.0.0.1:0".parse().unwrap(), LocalNodeInfo::default())
+            .await
+            .unwrap();
+        let addr = server.local_addr();
+
+        let client = TcpTransport::bind("127.0.0.1:0".parse().unwrap(), LocalNodeInfo::default())
+            .await
+            .unwrap();
+        let dialer = tokio::spawn(async move { client.connect(addr).await });
+
+        let (stream, remote) = server.accept_raw().await.unwrap();
+        let conn = server.handshake_inbound(stream, remote).await;
+        assert!(
+            conn.is_ok(),
+            "handshake after accept_raw failed: {:?}",
+            conn.err()
+        );
+        assert!(
+            dialer.await.unwrap().is_ok(),
+            "dialer side of the handshake failed"
+        );
+    }
 
     #[tokio::test]
     async fn test_bind_success() {

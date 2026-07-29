@@ -2137,8 +2137,39 @@ impl BackgroundTaskRunner {
                         info!("Accept loop received shutdown signal");
                         break;
                     }
-                    result = transport.accept() => {
-                        match result {
+                    // ACCEPT FIRST, HANDSHAKE OFF THE LOOP.
+                    //
+                    // `transport.accept()` performs the protocol handshake inline, so
+                    // awaiting it here serialised every inbound connection behind the
+                    // previous peer's round-trip: one slow, stalled or hostile peer
+                    // stopped the node accepting anybody. Measured on the mainnet seed
+                    // 2026-07-29 — 92 connections stranded in the listen backlog, each
+                    // holding an unread 180-byte handshake, none owned by any process
+                    // because none had been accepted, while the node held 42 fds. Taken
+                    // far enough that is what pinned the backlog at 4097/4096 and took
+                    // the only bootstrap node off the network that morning.
+                    //
+                    // Now the loop takes the connection and immediately goes back to
+                    // accepting; the handshake and everything after it run on their own
+                    // task, so a peer that never speaks costs one task, not the listener.
+                    result = transport.accept_raw() => {
+                        let (raw_stream, raw_addr) = match result {
+                            Ok(pair) => pair,
+                            Err(e) => {
+                                warn!("[ACCEPT] Accept error: {}", e);
+                                continue;
+                            }
+                        };
+
+                        let transport = transport.clone();
+                        let connection_manager = connection_manager.clone();
+                        let connection_pool = connection_pool.clone();
+                        let router = router.clone();
+                        let dht = dht.clone();
+                        let data_dir = data_dir.clone();
+
+                        tokio::spawn(async move {
+                            match transport.handshake_inbound(raw_stream, raw_addr).await {
                             Ok(conn) => {
                                 // Extract peer info before storing
                                 let peer_info = conn.peer_info().cloned();
@@ -2176,7 +2207,7 @@ impl BackgroundTaskRunner {
                                                 "[ACCEPT] Failed to register connection from {}: {}",
                                                 remote_addr, e
                                             );
-                                            continue; // Skip this connection
+                                            return; // Skip this connection (own task now, not the accept loop)
                                         }
                                     }
 
@@ -2286,10 +2317,13 @@ impl BackgroundTaskRunner {
                                 }
                             }
                             Err(e) => {
-                                warn!("[ACCEPT] Accept error: {}", e);
-                                // Continue accepting - don't crash on individual errors
+                                // Handshake failures are ordinary: wrong network magic,
+                                // a self-dial rejected by identity, a scanner. They cost
+                                // one task and are logged, never the accept loop.
+                                debug!("[ACCEPT] Handshake from {} failed: {}", raw_addr, e);
                             }
-                        }
+                            }
+                        });
                     }
                 }
             }
