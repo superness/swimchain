@@ -9,7 +9,7 @@
   html, body { width: 100%; height: 100%; overflow: hidden; background: #000; }
 
   /* deck: all warm channels full-screen, stacked; current raised by z-index */
-  #deck { position: absolute; inset: 0; }
+  #deck { position: absolute; inset: 0; z-index: 0; }
   iframe.channel { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #000; }
 
   /* honest static: one canvas (spec §8), above the deck during seams */

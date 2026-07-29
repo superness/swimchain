@@ -2,7 +2,7 @@
 import { Deck } from './deck.mjs';
 import { buildConfigMessage, watchReadiness } from './handover.mjs';
 import { createStatic } from './static-shader.mjs';
-import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './stubs.mjs'; // Task 6: './measure.mjs'
+import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './measure.mjs';
 
 const cfg = await (await fetch('/spike-config.json')).json();
 const byId = new Map(cfg.channels.map((c) => [c.id, c]));
