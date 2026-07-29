@@ -233,15 +233,22 @@ async function main(): Promise<void> {
   // Neither would ever reach water without a retry.
   {
     // The commonest case by far, and it is not a failure at all: a fresh
-    // install has never heard of this water and learns it from a peer minutes
-    // later. `shellConfig` is right to return `null`; the window is wrong to
-    // stop asking.
-    const late = await observe({ waterAppearsAfterListings: 1, awaitWrite: true, settleMs: 200 });
-    check('a node that has not synced the water yet is asked again, and the player gets in',
+    // install's node holds the room's content BLOCK but not its BODY, because
+    // content on this network arrives only when something asks. Task 4 watched
+    // exactly this for 3 m 18 s on a real mainnet install. `shellConfig` is right
+    // to return `null`; the window is wrong to stop asking, and wrong to wait
+    // without asking.
+    const late = await observe({ roomArrivesAfterAsks: 1, awaitWrite: true, settleMs: 200 });
+    check('a node that has not got the room body yet is asked again, and the player gets in',
       reachedWater(late, room), late.submitted);
     check('...having really looked more than once',
-      late.rpcCalls.filter((m) => m === 'list_spaces').length >= 2,
-      late.rpcCalls.filter((m) => m === 'list_spaces').length);
+      late.rpcCalls.filter((m) => m === 'get_content').length >= 2,
+      late.rpcCalls.filter((m) => m === 'get_content').length);
+    // THE DRIVER. Retrying a local-only read forever would never have produced
+    // the body: `get_content` never fetches. Something has to ask the network,
+    // and this is the check that says the window does.
+    check('...and it ASKED THE NETWORK for it rather than only waiting',
+      late.rpcCalls.includes('request_content'), late.rpcCalls);
 
     // And a plain transient failure, on the very first call the assembly makes
     // after the endpoint: one -32603 and the old code was done for good.
@@ -250,11 +257,22 @@ async function main(): Promise<void> {
       reachedWater(hiccup, room), hiccup.submitted);
 
     // NON-DEGENERACY: the retry must not have quietly become a second, always-on
-    // poll. A window that got in on the first ask looks at the listing ONCE.
+    // poll. A window that got in on the first ask looks for the room ONCE.
     const clean = await observe({ awaitWrite: true, settleMs: 200 });
     check('NON-DEGENERACY: a node that was ready is asked exactly once',
-      clean.rpcCalls.filter((m) => m === 'list_spaces').length === 1,
-      clean.rpcCalls.filter((m) => m === 'list_spaces').length);
+      clean.rpcCalls.filter((m) => m === 'get_content').length === 1,
+      clean.rpcCalls.filter((m) => m === 'get_content').length);
+    // ...and having found it locally, it must NOT have nudged the network. A
+    // driver that fired unconditionally would be a broadcast on every launch.
+    check('NON-DEGENERACY: a room that was already here is not asked for over the network',
+      !clean.rpcCalls.includes('request_content'), clean.rpcCalls);
+
+    // THE LISTING IS GONE. The space id is derived, so a fresh install no longer
+    // depends on a name only a peer could supply — which on mainnet no peer ever
+    // did. The harness still answers `list_spaces` correctly, so this is zero
+    // because the window stopped asking, not because the fake stopped replying.
+    check('the water is derived, not discovered — no listing is consulted at all',
+      !clean.rpcCalls.includes('list_spaces'), clean.rpcCalls);
   }
 
   // =======================================================================

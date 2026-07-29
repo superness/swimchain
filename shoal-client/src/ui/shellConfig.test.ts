@@ -27,9 +27,11 @@
  */
 import { createHash } from 'node:crypto';
 
+import { isWireSpaceId } from '../lib/shoalRpc';
+
 import {
   ROOM_BODY, ROOM_TITLE, WATER_APP, WATER_NAME, WATER_SPACE_NAME,
-  roomContentId, shellConfig, shellSurface, type InvokeFn,
+  roomContentId, shellConfig, shellSurface, waterSpaceId, type InvokeFn,
 } from './shellConfig';
 
 let failures = 0;
@@ -63,9 +65,10 @@ interface NodeBehaviour {
   /** `get_identity_info`'s answer. Omit a field to model a node that reports
    *  an identity it cannot fully name. */
   identity?: { has_identity: boolean; public_key: string | null; address: string | null };
-  /** Successive `list_spaces` pages, in offset order. */
+  /** Successive `list_spaces` pages, in offset order. Kept so a check can prove
+   *  the window no longer consults a listing even when one is on offer. */
   spacePages?: { space_id?: string; name?: string | null; app?: string | null }[][];
-  /** Whether `get_content` finds the room post. */
+  /** Whether `get_content` finds the room post LOCALLY. */
   roomPresent?: boolean;
 }
 
@@ -100,7 +103,9 @@ function fakeNode(b: NodeBehaviour): { fetch: typeof fetch; seen: SeenCall[] } {
       case 'get_content':
         return (b.roomPresent ?? true)
           ? ok({ content_id: req.params.content_id, body: ROOM_BODY })
-          : err(-32013, 'Content not found');
+          : err(-32004, 'Content not found');
+      case 'request_content':
+        return ok({ status: 'discovering', content_id: req.params.content_id });
       case 'sign_message':
         return ok({ signature: SIG_HEX, public_key: NODE_PUBKEY });
       default:
@@ -143,10 +148,24 @@ async function quietly<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-const SHOAL_SPACE = 'sp1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjw5s6';
+/**
+ * THE REAL MAINNET SPACE ID FOR `@shoal:main`, pinned as a literal.
+ *
+ * Not read from anywhere the module under test can reach — this is the value
+ * observed on the live chain during Task 4 and recorded in project memory, so
+ * `waterSpaceId()` agreeing with it is evidence about the derivation rather
+ * than the derivation agreeing with itself. If a change to `WATER_APP`,
+ * `WATER_NAME`, the class byte or the bech32m encoder ever moved the derived
+ * id, this is the check that would say so — and moving it would silently point
+ * every shipped build at an empty body of water.
+ */
+const LIVE_MAINNET_WATER = 'sp1qqz4vc5lj250danvppc8k2hchy9sxh0ae6';
+
+/** A listing the window must now IGNORE: it names a different id for this
+ *  water, so any check that passes with this present is not reading it. */
 const GOOD_SPACES = [[
   { space_id: 'sp1zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzabcde', name: 'General', app: null },
-  { space_id: SHOAL_SPACE, name: WATER_NAME, app: WATER_APP },
+  { space_id: 'sp1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjw5s6', name: WATER_NAME, app: WATER_APP },
 ]];
 
 // ---------------------------------------------------------------------------
@@ -205,8 +224,8 @@ async function aCompleteConfigurationAgainst(node: { seen: SeenCall[] }): Promis
     cfg.authorIdHex === NODE_PUBKEY, cfg.authorIdHex);
   check('the node\'s address comes along for anything that must show a human one',
     cfg.address === NODE_ADDRESS, cfg.address);
-  check('the space is the one listed under the shoal namespace',
-    cfg.spaceId === SHOAL_SPACE, cfg.spaceId);
+  check('the space is the derived one, not whatever the listing offered',
+    cfg.spaceId === LIVE_MAINNET_WATER, cfg.spaceId);
   check('the room is the derived one', cfg.roomContentId === (await roomContentId()), cfg.roomContentId);
 
   // NOT a URL: nothing in the assembled configuration came from a query string,
@@ -246,35 +265,57 @@ async function aCompleteConfigurationAgainst(node: { seen: SeenCall[] }): Promis
 // ---------------------------------------------------------------------------
 
 async function findingTheWater(): Promise<void> {
-  console.log('\n3. finding the water');
+  console.log('\n3. the water is DERIVED, and it matches the live chain');
 
-  // Page 2 of a full first page: the listing loop has to keep going.
-  const filler = Array.from({ length: 200 }, (_, i) => ({
-    space_id: `sp1filler${i}`, name: `Filler ${i}`, app: null,
-  }));
-  const paged = fakeNode({ spacePages: [filler, [{ space_id: SHOAL_SPACE, name: WATER_NAME, app: WATER_APP }]] });
-  const cfg = await withNode(paged, () => shellConfig(fakeShell({ endpoint: ENDPOINT, auth: COOKIE_HEADER })));
-  check('a water on the second page is still found',
-    cfg !== null && cfg.spaceId === SHOAL_SPACE, cfg?.spaceId ?? null);
+  const derived = await waterSpaceId();
 
-  // NON-DEGENERACY: the namespace is half the match. Another app's space called
-  // "main" is a different body of water entirely, and joining it would put the
-  // player in a room whose replies are not moves at all.
-  const wrongApp = fakeNode({ spacePages: [[{ space_id: SHOAL_SPACE, name: WATER_NAME, app: 'wiki' }]] });
-  const cfgWrongApp = await quietly(() => withNode(wrongApp, () => shellConfig(
-    fakeShell({ endpoint: ENDPOINT, auth: COOKIE_HEADER }),
-  )));
-  check('NON-DEGENERACY: another app\'s space named "main" is not this water',
-    cfgWrongApp === null, cfgWrongApp);
+  // The load-bearing one. Task 4 proved discovery cannot resolve on a fresh
+  // node — `list_spaces` reported this exact space with `app:null, name:null,
+  // name_unresolved:true`, and four peers never answered `GET_SPACE_META`. So
+  // the id has to come from the two constants instead, and it has to be RIGHT.
+  check('the derived id is the one @shoal:main actually has on mainnet',
+    derived === LIVE_MAINNET_WATER, { derived, live: LIVE_MAINNET_WATER });
 
-  // NON-DEGENERACY: and the name is the other half. A space in this namespace
-  // called something else is a different water within the same game.
-  const wrongName = fakeNode({ spacePages: [[{ space_id: SHOAL_SPACE, name: 'smoke', app: WATER_APP }]] });
-  const cfgWrongName = await quietly(() => withNode(wrongName, () => shellConfig(
-    fakeShell({ endpoint: ENDPOINT, auth: COOKIE_HEADER }),
-  )));
-  check('NON-DEGENERACY: a different water in the same namespace is not this one',
-    cfgWrongName === null, cfgWrongName);
+  check('...and it is in the bech32m wire form every RPC speaks',
+    isWireSpaceId(derived), derived);
+
+  // The class byte is the first of the sixteen, so an App-classed id always
+  // begins `sp1qqz` (version 0 + 0x05). A Social-classed one would not, and the
+  // node hides non-app classes from listings entirely.
+  check('...carrying the App space class, as create_space assigns it',
+    derived.startsWith('sp1qqz'), derived.slice(0, 8));
+
+  // NON-DEGENERACY: both halves of the name are really in the digest. If either
+  // were dropped, every game's water would collide on one id.
+  const bySameRecipe = async (app: string, name: string): Promise<string> => {
+    const { createHash } = await import('node:crypto');
+    const { encodeWireSpaceId } = await import('../lib/shoalRpc');
+    const h = createHash('sha256').update(`app:${app}:v1:${name}`, 'utf8').digest();
+    const id16 = new Uint8Array(16);
+    id16[0] = 0x05;
+    id16.set(h.subarray(0, 15), 1);
+    return encodeWireSpaceId(id16);
+  };
+
+  // Computed with node:crypto rather than the module's hash-wasm digest — two
+  // independent SHA-256s agreeing is evidence; one agreeing with itself is not.
+  check('SECOND IMPLEMENTATION: node:crypto derives the same id from the same two strings',
+    (await bySameRecipe(WATER_APP, WATER_NAME)) === derived, await bySameRecipe(WATER_APP, WATER_NAME));
+
+  check('NON-DEGENERACY: another app\'s "main" derives a DIFFERENT id',
+    (await bySameRecipe('wiki', WATER_NAME)) !== derived);
+  check('NON-DEGENERACY: a different water in this namespace derives a DIFFERENT id',
+    (await bySameRecipe(WATER_APP, 'smoke')) !== derived);
+
+  // AND IT DOES NOT READ THE LISTING. `GOOD_SPACES` names a different id for a
+  // space whose `(app, name)` match exactly — the very thing the old lookup
+  // keyed on. A window that still consulted it would come back with that id.
+  const node = fakeNode({ spacePages: GOOD_SPACES });
+  const cfg = await withNode(node, () => shellConfig(fakeShell({ endpoint: ENDPOINT, auth: COOKIE_HEADER })));
+  check('a listing offering a different id for @shoal:main is ignored',
+    cfg !== null && cfg.spaceId === derived, cfg?.spaceId ?? null);
+  check('...because list_spaces is never called at all',
+    !node.seen.some((c) => c.method === 'list_spaces'), node.seen.map((c) => c.method));
 }
 
 // ---------------------------------------------------------------------------
@@ -356,11 +397,7 @@ async function halfAConfigurationIsNeverReturned(): Promise<void> {
       ),
     },
     {
-      name: 'the node has never heard of this water',
-      run: () => withNode(fakeNode({ spacePages: [[]] }), () => shellConfig(shellSaysEndpoint)),
-    },
-    {
-      name: 'the water is here but its room post is not',
+      name: 'the room post\'s body has not arrived yet',
       run: () => withNode(
         fakeNode({ spacePages: GOOD_SPACES, roomPresent: false }),
         () => shellConfig(shellSaysEndpoint),
@@ -375,6 +412,33 @@ async function halfAConfigurationIsNeverReturned(): Promise<void> {
     // this group exists to forbid.
     check(`${c.name} -> null`, got === null, got);
   }
+
+  // "The node has never heard of this water" is NO LONGER A REASON, and that is
+  // the whole point of deriving the id: an empty listing used to strand a fresh
+  // install forever. It must not do so now.
+  const noListing = fakeNode({ spacePages: [[]] });
+  const stillFine = await withNode(noListing, () => shellConfig(shellSaysEndpoint));
+  check('an empty listing is no longer a reason to fail — the id was never in it',
+    stillFine !== null && stillFine.spaceId === (await waterSpaceId()), stillFine?.spaceId ?? null);
+
+  // AND THE ONE REMAINING REASON DRIVES A FETCH. Returning `null` and waiting
+  // would wait forever: `get_content` is local-only and never pulls. Task 4's
+  // room body arrived 3 m 18 s AFTER something finally asked, and nothing in
+  // this client had been asking.
+  const absent = fakeNode({ spacePages: GOOD_SPACES, roomPresent: false });
+  await quietly(() => withNode(absent, () => shellConfig(shellSaysEndpoint)));
+  check('a missing room body is ASKED FOR over the network, not merely waited on',
+    absent.seen.some((c) => c.method === 'request_content'), absent.seen.map((c) => c.method));
+  check('...for the room this client is actually trying to join',
+    absent.seen.find((c) => c.method === 'request_content')?.params.content_id === (await roomContentId()),
+    absent.seen.find((c) => c.method === 'request_content')?.params.content_id);
+
+  // NON-DEGENERACY: a room that IS here must not be asked for. An unconditional
+  // driver would broadcast a WHO_HAS on every launch, forever.
+  const present = fakeNode({ spacePages: GOOD_SPACES });
+  await withNode(present, () => shellConfig(shellSaysEndpoint));
+  check('NON-DEGENERACY: a room already here is not asked for over the network',
+    !present.seen.some((c) => c.method === 'request_content'), present.seen.map((c) => c.method));
 }
 
 async function main(): Promise<void> {

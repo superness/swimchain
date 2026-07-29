@@ -96,7 +96,7 @@
 
 import { createSHA256 } from 'hash-wasm';
 
-import { nodeIdentity, rpcCall, type RpcAuth } from '../lib/shoalRpc';
+import { encodeWireSpaceId, nodeIdentity, rpcCall, type RpcAuth } from '../lib/shoalRpc';
 import type { SignFn } from '../lib/shoalSend';
 
 // ---------------------------------------------------------------------------
@@ -236,61 +236,109 @@ interface RpcConfigDto {
   auth?: string | null;
 }
 
-interface SpaceSummary {
-  space_id?: string;
-  name?: string | null;
-  app?: string | null;
-}
-
-interface ListSpacesResult {
-  spaces?: SpaceSummary[];
-  total?: number;
-}
-
-/** One `list_spaces` page. The node applies `.take(limit)` with no server-side
- *  cap (`src/rpc/methods.rs:5553-5558`), but a request that asked for
- *  everything at once would still be a full chain + content-store scan on the
- *  node's side, so this pages politely. */
-const SPACE_PAGE = 200;
-
-/** A hard stop on paging, so a node reporting a nonsense `total` cannot spin
- *  this forever. 20 pages is 4,000 spaces — far past any node's listing. */
-const MAX_SPACE_PAGES = 20;
+/** The App space class byte, the first of the 16 (`SpaceClass::App.byte()`,
+ *  src/types/space_class.rs:15-23). */
+const APP_CLASS_BYTE = 0x05;
 
 /**
- * Find the water's space id, in the node's own bech32m wire form.
+ * The water's space id, in the node's own bech32m wire form — **derived, not
+ * discovered**.
  *
- * Matched on `(app, name)` rather than on the raw `@shoal:main` string — see
- * `WATER_NAME` for why the obvious match finds nothing. Returns `null` when the
- * node has never heard of this water, which is the ordinary state of a brand
- * new node and not an error: the caller shows other water instead.
+ * ## WHY THIS IS NOT A `list_spaces` LOOKUP ANY MORE
+ *
+ * It used to be, matching `(app, name)` against the node's listing. **That
+ * cannot work on a fresh install, which is the only machine that matters
+ * here**, and Task 4's live run is what showed it. A brand-new node that had
+ * fully synced mainnet reported this exact space as:
+ *
+ *     {"space_id":"sp1qqz4vc5lj…","class":"app",
+ *      "app":null,"name":null,"name_unresolved":true,"post_count":1}
+ *
+ * `app` and `name` come from the on-chain space REGISTRY, written only by
+ * `register_spaces_from_content_block` (src/node/router/router.rs:4947-4980),
+ * which returns early unless the content block carries `space_metadata` — and
+ * the block this node synced logged `space_metadata=NONE`. The name is
+ * recoverable only by asking a peer (`resolve_space_name` broadcasts
+ * `GET_SPACE_META`), and in the live run four peers were asked and **none ever
+ * answered**. So the match had nothing to match on, forever, and the player sat
+ * in the shallows.
+ *
+ * ## WHY DERIVING IS EXACT RATHER THAN A GUESS
+ *
+ * An app-namespaced space is NAME-ADDRESSED: `create_space` derives its id from
+ * `(app, display)` alone — `app_space_id_16`, `sha256("app:<app>:v1:<display>")[..16]`
+ * with the class byte in front (src/types/space_class.rs:70-73) — then
+ * `encode_space_id` wraps it bech32m (src/rpc/methods.rs:186-194). Both inputs
+ * are `WATER_APP` and `WATER_NAME`, two constants this module already owns and
+ * `scripts/mint-water.ts` already imports. So this computes the same id the
+ * minter computed, from the same two strings, and it cannot drift.
+ *
+ * **This is not the "baking" Task 3b rejected.** Baking would paste a literal
+ * `sp1…` into the client — a second source of truth for a value derived from
+ * constants already here. Deriving adds no second source, needs no round trip,
+ * and Task 3b's own argument ("the id is a pure function of two constants this
+ * client already holds") is precisely the argument for it.
+ *
+ * ## WHAT WAS GIVEN UP, DELIBERATELY
+ *
+ * `list_spaces` is gone from this path entirely rather than kept as a fallback.
+ * A fallback would be a check that fails exactly on a fresh install, which is
+ * the case it would exist to serve. It is also not needed as a readiness
+ * signal: `submit_reply` rejects an unknown PARENT outright
+ * (src/rpc/methods.rs:3070-3084) and never validates the space separately, so
+ * `roomReady` below is the gate that actually decides whether a write can land.
+ * Dropping it also removes a full chain + content-store scan (the node's own
+ * comment on `build_space_list`) from every retry.
  */
-async function findWaterSpaceId(auth: RpcAuth): Promise<string | null> {
-  for (let page = 0; page < MAX_SPACE_PAGES; page++) {
-    const result = await rpcCall<ListSpacesResult>(auth, 'list_spaces', {
-      limit: SPACE_PAGE,
-      offset: page * SPACE_PAGE,
-    });
-    const spaces = result.spaces ?? [];
-    for (const s of spaces) {
-      if (s.app === WATER_APP && s.name === WATER_NAME && typeof s.space_id === 'string' && s.space_id) {
-        return s.space_id;
-      }
-    }
-    if (spaces.length < SPACE_PAGE) return null; // last page, not found
-  }
-  return null;
+export async function waterSpaceId(): Promise<string> {
+  const hasher = await createSHA256();
+  hasher.update(new TextEncoder().encode(`app:${WATER_APP}:v1:${WATER_NAME}`));
+  const digest = hasher.digest('binary');
+
+  const id16 = new Uint8Array(16);
+  id16[0] = APP_CLASS_BYTE;
+  id16.set(digest.subarray(0, 15), 1); // apply_class: class byte + hash[..15]
+  return encodeWireSpaceId(id16);
 }
 
-/** Is the room post actually there? A space with no room post accepts no
- *  replies at all — `submit_reply` rejects an unknown parent outright
- *  (`src/rpc/methods.rs:3070-3084`) — so a configuration naming a room that
- *  does not exist is a half-configuration wearing a complete one's clothes. */
-async function roomExists(auth: RpcAuth, contentId: string): Promise<boolean> {
+/**
+ * Is the room post here YET — and if not, ask the network for it.
+ *
+ * ## `get_content` NEVER FETCHES, AND THAT IS THE DESIGN
+ *
+ * It is a purely local `content_store.get` (src/rpc/methods.rs:4240-4460).
+ * Nodes on this network fetch content on demand only, so a body nobody has
+ * asked for never arrives — see the project's own standing note on this
+ * ("content getting needs a driver"). Task 4's live run watched exactly that:
+ * the room's content BLOCK was on the fresh node's chain with `"body":null`,
+ * and it stayed that way while the window retried, because nothing in this
+ * client had ever asked.
+ *
+ * So this asks. `request_content` (src/rpc/methods.rs:8251) marks the id wanted,
+ * queries the DHT for providers and broadcasts `WHO_HAS`; it returns
+ * immediately with `found_locally` / `requested` / `discovering` and the body
+ * arrives later over `DATA_CONTENT`. In the live run the answer took **3 m 18 s**
+ * to come back, served by four ordinary peers — the content was on the network
+ * the whole time and only the asking was missing.
+ *
+ * IT RETURNS `false` RATHER THAN WAITING. The caller (`seaChoice.retryDelayMs`)
+ * already owns a patient, never-give-up schedule and keeps the shallows playing
+ * meanwhile, which is exactly the right place for a three-minute wait to live.
+ * Blocking here would freeze that loop on a call with no deadline of its own.
+ *
+ * A failing `request_content` is logged and swallowed: it is a best-effort
+ * nudge, and the next attempt will nudge again.
+ */
+async function roomReady(auth: RpcAuth, contentId: string): Promise<boolean> {
   try {
     await rpcCall<unknown>(auth, 'get_content', { content_id: contentId });
     return true;
   } catch {
+    try {
+      await rpcCall<unknown>(auth, 'request_content', { content_id: contentId });
+    } catch (e) {
+      say(`could not ask the water for ${contentId}: ${String(e)}`);
+    }
     return false;
   }
 }
@@ -307,7 +355,11 @@ function say(what: string): void {
  *   - there is no shell (a browser build, or `withGlobalTauri` off);
  *   - `get_rpc_config` failed or returned no endpoint;
  *   - the node reported no usable identity;
- *   - the node has never heard of this water, or the room post is not there.
+ *   - the room post's body has not arrived yet (which is asked for on the way).
+ *
+ * "The node has never heard of this water" is NO LONGER one of them: the space
+ * id is derived rather than looked up, so there is nothing left to not-find.
+ * See `waterSpaceId`.
  *
  * `invoke` is a parameter so a test can drive the whole assembly through a fake
  * command surface; it defaults to the real one, so ordinary callers pass
@@ -340,22 +392,19 @@ export async function shellConfig(invoke: InvokeFn | null = shellSurface()): Pro
     return null;
   }
 
-  // WHERE. Both halves, or neither.
-  let spaceId: string | null;
+  // WHERE. The space is derived from two constants, so it cannot fail for want
+  // of a peer; the room is the one thing that has to actually be here.
+  let spaceId: string;
   let room: string;
   try {
+    spaceId = await waterSpaceId();
     room = await roomContentId();
-    spaceId = await findWaterSpaceId(auth);
   } catch (e) {
-    say(`could not look for the water: ${String(e)}`);
+    say(`could not work out where ${WATER_SPACE_NAME} is: ${String(e)}`);
     return null;
   }
-  if (spaceId === null) {
-    say(`no water named ${WATER_SPACE_NAME} here yet`);
-    return null;
-  }
-  if (!(await roomExists(auth, room))) {
-    say(`the water ${WATER_SPACE_NAME} is here but ${room} is not`);
+  if (!(await roomReady(auth, room))) {
+    say(`${WATER_SPACE_NAME} is here but ${room} has not arrived yet — asked for it`);
     return null;
   }
 

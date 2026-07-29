@@ -40,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import {
   chooseSeaSource, retryDelayMs, seaFrom, RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN, type SeaSource,
 } from './seaChoice';
-import { shellConfig, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
+import { shellConfig, waterSpaceId, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
 import { wildSeedFrom } from './demoSea';
 import { decodeBody } from '../lib/shoalWire';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
@@ -204,7 +204,17 @@ const COOKIE_HEADER = 'Basic X19jb29raWVfXzpkZWFkYmVlZg==';
 /** 64 lowercase hex, the shape `repliesToLog` and `mineAndSignAction` demand. */
 const NODE_PUBKEY = 'b3'.repeat(32);
 const NODE_ADDRESS = 'sw1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqexample';
-const SHOAL_SPACE = 'sp1' + 'q'.repeat(34);
+/**
+ * The water's space id, DERIVED the way the shipped client derives it.
+ *
+ * It used to be an invented `sp1qqq…` that the fake `list_spaces` handed back.
+ * The client no longer reads a listing at all — the id is a pure function of
+ * `WATER_APP`/`WATER_NAME` (`shellConfig.waterSpaceId`, and see its comment for
+ * the live run that forced the change) — so a hand-written constant here would
+ * simply not be the space the sea resolves, and the `content_new` filter below
+ * compares it by exact string.
+ */
+const SHOAL_SPACE = await waterSpaceId();
 
 /** 64 bytes the fake node's `sign_message` hands back, distinctive enough that
  *  a signature built anywhere else could not coincide with it. */

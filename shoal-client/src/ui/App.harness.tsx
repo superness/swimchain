@@ -126,13 +126,19 @@ export interface Scenario {
   /** When set, no `window.__TAURI__` at all — a browser tab. */
   readonly noShell?: boolean;
   /**
-   * A NODE THAT HAS NOT FINISHED SYNCING. Until this many `list_spaces` calls
-   * have been made, the node answers with an empty listing — it is up, it is
-   * healthy, and it has simply never heard of this water yet. That is the
-   * ordinary state of every fresh install, and `shellConfig` correctly returns
-   * `null` for it.
+   * A NODE THAT HAS NOT GOT THE ROOM BODY YET. Until this many `get_content`
+   * calls have been made, the node answers `-32004 Content not found` — it is
+   * up, it is healthy, its chain holds the room's content BLOCK, and the body
+   * simply has not been fetched, because on this network content arrives only
+   * when something asks. That is the ordinary state of every fresh install and
+   * `shellConfig` correctly returns `null` for it.
+   *
+   * This replaced `waterAppearsAfterListings`, which modelled an empty
+   * `list_spaces`. That is no longer a state the window can be in: the space id
+   * is derived, so no listing is consulted at all. Task 4's live run is what
+   * showed the listing was never the real obstacle.
    */
-  readonly waterAppearsAfterListings?: number;
+  readonly roomArrivesAfterAsks?: number;
   /** A node that fails `get_identity_info` this many times before answering —
    *  a transient hiccup on a node that is also busy starting up. */
   readonly identityFailsTimes?: number;
@@ -181,12 +187,23 @@ const ENDPOINT = 'http://127.0.0.1:29736';
 const COOKIE_HEADER = 'Basic X19jb29raWVfXzpkZWFkYmVlZg==';
 export const NODE_PUBKEY = 'c7'.repeat(32);
 const NODE_ADDRESS = 'sw1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqexample';
-export const SHOAL_SPACE = 'sp1' + 'q'.repeat(34);
+/**
+ * The water's space id, DERIVED exactly as the shipped client derives it.
+ *
+ * It was an invented `sp1qqq…` that the fake `list_spaces` handed back. That
+ * cannot work any more, and the way it failed is worth recording: the client
+ * now derives the id, but the fake sponsorship offer below is SPACE-SCOPED, and
+ * `ensureSponsored` only claims an offer whose `space_scope` matches the space
+ * asked for. A hand-written constant here therefore made every claim silently
+ * find no eligible offer — the same "the game sponsor has no open slots"
+ * dead end a real scope mismatch produces.
+ */
+export const SHOAL_SPACE = await waterSpaceId();
 const SIG_HEX = Array.from({ length: 64 }, (_, i) => (i * 5 + 11) & 0xff)
   .map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /** The water's display name and namespace, imported rather than retyped. */
-import { WATER_APP, WATER_NAME } from './shellConfig';
+import { WATER_APP, WATER_NAME, waterSpaceId } from './shellConfig';
 /** The sponsor this client pins — imported, so an offer this harness invents
  *  cannot be one the shipping code would never have claimed. */
 import { GAME_SPONSOR } from './passage';
@@ -246,6 +263,7 @@ export async function observe(s: Scenario): Promise<Observation> {
   let sockets = 0;
   let askedShell = false;
   let listings = 0;
+  let roomAsks = 0;
   let identityAsks = 0;
   const sponsorship = s.sponsorship ?? 'already';
   /** Flips true once a claim has been accepted, which is what makes the node's
@@ -308,15 +326,25 @@ export async function observe(s: Scenario): Promise<Observation> {
         if (identityAsks <= (s.identityFailsTimes ?? 0)) return err(-32_603, 'Internal error');
         return ok({ has_identity: true, public_key: NODE_PUBKEY, address: NODE_ADDRESS });
       case 'list_spaces': {
-        // The node is up and healthy; it has just not learned about this water
-        // from a peer yet. An empty page is a LAST page, so `findWaterSpaceId`
-        // stops after one call — the same single RPC a real fresh node costs.
+        // NOTHING SHOULD REACH THIS ANY MORE. The space id is derived
+        // (`shellConfig.waterSpaceId`), so the window never asks for a listing.
+        // Kept, answering correctly, so that a check counting `list_spaces` at
+        // zero is measuring the window's behaviour and not a missing fake.
         listings++;
-        if (listings <= (s.waterAppearsAfterListings ?? 0)) return ok({ spaces: [], total: 0 });
         return ok({ spaces: [{ space_id: SHOAL_SPACE, name: WATER_NAME, app: WATER_APP }], total: 1 });
       }
       case 'get_content':
+        // A NODE THAT IS UP AND HEALTHY AND HAS NOT GOT THE ROOM BODY YET —
+        // the real condition of every fresh install, and the one Task 4 watched
+        // for 3 m 18 s. `get_content` is local-only, so it simply fails until
+        // something has asked the network for it.
+        roomAsks++;
+        if (roomAsks <= (s.roomArrivesAfterAsks ?? 0)) return err(-32_004, 'Content not found');
         return ok({ content_id: req.params.content_id });
+      case 'request_content':
+        // The driver. Recorded in `rpcCalls` like everything else, so a check
+        // can assert the window actually asked rather than merely waited.
+        return ok({ status: 'discovering', content_id: req.params.content_id });
       case 'get_sponsorship_status':
         // Only the FIRST one is held: the later ones are the approval poll, and
         // slowing those would only lengthen the run without observing anything.
