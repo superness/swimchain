@@ -41,7 +41,7 @@ import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
-import { DIP_TIERS, UPGRADES } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
@@ -1069,6 +1069,44 @@ export function App() {
     setOvercookAt((lit) => toggleOvercook(lit, index));
   }
 
+  /**
+   * GIVE A JAR BACK for BURN_REFUND of its price.
+   *
+   * Refused unless you own it and nothing owned stands on it — both rules are
+   * the fold's, repeated here only so the button cannot offer something the
+   * chain will reject. `burnableAt` below is what decides what is even shown.
+   */
+  function onBurn(key: string): void {
+    if (!host || !me || !tableId || !state?.owned.has(key)) return;
+    sfx.pop();
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'burn', key, ms: allocMs() },
+      nextId.current++
+    ));
+  }
+
+  /**
+   * What a vendor will take back right now: jars of theirs you own, minus any
+   * a LATER owned chain rung is standing on — burning one of those would
+   * leave a table that could never re-fold to the same state, and the fold
+   * refuses it. Offering a button the chain would reject is the bug this
+   * client has shipped four times.
+   */
+  function burnableAt(vendorId: string): { key: string; label: string; refund: number; onBurn: () => void }[] {
+    const v = CREW.find((c) => c.id === vendorId);
+    if (!v || !state) return [];
+    return v.sells.filter((k) => state.owned.has(k)).filter((k) => {
+      const chain = UPGRADE_CHAINS.find((c) => c.includes(k));
+      if (!chain) return true;
+      return !chain.slice(chain.indexOf(k) + 1).some((later) => state.owned.has(later));
+    }).map((k) => ({
+      key: k,
+      label: UPGRADES[k].label,
+      refund: Math.floor(UPGRADES[k].cost * BURN_REFUND_NUM / BURN_REFUND_DEN),
+      onBurn: () => { onBurn(k); setSheetId(null); },
+    }));
+  }
+
   /** A REASON: whistle the wing onto a basket. Refused without the jar and
    *  refused while it is still cooling (callWing owns both rules) — the
    *  ownership guard is repeated here rather than trusted to the call site,
@@ -1759,6 +1797,7 @@ export function App() {
           armedKey={feeding?.jarKey ?? null}
           onJar={onJar}
           onClose={() => setSheetId(null)}
+          burnable={burnableAt(sheetVendor.id)}
           switches={sheetVendor.id === 'angel' && state.owned.has('autodip') ? [{
             key: 'autodip',
             label: 'Sous Chef',

@@ -68,6 +68,10 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
 export type QueuedMove =
   | { id: number; tableId: string; author: string; kind: 'bank'; chip: ChipEntry; sentAt?: number }
   | { id: number; tableId: string; author: string; kind: 'buy'; key: string; sentAt?: number }
+  /** Give a jar back for BURN_REFUND of its price. Carries `ms` because,
+   *  unlike a buy, you can burn the SAME key more than once in a run (buy it
+   *  again, burn it again) — so the key alone cannot identify the move. */
+  | { id: number; tableId: string; author: string; kind: 'burn'; key: string; ms: number; sentAt?: number }
   /** A pot-x-multi cash-out. `ms` is the dip's identity (allocator-unique) —
    *  it becomes the body's authoring ms, which is how the confirmed reply is
    *  matched back to this entry (chipsSettling.moveKey). */
@@ -111,9 +115,10 @@ export function activeFor(q: QueuedMove[], tableId: string, author: string): Que
  * action PoW — it can only fold `rejected-bits` there) or let a stale entry
  * block a live one behind it forever.
  */
-export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' } | null {
+export function takeBatch(q: QueuedMove[]): { moves: QueuedMove[]; kind: 'bank' | 'buy' | 'dip' | 'tip' | 'burn' } | null {
   if (q.length === 0) return null;
   if (q[0].kind === 'buy') return { moves: [q[0]], kind: 'buy' };
+  if (q[0].kind === 'burn') return { moves: [q[0]], kind: 'burn' };
   // One dip per reply — the verb carries a single amount.
   if (q[0].kind === 'dip') return { moves: [q[0]], kind: 'dip' };
   if (q[0].kind === 'tip') return { moves: [q[0]], kind: 'tip' };
@@ -229,6 +234,11 @@ export function loadQueue(): QueuedMove[] {
       const sentAt = hasMark ? { sentAt: r.sentAt as number } : {};
       if (r.kind === 'buy' && typeof r.key === 'string') {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ...sentAt });
+      } else if (
+        r.kind === 'burn' && typeof r.key === 'string'
+        && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
+      ) {
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'burn', key: r.key, ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'dip'
         && typeof r.amount === 'number' && Number.isSafeInteger(r.amount) && r.amount >= 0
