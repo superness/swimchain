@@ -379,3 +379,46 @@ export const CHAR_ABILITIES: Record<string, CharAbility> = {
 /** Total char a complete descent mints, and what the five abilities cost. */
 export const CHAR_ABILITY_TOTAL = Object.values(CHAR_ABILITIES)
   .reduce((n, a) => n + a.cost, 0);
+
+/* ── BOSS HEALTH — "chipping away at the table" ────────────────────────────
+   Every boss has HP in CRUMBS and every chip you feed does its worth in damage.
+   The Porcelain simply has little enough that one parked monster chip one-shots
+   it; The Table has more than any single realistic chip, so you must keep coming
+   back. Same mechanic, different number — which is also why bands 3-6 are HP
+   values and flavour rather than five bespoke rule systems.
+
+   HP is a multiple of EVERYTHING BANKED THIS RUN, the same quantity the
+   porcelain's original one-shot bar used (`lifetimeChips * CRUMBS_PER_CHIP`).
+   That unit is already tuned, already scales with upgrades and depth, and needs
+   no new calibration — which is what made the three bar formulas before this one
+   unnecessary.
+
+   The multiples rise so the fights lengthen as you descend, and DAMAGE BELONGS
+   TO THE BOWL: a tip resets it, exactly as it resets `broken` (operator: "does
+   damage survive a tip? no"). Tipping mid-fight therefore costs you the fight,
+   which is the point — the descent is the bowl's, not yours.
+
+   THE PORCELAIN IS NOT HP-BASED (operator: "leave porcelein alone"). Band 0
+   keeps its original rule: ONE dip worth more than everything else banked this
+   run, settled in a single blow. That is deliberate and it is also what keeps
+   this change safe — the one `broke` already on mainnet is the legacy bare form
+   carrying no amount, so under HP rules it would deal ZERO damage and silently
+   un-break a real player's band, taking their char and their ability with it.
+   Leaving band 0 alone means nothing on the chain re-scores at all.
+
+   So: band 0 is one swing, bands 1-5 are healthbars. `BOSS_HP_MULT[0]` is unused
+   and kept only so the array indexes by band. */
+export const BOSS_HP_MULT = [0, 3, 6, 10, 16, 24];
+
+/** The first band that fights by HP rather than by a single blow. */
+export const FIRST_HP_BAND = 1;
+
+/**
+ * A band's HP, in crumbs. `lifetimeChips` is this run's banked total.
+ *
+ * Meaningless for band 0 — see above; callers must not ask.
+ */
+export function bossHp(band: number, lifetimeChips: number): number {
+  const mult = BOSS_HP_MULT[Math.max(0, Math.min(BOSS_HP_MULT.length - 1, band))];
+  return Math.max(1, lifetimeChips * CRUMBS_PER_CHIP * mult);
+}
