@@ -1,7 +1,7 @@
 // shell.mjs — the set: power, flip, mount/evict, OSD, SIGNAL LOST.
 import { Deck } from './deck.mjs';
 import { buildConfigMessage, watchReadiness } from './handover.mjs';
-import { createStatic } from './stubs.mjs';   // Task 5: change to './static-shader.mjs'
+import { createStatic } from './static-shader.mjs';
 import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './stubs.mjs'; // Task 6: './measure.mjs'
 
 const cfg = await (await fetch('/spike-config.json')).json();
