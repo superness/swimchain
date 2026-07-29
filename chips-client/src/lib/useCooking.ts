@@ -13,6 +13,7 @@
  * fed a chip: consumed like a dip, credited like nothing).
  */
 import { useEffect, useRef, useState } from 'react';
+import { readRack, writeRack } from './rackStore';
 import {
   tickChip, dipChip, freshChip, createMsAllocator, isGolden,
   TICK_MS, type CookingChip, type DipResult, type TickMods,
@@ -41,10 +42,17 @@ export function useCooking(
   onEvents?: (events: CookEvent[]) => void,
   /** Per-fryer interference for the NEXT tick (crew jobs). Read through a
    *  ref at tick time, like the params — never restarts the clock. */
-  modsFor?: (index: number) => TickMods
+  modsFor?: (index: number) => TickMods,
+  /** Where to keep the rack across reloads. Omit and nothing is stored — the
+   *  pots then live only in memory, which is what destroyed them before. */
+  persist?: { tableId: string; author: string } | null
 ) {
   const [chips, setChips] = useState<CookingChip[]>([]);
   const latest = useRef<CookingChip[]>([]);
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  /** Restored once, on the first tick the rack is real — see the effect. */
+  const restored = useRef(false);
   const allocRef = useRef<() => number>();
   if (!allocRef.current) allocRef.current = createMsAllocator();
 
@@ -56,6 +64,27 @@ export function useCooking(
   onEventsRef.current = onEvents;
   const modsForRef = useRef(modsFor);
   modsForRef.current = modsFor;
+
+  /**
+   * THE RACK COMES BACK. A pot lived only in React state, so a refresh, a
+   * crash or a phone reclaiming the tab destroyed it — worst for the player
+   * playing best, since holding is the whole strategy (cooking.ts's BALANCE
+   * MATH note). Restored once, the first time the rack has a real size.
+   *
+   * NOT offline progress: the chips come back exactly as they were left and
+   * the clock does not catch up. You lose nothing by closing the tab and you
+   * gain nothing either, which is the rule the rest of the game already
+   * follows.
+   */
+  useEffect(() => {
+    if (restored.current || !active || !persist || count <= 0) return;
+    restored.current = true;
+    const saved = readRack(window.localStorage, persist.tableId, persist.author);
+    if (!saved || saved.length === 0) return;
+    const next = saved.slice(0, count);
+    latest.current = next;
+    setChips(next);
+  }, [active, persist, count]);
 
   // Resize the rack — keep existing chips BY IDENTITY (a pot in progress is
   // the player's accumulated watching; a count change must never reset it).
@@ -93,6 +122,11 @@ export function useCooking(
       latest.current = next;
       setChips(next);
       if (events.length > 0) onEventsRef.current?.(events);
+      // Save on the tick, not on every render: the cadence is 2.5s and the
+      // row is a handful of numbers, so this is cheap and means at most one
+      // tick of pot is ever at risk.
+      const pr = persistRef.current;
+      if (pr) writeRack(window.localStorage, pr.tableId, pr.author, latest.current);
     }, TICK_MS);
     return () => window.clearInterval(iv);
   }, [active]);

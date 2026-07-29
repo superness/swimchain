@@ -50,6 +50,7 @@ import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
+import { clearRack } from './lib/rackStore';
 import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
 
 const NAME_KEY = 'chips.cookname.v1';
@@ -743,9 +744,15 @@ export function App() {
     }
   }, []);
 
+  /** Where the rack is kept across reloads. Memoised so the restore effect
+   *  does not re-fire on every render. */
+  const rackKey = useMemo(
+    () => (tableId && me ? { tableId, author: me.publicKeyHex } : null),
+    [tableId, me]
+  );
   const { chips, dip, take, resetAll, allocMs } = useCooking(
     fryerCount, seasoning, crackleHaste,
-    Boolean(host && me && tableId && state), onCookEvents, modsFor
+    Boolean(host && me && tableId && state), onCookEvents, modsFor, rackKey
   );
   fryersRef.current = fryerCount;
   /** The Long Fry: one more crackle past golden. Ownership only — the fold
@@ -1343,6 +1350,9 @@ export function App() {
     // thing the player can SEE, and which the descent already turns out to
     // be about: one more chip is what empties a bowl.
     resetAll();
+    // The stored rack goes over with the bowl; leaving it would restore
+    // pots scoop has already taken on the next load.
+    clearRack(window.localStorage);
     window.setTimeout(() => setTipFanfare(null), 6200);
     // AFTER the hush, and FIRST in the queue. These fired at 1200ms — while
     // the ceremony still had the crew row at opacity 0 — and the welcome-back
