@@ -1128,13 +1128,24 @@ export function App() {
     if (!host || !me || !tableId || !state) return;
     const chip = chips[index];
     if (!chip || chip.pot <= 0) return;
-    const willCrack = cracks(worthOf(chip), state.lifetimeChips);
-    onDip(index);
-    if (!willCrack) return;
+    const paid = worthOf(chip);
+    const willCrack = cracks(paid, state.lifetimeChips);
+    if (!willCrack) {
+      // A failed swing is an ordinary dip: you keep what the chip was worth,
+      // which is what makes retries free (design: "free retries, but only if
+      // they are prepared").
+      onDip(index);
+      return;
+    }
+    // A WINNING swing FEEDS the chip to the boss. `take` removes it from the
+    // rack without paying — the same primitive a vendor feed uses — so the
+    // chip buys the band and nothing else. Dipping it here as well is what
+    // sent one player past five unfought bands in a single move.
+    take(index);
     setPorcBroke(true);
     sfx.breakthrough();
     setQueue((q) => enqueue(
-      q, { tableId, author: me.publicKeyHex, kind: 'broke', ms: allocMs() },
+      q, { tableId, author: me.publicKeyHex, kind: 'broke', paid, ms: allocMs() },
       nextId.current++
     ));
     window.setTimeout(() => { setPorcOpen(false); setPorcBroke(false); }, 5200);
@@ -1775,6 +1786,18 @@ export function App() {
             <span className="in-the-bowl">old salt</span>
             <strong>{compact(state!.oldSalt)}</strong>
             <em>+{Math.round((saltBonus - 1) * 100)}% every tick</em>
+          </div>
+        )}
+        {/* CHAR — WHAT THE DESCENT PAYS. The fold has minted this since the
+            descent shipped and NOTHING rendered it: a player beat the porcelain,
+            earned a grain, and had no way to learn it existed. Operator: "if I
+            got a char I didn't know it and it's not shown." A currency the game
+            does not show is a currency the game did not give you. */}
+        {(state?.char ?? 0) > 0 && (
+          <div className="hood-char" title="char. scraped off the bottom of a bowl you broke. it buys rule changes, not numbers.">
+            <span className="in-the-bowl">char</span>
+            <strong>{state!.char}</strong>
+            <em>{state!.char === 1 ? 'one grain' : `${state!.char} grains`}</em>
           </div>
         )}
         <button

@@ -144,16 +144,30 @@ for (const bits of [BANK_MIN_BITS, MAX_BITS]) {
 
 /* ── `broke` — the descent's verb ─────────────────────────────────────── */
 {
-  check('brokeBody carries only the ms', brokeBody(12345) === 'broke#12345~', brokeBody(12345));
-  // The anti-forgery property, from the other end: what we BUILD must be what
-  // the fold will accept, and it must be impossible to build one that names a
-  // band. There is no parameter to pass.
-  check('what brokeBody builds parses as broke', parseMove(brokeBody(7))?.kind === 'broke');
-  check('a broke that names a band does not parse', parseMove('broke 5#7~')?.kind !== 'broke');
-  for (const bad of [0, -1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 2]) {
+  check('brokeBody carries the payment and the ms',
+    brokeBody(900, 12345) === 'broke 900#12345~', brokeBody(900, 12345));
+  check('what brokeBody builds parses as broke', parseMove(brokeBody(900, 7))?.kind === 'broke');
+  check('the payment survives the round trip',
+    (parseMove(brokeBody(4826726400, 7)) as { paid: number } | null)?.paid === 4826726400);
+
+  // THE NUMBER IS A PAYMENT, NEVER A BAND. It used to be impossible to write a
+  // number here at all, which was the anti-forgery guarantee. Now one is
+  // carried, so the guarantee moves to the FOLD: `chipsEngine` reads the band
+  // from `state.broken` and never from the body. That is asserted in
+  // chipsEngine.broke.test.ts — a body claiming a deep band must not reach one.
+  check('the legacy bare broke still parses (one exists on mainnet)',
+    parseMove('broke#7~')?.kind === 'broke');
+  check('...and pays nothing', (parseMove('broke#7~') as { paid: number } | null)?.paid === 0);
+
+  for (const bad of [-1, 1.5, NaN, Number.MAX_SAFE_INTEGER + 2]) {
     let threw = false;
-    try { brokeBody(bad); } catch { threw = true; }
-    check(`brokeBody rejects ${bad}`, threw);
+    try { brokeBody(bad, 7); } catch { threw = true; }
+    check(`brokeBody rejects paid=${bad}`, threw);
+  }
+  for (const bad of [0, -1, 1.5, NaN]) {
+    let threw = false;
+    try { brokeBody(100, bad); } catch { threw = true; }
+    check(`brokeBody rejects ms=${bad}`, threw);
   }
 }
 

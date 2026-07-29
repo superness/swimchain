@@ -36,7 +36,7 @@ function submittable(m: QueuedMove, at: number): boolean {
     else if (m.kind === 'dip') dipBody(m.amount, m.ms);
     else if (m.kind === 'tip') tipBody(m.ms);
     else if (m.kind === 'burn') burnBody(m.key, m.ms);
-    else if (m.kind === 'broke') brokeBody(m.ms);
+    else if (m.kind === 'broke') brokeBody(m.paid, m.ms);
     else buyBody(m.key, at);
     return true;
   } catch {
@@ -88,7 +88,7 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
         : take.kind === 'burn'
           ? burnBody((take.moves[0] as { key: string }).key, (take.moves[0] as { ms: number }).ms)
           : take.kind === 'broke'
-            ? brokeBody((take.moves[0] as { ms: number }).ms)
+            ? brokeBody((take.moves[0] as { paid: number }).paid, (take.moves[0] as { ms: number }).ms)
             : buyBody((take.moves[0] as { key: string }).key, at);
   return { moves: take.moves, kind: take.kind, body };
 }

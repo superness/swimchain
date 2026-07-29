@@ -96,7 +96,7 @@ for (const gapHours of [1, 5, 50, 200]) {
 //    rate does not (see chipsEngine.sog.test.ts block 2's note).
 {
   const s: ChipsState = {
-    crumbs: 1_000_000_000, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(), crispest: 0, owned: new Set(['airtight']),
+    crumbs: 1_000_000_000, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(), crispest: 0, owned: new Set(['airtight']),
     bowlCap: 5_000_000_000, seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: 16, airtight: true, sogBonus: 0, doubleDipMod: 0, dipIndex: 0,
     lastConfirmedAt: T0, lastBankAt: T0, unverifiedBanks: 0, moves: [],
@@ -112,7 +112,7 @@ for (const gapHours of [1, 5, 50, 200]) {
 //    as the fold's `sogNum`. Guacamole rots faster (96) than Plain Salsa (97).
 {
   const base = (dipIndex: number, airtight: boolean): ChipsState => ({
-    crumbs: START_BOWL_CAP, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(), crispest: 0, owned: new Set(),
+    crumbs: START_BOWL_CAP, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(), crispest: 0, owned: new Set(),
     bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: 16, airtight, sogBonus: 0, doubleDipMod: 0, dipIndex, lastConfirmedAt: T0, lastBankAt: T0,
     unverifiedBanks: 0, moves: [],
@@ -129,7 +129,7 @@ for (const gapHours of [1, 5, 50, 200]) {
 //    point of having a separate signal for it.
 {
   const s: ChipsState = {
-    crumbs: 10_000, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(), crispest: 0, owned: new Set(),
+    crumbs: 10_000, lifetimeChips: 0, oldSalt: 0, tips: 0, broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(), crispest: 0, owned: new Set(),
     bowlCap: START_BOWL_CAP, seasoningNum: 1, seasoningDen: 1, fryers: 1,
     goldenBits: 16, airtight: false, sogBonus: 0, doubleDipMod: 0, dipIndex: 0, lastConfirmedAt: T0,
     lastBankAt: T0, unverifiedBanks: 0, moves: [],

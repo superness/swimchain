@@ -68,7 +68,7 @@ export function withPending(
       } else if (m.kind === 'tip') {
         extra.push({ author_id: me, body: tipBody(m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'broke') {
-        extra.push({ author_id: me, body: brokeBody(m.ms), block_height: null, content_id: cid, created_at: at });
+        extra.push({ author_id: me, body: brokeBody(m.paid, m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'burn') {
         extra.push({ author_id: me, body: burnBody(m.key, m.ms), block_height: null, content_id: cid, created_at: at });
       } else {

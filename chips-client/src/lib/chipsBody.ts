@@ -74,11 +74,33 @@ export function tipBody(ms: number): string {
  * table. `parseMove` refuses `broke 5` outright rather than range-checking
  * it — see chipsEngine.broke.test.ts.
  */
-export function brokeBody(ms: number): string {
+/**
+ * Build a `broke` move body: `broke <paid>#<ms>~`.
+ *
+ * `paid` is the worth of the chip FED TO THE BOSS. It buys the band and pays
+ * the player nothing — no crumbs, no lifetime.
+ *
+ * It used to be a bare `broke#<ms>~` alongside a separate ordinary `dip`, so
+ * the winning chip was banked as well as spent. That is what broke the descent
+ * on 2026-07-29: the porcelain demands ONE dip worth more than everything else
+ * banked this run, so the chip the fight requires is enormous by construction —
+ * a live 4.8 BILLION crumb dip carried lifetime past all six band floors at
+ * once and dropped the player out the far side having fought one boss.
+ * Operator: "arguably I shouldn't get to collect those crumbs — I paid it to
+ * beat the boss."
+ *
+ * One action, so the payment cannot be separated from the break by reordering
+ * or by a dropped reply. The legacy bare form is still folded (one such reply
+ * exists on mainnet) and simply pays nothing, which is the same rule.
+ */
+export function brokeBody(paid: number, ms: number): string {
+  if (!Number.isSafeInteger(paid) || paid < 0) {
+    throw new Error(`brokeBody: paid must be a non-negative safe integer, got ${paid}`);
+  }
   if (!Number.isSafeInteger(ms) || ms <= 0) {
     throw new Error(`brokeBody: ms must be a positive safe integer, got ${ms}`);
   }
-  return `broke#${ms}~`;
+  return `broke ${paid}#${ms}~`;
 }
 
 /**

@@ -98,6 +98,10 @@ export interface ChipsState {
   deepest: number;
   /** Grains of char. Permanent, and capped forever at CHAR_TOTAL. */
   char: number;
+
+  /** Total worth of chips FED TO BOSSES. Spent, never banked — recorded only
+   *  so the UI can say what the descent cost. */
+  paidToBosses: number;
   /** Bowls come up through — the one number only the descent can move. */
   bowls: number;
   crispest: number;
@@ -143,7 +147,9 @@ export type ParsedMove =
   /** The bowl goes back over: everything resets except OLD SALT, which the
    *  FOLD computes from lifetime — never the client (see parseMove). */
   | { kind: 'tip'; ms: number }
-  | { kind: 'broke'; ms: number }
+  /** `paid` is the chip fed to the boss — it buys the band and pays nothing.
+   *  0 for the legacy bare `broke` (one such reply exists on mainnet). */
+  | { kind: 'broke'; paid: number; ms: number }
   /** Give a jar back for BURN_REFUND of its price. Names its key — unlike
    *  `broke`, the choice IS the move, and naming it forges nothing: the fold
    *  still checks you own it and computes the refund from the catalog. */
@@ -233,7 +239,11 @@ export function parseMove(body: string): ParsedMove | null {
   // and the char it pays is permanent prestige. A client that could name its
   // own depth could name the lava on a fresh table and mint the whole supply.
   // `broke 5` must therefore FAIL to parse rather than be range-checked.
-  if (/^broke$/.test(head)) return { kind: 'broke', ms };
+  // `broke <paid>` — the chip fed to the boss. The bare legacy form still
+  // parses and pays nothing, which is the same rule it always should have had.
+  const brokeM = /^broke\s+(\d{1,15})$/.exec(head);
+  if (brokeM) return { kind: 'broke', paid: Number(brokeM[1]), ms };
+  if (/^broke$/.test(head)) return { kind: 'broke', paid: 0, ms };
 
   // `dip <amount>` — see ParsedMove's doc for why this is unverified by
   // design. The bound stops a typo'd or hostile body from overflowing safe
@@ -377,7 +387,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    broken: 0, deepest: 0, char: 0, bowls: 0, declined: new Set(),
+    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, declined: new Set(),
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -590,6 +600,12 @@ export function foldChips(
         state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-shallow' });
         continue;
       }
+      // THE CHIP IS SPENT, NOT BANKED. `paid` is recorded so the UI can say
+      // what the band cost, and credited to nothing: not crumbs, not lifetime.
+      // Banking it as well is what let one enormous winning dip carry a player
+      // past every remaining band in a single move.
+      state.paidToBosses += parsed.paid;
+
       state.broken = band + 1;
       if (state.broken > state.deepest) {
         state.deepest = state.broken;
