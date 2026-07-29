@@ -297,72 +297,91 @@ impl PeerConnectionPool {
         }
     }
 
-    /// Broadcast a message to all connected peers
+    /// Broadcast a message to all connected peers.
     ///
     /// Returns the number of successful sends.
     pub async fn broadcast(&self, envelope: &MessageEnvelope) -> usize {
-        let connections = self.connections.read().await;
-        let mut success_count = 0;
-
-        for (peer_id, conn) in connections.iter() {
-            match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
-                Ok(Ok(())) => {
-                    success_count += 1;
-                }
-                Ok(Err(e)) => {
-                    warn!(
-                        "[PEER-POOL] Broadcast to {} failed: {}",
-                        hex::encode(&peer_id[..8]),
-                        e
-                    );
-                }
-                Err(_) => {
-                    warn!(
-                        "[PEER-POOL] Broadcast to {} timed out (stuck peer)",
-                        hex::encode(&peer_id[..8]),
-                    );
-                }
-            }
-        }
-
-        success_count
+        self.broadcast_inner(envelope, None).await
     }
 
-    /// Broadcast a message to all connected peers except one
+    /// Broadcast to all connected peers except one.
     ///
     /// Used for relay without echo - when relaying a message received from a peer,
     /// don't send it back to the peer we received it from.
     ///
     /// Returns the number of successful sends.
     pub async fn broadcast_except(&self, envelope: &MessageEnvelope, exclude: &[u8; 32]) -> usize {
-        let connections = self.connections.read().await;
-        let mut success_count = 0;
+        self.broadcast_inner(envelope, Some(exclude)).await
+    }
 
-        for (peer_id, conn) in connections.iter() {
-            if peer_id == exclude {
-                continue;
-            }
+    /// THE BROADCAST MUST NOT HOLD THE POOL LOCK, AND MUST NOT BE SEQUENTIAL.
+    ///
+    /// Both properties were load-bearing in the 2026-07-29 outage, in which the
+    /// mainnet seed stopped accepting connections entirely and stayed that way:
+    ///
+    ///     LISTEN 4097 4096  0.0.0.0:9735      <- accept backlog full and static
+    ///     WARN [PEER-POOL] Broadcast to c4060cb15281f584 timed out (stuck peer)
+    ///
+    /// Two of our own nodes had deadlocked against each other: each had filled
+    /// the other's TCP receive window and neither was draining, so every send
+    /// blocked for the full `PEER_SEND_TIMEOUT`. The old code took
+    /// `connections.read()` and held it across those blocking sends. Registering
+    /// a newly accepted peer needs `connections.write()`, and tokio's RwLock is
+    /// write-preferring, so a waiting writer also blocks new readers: `add()`
+    /// never got its window, accepted sockets piled up unregistered, and the
+    /// kernel backlog filled. The node looked healthy — process up, RPC serving,
+    /// `systemctl` green — while being unreachable to every peer on the network.
+    /// It was the only bootstrap node, so nothing new could join at all.
+    ///
+    /// SNAPSHOT, THEN SEND. The lock is released before any I/O, so a peer that
+    /// refuses to drain can never again stall accepts, adds or removals. Cloning
+    /// the Arc handles is cheap and the pool may change mid-broadcast — which is
+    /// fine and always was: a send to a peer that has since gone simply fails.
+    ///
+    /// CONCURRENTLY, not one after another. Sequentially, N stuck peers cost
+    /// N x PEER_SEND_TIMEOUT and gossip fell behind faster than it could ever
+    /// catch up. Concurrently the whole broadcast costs the timeout ONCE, no
+    /// matter how many peers are wedged.
+    async fn broadcast_inner(
+        &self,
+        envelope: &MessageEnvelope,
+        exclude: Option<&[u8; 32]>,
+    ) -> usize {
+        let targets: Vec<([u8; 32], Arc<PeerConnection>)> = {
+            let connections = self.connections.read().await;
+            connections
+                .iter()
+                .filter(|(peer_id, _)| exclude != Some(*peer_id))
+                .map(|(peer_id, conn)| (*peer_id, conn.clone()))
+                .collect()
+        }; // <- lock released HERE, before a single byte is written
+
+        let sends = targets.into_iter().map(|(peer_id, conn)| async move {
             match tokio::time::timeout(PEER_SEND_TIMEOUT, conn.send(envelope)).await {
-                Ok(Ok(())) => {
-                    success_count += 1;
-                }
+                Ok(Ok(())) => true,
                 Ok(Err(e)) => {
                     warn!(
                         "[PEER-POOL] Broadcast to {} failed: {}",
                         hex::encode(&peer_id[..8]),
                         e
                     );
+                    false
                 }
                 Err(_) => {
                     warn!(
                         "[PEER-POOL] Broadcast to {} timed out (stuck peer)",
                         hex::encode(&peer_id[..8]),
                     );
+                    false
                 }
             }
-        }
+        });
 
-        success_count
+        futures::future::join_all(sends)
+            .await
+            .into_iter()
+            .filter(|ok| *ok)
+            .count()
     }
 }
 
@@ -398,6 +417,109 @@ impl std::error::Error for SendError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
+    use tokio::net::TcpListener;
 
-    // Tests would require setting up TCP connections, similar to transport tests
+    /// A live connection in the pool, plus the server end kept alive so the
+    /// socket stays open.
+    async fn pooled_peer(
+        pool: &PeerConnectionPool,
+        id: u8,
+    ) -> (Arc<PeerConnection>, tokio::net::TcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connect = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        let (server_side, _) = listener.accept().await.unwrap();
+        let client_side = connect.await.unwrap();
+        let conn = pool.add(client_side, [id; 32], true).await;
+        (conn, server_side)
+    }
+
+    fn envelope() -> MessageEnvelope {
+        MessageEnvelope::new_fork_agnostic(MessageType::GetMempool, vec![7u8; 64])
+    }
+
+    /// WEDGE A PEER DETERMINISTICALLY.
+    ///
+    /// An earlier version of these tests tried to stick a peer by writing 16 MB
+    /// to a socket nobody read. It did not block — loopback buffers swallowed it
+    /// whole — so the test passed against the BUGGED implementation too, i.e. it
+    /// proved nothing. Holding the connection's own writer lock reproduces the
+    /// same observable condition (`send` cannot proceed, `PEER_SEND_TIMEOUT`
+    /// fires) with no dependence on kernel buffer sizes or platform.
+    async fn wedge(conn: &Arc<PeerConnection>) -> tokio::sync::MutexGuard<'_, OwnedWriteHalf> {
+        conn.writer.lock().await
+    }
+
+    /// A BROADCAST TO A STUCK PEER MUST NOT BLOCK THE POOL.
+    ///
+    /// The property whose absence took mainnet's only seed node off the network
+    /// for hours on 2026-07-29: `broadcast` held `connections.read()` across
+    /// blocking sends, `add()` needs `connections.write()`, and tokio's RwLock is
+    /// write-preferring — so newly accepted peers could not be registered, the
+    /// kernel accept backlog filled to 4096, and the node was unreachable while
+    /// looking perfectly healthy.
+    ///
+    /// MUTATION-CHECKED: holding the read lock across the sends makes this fail.
+    #[tokio::test]
+    async fn broadcast_to_a_stuck_peer_does_not_block_add() {
+        let pool = Arc::new(PeerConnectionPool::new());
+        let (stuck, _keep) = pooled_peer(&pool, 1).await;
+        let _wedged = wedge(&stuck).await; // every send to this peer now hangs
+
+        let bcast = pool.clone();
+        let broadcasting = tokio::spawn(async move { bcast.broadcast(&envelope()).await });
+        tokio::time::sleep(Duration::from_millis(200)).await; // let it enter the send
+
+        // THE ASSERTION: registering a peer must complete promptly while a
+        // broadcast is wedged. PEER_SEND_TIMEOUT is 3s; 1s is well below it.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let connect = tokio::spawn(async move { TcpStream::connect(addr).await.unwrap() });
+        let (_server, _) = listener.accept().await.unwrap();
+        let fresh = connect.await.unwrap();
+
+        let added =
+            tokio::time::timeout(Duration::from_secs(1), pool.add(fresh, [2u8; 32], true)).await;
+        assert!(
+            added.is_ok(),
+            "add() blocked behind a stuck broadcast — the pool lock is held across I/O,              which is exactly what stopped the seed node accepting any connection"
+        );
+
+        let removed = tokio::time::timeout(Duration::from_secs(1), pool.remove(&[2u8; 32])).await;
+        assert!(removed.is_ok(), "remove() blocked behind a stuck broadcast");
+
+        drop(_wedged);
+        let _ = tokio::time::timeout(Duration::from_secs(6), broadcasting).await;
+    }
+
+    /// N stuck peers must cost ONE timeout, not N.
+    ///
+    /// Sequentially, a node with several wedged peers fell behind on gossip
+    /// faster than it could catch up.
+    #[tokio::test]
+    async fn stuck_peers_time_out_concurrently_not_serially() {
+        let pool = PeerConnectionPool::new();
+        let mut keep = Vec::new();
+        let mut conns = Vec::new();
+        for i in 0..3u8 {
+            let (conn, server) = pooled_peer(&pool, i).await;
+            keep.push(server);
+            conns.push(conn);
+        }
+        // `try_lock` avoids borrowing `conns` for the guards' lifetime; the
+        // writers are uncontended here so it always succeeds.
+        let _guards: Vec<_> = conns.iter().map(|c| c.writer.try_lock().unwrap()).collect();
+
+        let started = std::time::Instant::now();
+        let sent = pool.broadcast(&envelope()).await;
+        let elapsed = started.elapsed();
+
+        assert_eq!(sent, 0, "a wedged peer must not report a successful send");
+        // Serially this is 3 x PEER_SEND_TIMEOUT = 9s; concurrently it is ~3s.
+        assert!(
+            elapsed < PEER_SEND_TIMEOUT * 2,
+            "three stuck peers took {elapsed:?} — sends are serialised, so every              wedged peer costs a full timeout"
+        );
+    }
 }
