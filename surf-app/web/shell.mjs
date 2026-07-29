@@ -39,6 +39,19 @@ const staticCtl = createStatic(document.getElementById('static'), { rpc: (m, p) 
 const timer = createFlipTimer();
 const hud = createHud(document.getElementById('hud'), timer);
 
+// Review fix 4: while a seam is up (acquisition, a cold/warm mount gate, or
+// node-dead), the static must intercept input — its canvas is
+// pointer-events:none by default so flips/taps pass through to whatever's
+// mounted-but-unrevealed beneath it, which during acquisition is a live,
+// fully-interactive feed frame the user can't see (and a link tap in it can
+// clear the D8 relay's origin check and open an external browser from what
+// looks like static). Toggle a class on <body> in lockstep with every
+// staticCtl.show()/hide() call so index.html's `body.seam #static` rule
+// applies uniformly; static-shader.mjs stays the sanctioned single-change
+// module and is not touched again for this.
+function seamOn() { document.body.classList.add('seam'); staticCtl.show(); }
+function seamOff() { document.body.classList.remove('seam'); staticCtl.hide(); }
+
 const frames = new Map();
 const painted = new Set();
 let z = 1;
@@ -50,6 +63,13 @@ let rpcConfig = null;
 const LAST_CHANNEL_KEY = 'surf.lastChannel';
 const ACQUIRED_KEY = 'surf.acquired';
 let acquired = localStorage.getItem(ACQUIRED_KEY) === '1';
+// Review fix 2: acquisitionBoot is not re-entrant — power-cycling mid-boot
+// must not start a second run (orphaned frame, uncancellable stray gate).
+let acquiring = false;
+// Review fix 8: hoisted so showNodeDead (called from three different sites)
+// can stop the acquisition poll instead of letting it keep ticking against a
+// node that just proved it can't be reached.
+let acquisitionPollHandle = null;
 
 function mount(id) {
   const f = document.createElement('iframe');
@@ -97,21 +117,34 @@ async function tuneDriver(id) {
       await rpc('follow_space', { user: myPk, space_id: space });
     } catch { /* policy call; receive-only is fine */ }
   }
-  try {
-    const recent = await rpc('list_space_content', { space_id: ch.spaces[0], limit: 5 });
-    for (const item of recent?.items ?? []) {
-      rpc('request_content', { content_id: item.content_id }).catch(() => {});
-    }
-  } catch { /* nothing listable yet — acquisition poll keeps watching */ }
+  // Review fix (Critical 1): drive ALL of ch.spaces, not just spaces[0] — a
+  // single-space fetch left the other bootstrap spaces followed but never
+  // requested, so their rows stayed body-less indefinitely.
+  for (const space of ch.spaces) {
+    try {
+      const recent = await rpc('list_space_content', { space_id: space, limit: 5 });
+      for (const item of recent?.items ?? []) {
+        rpc('request_content', { content_id: item.content_id }).catch(() => {});
+      }
+    } catch { /* nothing listable yet for this space — acquisition poll keeps watching */ }
+  }
 }
 
 // Same listing verb as tuneDriver; returns how many items are locally
 // retrievable for the bootstrap spaces right now (result shape: { items, total }).
+// Review fix (Critical 1): list_space_content emits a row for every
+// chain-indexed content hash the instant sync reaches it, with `body: null`
+// until request_content actually lands the bytes (src/rpc/methods.rs:6712-
+// 6769). Counting raw rows let N=3 satisfy on metadata-only chain-sync
+// output within seconds, revealing the empty feed the design law forbids.
+// Only a fetched body counts as "locally retrievable".
 async function localItemCount(spaces) {
   let n = 0;
   for (const space of spaces) {
-    try { n += ((await rpc('list_space_content', { space_id: space, limit: 5 }))?.items ?? []).length; }
-    catch { /* keep counting others */ }
+    try {
+      const items = (await rpc('list_space_content', { space_id: space, limit: 5 }))?.items ?? [];
+      n += items.filter((i) => i.body).length;
+    } catch { /* keep counting others */ }
   }
   return n;
 }
@@ -119,7 +152,7 @@ async function localItemCount(spaces) {
 function settle(target, tuneResult, from, kindOverride = null) {
   const cold = tuneResult.mounted.includes(target) || !painted.has(target);
   timer.start(target, kindOverride ?? (cold ? 'cold' : 'warm'));
-  staticCtl.show();
+  seamOn();
   document.getElementById('signal-lost').hidden = true;
   for (const id of tuneResult.evicted) unmount(id);
   const frame = frames.get(target) ?? mount(target);
@@ -129,7 +162,7 @@ function settle(target, tuneResult, from, kindOverride = null) {
       const rec = timer.end(via);
       painted.add(target);
       frame.style.zIndex = ++z;
-      staticCtl.hide();
+      seamOff();
       document.getElementById('acquire').hidden = true;
       if (from && from !== target) advisory(from, 'SWIMCHAIN_CHANNEL_HIDDEN');
       advisory(target, 'SWIMCHAIN_CHANNEL_VISIBLE');
@@ -140,7 +173,8 @@ function settle(target, tuneResult, from, kindOverride = null) {
     onTimeout: () => {
       timer.abort();
       hud.signalLost(target);
-      staticCtl.hide();
+      seamOff();
+      document.getElementById('acquire').hidden = true; // review fix 7
       showSignalLost(byId.get(target));
     },
   });
@@ -170,10 +204,29 @@ function showSignalLost(ch) {
   el.hidden = false;
 }
 
+// Called from three sites (acquisitionBoot's catch, statusPoll, rpcReady's
+// own rejection handler) — review fixes 5/6/7/8 all live here so every
+// caller gets them for free instead of needing to duplicate the guards:
+//   5. single guard on the card itself: only the first report writes it —
+//      later calls (e.g. statusPoll firing right after rpcReady.catch)
+//      don't re-stomp text or restart animations that already settled.
+//   6. never (re)start the static shader while powered off — powerOff()
+//      already stopped it, and a node dying in the background must not
+//      silently resume the RPC-polling animation loop behind #off-screen.
+//   7. the acquisition line is meaningless once the card that supersedes it
+//      is up; hide it unconditionally, even on a duplicate call.
+//   8. a dead node makes continued acquisition polling pointless; stop it
+//      rather than keep nudging request_content at an unreachable node.
+//      Chosen behavior (documented, not "auto-resume"): this does NOT
+//      restart on recovery — RETUNE / a fresh power cycle is the recovery
+//      path, matching the rest of the shell's stance that recovery is a
+//      fresh gate, not a background retry loop.
 function showNodeDead(msg) {
-  staticCtl.start();
-  staticCtl.show();
+  if (acquisitionPollHandle) { clearInterval(acquisitionPollHandle); acquisitionPollHandle = null; }
+  document.getElementById('acquire').hidden = true;
+  if (powered) seamOn();
   const el = document.getElementById('node-dead');
+  if (!el.hidden) return;
   el.hidden = false;
   document.getElementById('node-error').textContent = msg;
 }
@@ -213,7 +266,13 @@ function powerOn() {
   bloom.classList.remove('blooming'); void bloom.offsetWidth; bloom.classList.add('blooming');
   setTimeout(() => { bloom.hidden = true; }, 750);
   staticCtl.start();
-  if (!acquired) { acquisitionBoot(); return; }
+  // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
+  // power-cycling mid-boot starts a second run: the frames map gets
+  // overwritten (run A's mounted iframe orphaned, unmount() only ever
+  // removes the currently-mapped one), run A's watchReadiness gate becomes
+  // uncancellable from here, and its 2s timeout can fire SIGNAL LOST over
+  // run B's successful reveal.
+  if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
   const stored = localStorage.getItem(LAST_CHANNEL_KEY);
   const target = deck.current ?? (byId.has(stored) ? stored : cfg.channels[0].id);
   const r = deck.tune(target);
@@ -231,7 +290,7 @@ function powerOff() {
 
 // --- section 3.1: first-signal acquisition (runs once, then persisted) ---
 async function acquisitionBoot() {
-  staticCtl.show();
+  seamOn();
   document.getElementById('acquire').hidden = false;
   try {
     await rpcReady; // rpcAuth + myPk + rpcConfig (boot section below)
@@ -241,20 +300,39 @@ async function acquisitionBoot() {
     await tuneDriver(feed); // driver FIRST: follows + request_content
     const N = 3;
     await new Promise((resolve) => {
-      const wait = setInterval(async () => {
+      acquisitionPollHandle = setInterval(async () => {
         try {
-          if ((await localItemCount(byId.get(feed).spaces)) >= N) { clearInterval(wait); resolve(); }
-          else tuneDriver(feed); // keep nudging request_content as sync progresses
+          if ((await localItemCount(byId.get(feed).spaces)) >= N) {
+            clearInterval(acquisitionPollHandle);
+            acquisitionPollHandle = null;
+            resolve();
+          } else {
+            tuneDriver(feed); // keep nudging request_content as sync progresses
+          }
         } catch { /* node still syncing */ }
       }, 2000);
     });
     acquired = true;
     localStorage.setItem(ACQUIRED_KEY, '1');
+    acquiring = false; // review fix 2: boot is done; a future power-off/on is a normal cycle
     // The feed's prefs sync and first load ran before the follows existed —
-    // reload it so this session sees them, then reveal through the normal gate.
+    // unmount so whichever powerOn() actually reveals it (this one, or a
+    // deferred one below) does a fresh mount that sees them.
     unmount(feed);
+    // Review fix 3: power-off doesn't stop this poll (deliberately — see the
+    // brief's "simplest" option), so the lock can land while `powered` is
+    // false. Revealing anyway would post SWIMCHAIN_CHANNEL_VISIBLE, burn the
+    // OSD, and write lastChannel all behind #off-screen, then double-settle
+    // on the next power-on. Persist the lock either way, but only reveal
+    // now if the set is actually on; otherwise the next powerOn() sees
+    // `acquired === true` and takes the normal already-acquired branch,
+    // which mounts+settles fresh (frames no longer has `feed`, so settle()
+    // mounts rather than reusing anything).
+    if (!powered) return;
     settle(feed, { mounted: [feed], evicted: [] }, null, 'power');
   } catch (e) {
+    acquiring = false;
+    if (acquisitionPollHandle) { clearInterval(acquisitionPollHandle); acquisitionPollHandle = null; }
     const status = await invoke('node_status').catch(() => null);
     showNodeDead(String(status?.error ?? e));
   }

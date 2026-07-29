@@ -16,6 +16,12 @@
   #static { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5000;
             opacity: 0; transition: opacity 80ms linear; pointer-events: none;
             image-rendering: pixelated; }
+  /* review fix 4: while a seam is up (acquisition, a cold/warm mount gate,
+     node-dead), the static must swallow input — otherwise it passes through
+     to a mounted-but-unrevealed channel frame beneath it. shell.mjs toggles
+     this class on <body> in lockstep with every staticCtl.show()/hide()
+     (see seamOn/seamOff). */
+  body.seam #static { pointer-events: auto; }
 
   /* SIGNAL LOST: bleached test card, above static */
   #signal-lost { position: absolute; inset: 0; z-index: 5500; display: flex;
