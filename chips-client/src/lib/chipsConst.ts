@@ -290,3 +290,32 @@ export const SALT_PER_TIP = 10;
  * lowering it would un-credit counted chips, re-scoring every table.
  */
 export const MAX_BATCH = 24;
+
+/**
+ * WHAT REFUSING A JAR ACTUALLY COSTS — the rungs above it you give up.
+ *
+ * `burn` forfeits everything above a refused rung, because a `buy` still needs
+ * its whole prefix owned and a refused rung is never owned. That rule is real
+ * and correct and the fold enforces it. The player was simply never told: the
+ * button said "refuse +630k" and nothing about ending a ladder, and the
+ * operator hit it live on 2026-07-28 — refused a rung, then found the 4M jar
+ * above it permanently unbuyable while holding 4.6M crumbs, with no way to
+ * discover why.
+ *
+ * A choice this irreversible has to state its price BEFORE the press. Returns
+ * the labels of every rung that would become unreachable, deepest last, and an
+ * empty list for an unchained jar (refusing the Sous Chef costs nothing but
+ * the Sous Chef).
+ *
+ * PURE and derived — never a second source of truth. It reads the same
+ * UPGRADE_CHAINS the fold reads, so it cannot drift from what actually
+ * happens; if a chain is retuned this follows automatically.
+ */
+export function forfeitsOnRefuse(key: string, owned: ReadonlySet<string>): string[] {
+  const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
+  if (!chain) return [];
+  return chain
+    .slice(chain.indexOf(key) + 1)
+    .filter((k) => !owned.has(k))       // an already-owned rung above is not lost
+    .map((k) => UPGRADES[k].label);
+}

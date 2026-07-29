@@ -254,8 +254,10 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, dealIds, onCr
 export function FeedBanner({ vendor, jarLabel, onCancel, refuse }: {
   vendor: CrewMember; jarLabel: string; onCancel: () => void;
   /** Refuse THIS jar instead and take the crumbs. Absent when the jar cannot
-   *  be refused, or when the armed thing is not a jar at all (the hermit). */
-  refuse?: { crumbs: string; onRefuse: () => void } | null;
+   *  be refused, or when the armed thing is not a jar at all (the hermit).
+   *  `forfeits` names the rungs the refusal would put out of reach for the
+   *  rest of the run — empty for an unchained jar. */
+  refuse?: { crumbs: string; forfeits: string[]; onRefuse: () => void } | null;
 }) {
   return (
     <div className="feed-banner" role="status">
@@ -270,9 +272,35 @@ export function FeedBanner({ vendor, jarLabel, onCancel, refuse }: {
           blew the layout out. It belongs here: you have picked a jar, the
           vendor is waiting, and refusing is the other answer to that exact
           question rather than a permanent fixture on a card. */}
+      {/* THE PRICE OF THE PRESS, BEFORE THE PRESS. The refund used to be the
+          only number here, which made an irreversible choice read as a small
+          one: refusing a chain rung forfeits every rung above it for the rest
+          of the run, and the operator lost the golden-chip ladder to exactly
+          that — no warning, and no way afterwards to find out why the jar
+          above had stopped being buyable.
+
+          Named, not counted. "gives up 3 jars" is a number you shrug at;
+          "The Long Spoon" is a thing you wanted. */}
       {refuse && (
-        <button type="button" className="feed-refuse" onClick={refuse.onRefuse}>
-          <span>refuse</span><b>+{refuse.crumbs}</b>
+        <button
+          type="button"
+          className={`feed-refuse${refuse.forfeits.length > 0 ? ' costly' : ''}`}
+          onClick={refuse.onRefuse}
+          title={refuse.forfeits.length > 0
+            ? `also gives up: ${refuse.forfeits.join(', ')}`
+            : 'take the crumbs instead of the jar'}
+        >
+          {/* One phrase, one element. As two grid/flex children the figure
+              drifted away from its label whenever the warning below made the
+              button wider than the label needed. */}
+          <span className="feed-refuse-line">refuse <b>+{refuse.crumbs}</b></span>
+          {refuse.forfeits.length > 0 && (
+            <i className="feed-forfeit">
+              ends the ladder — {refuse.forfeits.length === 1
+                ? `${refuse.forfeits[0]} goes too`
+                : `${refuse.forfeits[0]} and ${refuse.forfeits.length - 1} more go too`}
+            </i>
+          )}
         </button>
       )}
       <button type="button" className="feed-cancel" onClick={onCancel}>never mind</button>
