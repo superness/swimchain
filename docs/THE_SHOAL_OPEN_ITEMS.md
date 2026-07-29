@@ -678,6 +678,39 @@ spot" is not yet also *the place food is more likely to be*, which is the other 
 same sentence. Whoever picks this up should also decide whether wild-fish schools (`wild.ts`)
 ought to loiter near named places, which is the same shape of question one level up.
 
+**Re-verified 2026-07-29 (plan 4b, Task 5), with the call sites named.** The consensus claim
+above was checked rather than trusted, and it holds. The two functions that decide where food
+is, and the two lines inside the fold that call them:
+
+| what | where |
+|---|---|
+| `isBloomReady` — is this cell fallow? | `shoal-client/src/lib/bloom.ts:186` |
+| `canEat` — does this claimed bite credit? | `shoal-client/src/lib/bloom.ts:240` |
+| `foldTick` judging every eat claim | `shoal-client/src/lib/shoalEngine.ts:349` |
+| `foldTick` regrowing every fallow cell | `shoal-client/src/lib/shoalEngine.ts:478` |
+
+Both call sites are inside `foldTick`, so siting really is permanent: a place-biased bloom
+rule changes which bites credit, therefore every client's `bitesTaken`, therefore every
+fish's size, therefore all of history. Task 5 was explicitly told to make places matter by
+siting blooms at them **unless** siting was consensus; it is, so Task 5 changed nothing about
+it and the siting stands exactly where it was.
+
+**And one thing nobody had written down: today the rule runs the other way.** Food grows
+where the school ISN'T (`bloom.ts`'s header — a fish within `BLOOM_VISIT_R` resets a cell),
+and a named place is precisely where the school IS. So a popular place is, if anything,
+slightly food-*poorer* than open water. That is not a bug in either module — it is the exact
+tension spec 2.2 asks for — but it does mean 2.13's sentence cannot be made true by any
+amount of display work, and it puts a real design question in front of whoever takes this on:
+a place that is both the safe spot and the food spot dissolves the tension the game is built
+on. "Blooms appear at places" may want to become "blooms appear at places *between* sweeps,
+and the school cannot sit on them" rather than a flat bias.
+
+What Task 5 did instead, entirely on the display side: **a place says its name once, as you
+arrive** (`terrain.ts`'s `trackArrival` / `nameAlpha`, painted by
+`terrainPaint.paintPlaceName`). The gap it closes is that the names existed only in a
+TypeScript constant — spec 2.13's rally call ("*kelp!*") needs two players to share a WORD,
+and no player had ever been shown one.
+
 ### 9. Smaller
 
 - `foldShoal` throws a `RangeError` at every epoch end, so a naive

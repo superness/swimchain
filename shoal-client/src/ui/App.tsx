@@ -126,6 +126,7 @@ import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
 import { boltProgress, wildClock, wildShelterBodies, wildViewAt } from './wildView';
+import { NOWHERE, trackArrival, type Arrival } from './terrain';
 import {
   applyInput, canClaimEat, createInput, dartCharge, eatTarget, emitDue,
   headingTo, isDarting, markEat, positionAt, refundOnHush,
@@ -640,6 +641,16 @@ export function App() {
     let lockedSnap: Body[] | null = null;
     let lockedAtMs = -1;
 
+    /**
+     * WHICH NAMED PLACE THE PLAYER IS AT (spec 2.13), kept across frames.
+     *
+     * Effect-local rather than a ref, so that a new sea starts at `NOWHERE`
+     * and the first place its player reaches announces itself — a window that
+     * carried an arrival across a sea change would silently swallow the one
+     * announcement that sea had to make.
+     */
+    let arrival: Arrival = NOWHERE;
+
     let input: InputState = createInput(sea.spawn.x, sea.spawn.y, 0);
     // The pointer, in CSS pixels, while it is held — or null. Held state lives
     // here rather than in React so a drag never re-renders the tree.
@@ -911,6 +922,17 @@ export function App() {
       const mePoint = me ? reckonSmooth(me.vec, drawMs) : null;
       const wild = wildViewAt(sea.wildSeed, drawMs, clock, mePoint);
 
+      // WHICH NAMED PLACE THE PLAYER IS AT (spec 2.13). Off the DRAWN
+      // position, not the last published vector: the name should land when
+      // the fish on screen reaches the kelp, which is what the player can
+      // see. It reaches nothing else — terrain is a game object and this
+      // never touches the fold. A frame with no player (before the first
+      // vector, or mid-replay) leaves the arrival exactly as it was rather
+      // than announcing an exit the player did not make.
+      if (mePoint !== null) {
+        arrival = trackArrival(arrival, mePoint.x, mePoint.y, drawMs);
+      }
+
       paintFrame(ctx, {
         view,
         cam: shownCam,
@@ -927,6 +949,7 @@ export function App() {
         // has, the hush itself is the signal.
         premonition: hush.phase === 'calm' && me ? premonition(state.tension, me.size) : 0,
         scatter,
+        place: arrival,
       });
     };
     raf = requestAnimationFrame(frame);
