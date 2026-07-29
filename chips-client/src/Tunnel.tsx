@@ -447,17 +447,29 @@ export interface Stall {
   jars: Upgrade[];
 }
 
-function shelfStalls(owned: Set<string>, dipIndex: number): { stalls: Stall[]; got: Upgrade[] } {
+function shelfStalls(
+  owned: Set<string>,
+  dipIndex: number,
+  /* Jars you REFUSED. They are gone for the run — you took 70% of the price in
+     crumbs instead — and the fold rejects any later `buy` of one. This list
+     asked only "do you own it?", so a refused jar came straight back onto the
+     shelf at full price for something that could never be delivered. */
+  declined: ReadonlySet<string>,
+): { stalls: Stall[]; got: Upgrade[] } {
   const chained = new Set(UPGRADE_CHAINS.flat());
   const open: Upgrade[] = [];
   const got: Upgrade[] = [];
   for (const chain of UPGRADE_CHAINS) {
     const next = chain.find((k) => !owned.has(k));
-    if (next && jarAvailable(next, dipIndex)) open.push(UPGRADES[next]);
+    // A refused rung is never owned, so it stays this chain's `next` forever —
+    // which is precisely right: the fold forfeits every rung above a refusal,
+    // so the whole ladder ends here and the shelf must say so by showing
+    // nothing rather than by offering the rung you already turned down.
+    if (next && !declined.has(next) && jarAvailable(next, dipIndex)) open.push(UPGRADES[next]);
   }
   for (const key of Object.keys(UPGRADES)) {
     if (chained.has(key)) continue;
-    if (!owned.has(key) && jarAvailable(key, dipIndex)) open.push(UPGRADES[key]);
+    if (!owned.has(key) && !declined.has(key) && jarAvailable(key, dipIndex)) open.push(UPGRADES[key]);
   }
   for (const key of Object.keys(UPGRADES)) if (owned.has(key)) got.push(UPGRADES[key]);
   // NO cost re-sort: the grid must never reflow under the cursor after a
@@ -590,8 +602,8 @@ export interface ShelfProps {
 
 export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, onStall }: ShelfProps) {
   const { stalls, got } = useMemo(
-    () => shelfStalls(state.owned, dipIndex),
-    [state.owned, dipIndex]
+    () => shelfStalls(state.owned, dipIndex, state.declined),
+    [state.owned, dipIndex, state.declined]
   );
   return (
     <section className="shelf" aria-label="the crew's stalls">
@@ -633,10 +645,12 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
+export function StallSheet({ vendor, jars, owned, declined, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
+  /** Jars refused this run — settled, not for sale, back after a tip. */
+  declined: ReadonlySet<string>;
   dipIndex: number;
   crumbsNow: number;
   committed: number;
@@ -652,7 +666,7 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
    *  renders nothing. */
   switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
 }) {
-  const status = stallStatus(vendor.id, owned, dipIndex);
+  const status = stallStatus(vendor.id, owned, dipIndex, declined);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div
@@ -687,6 +701,7 @@ export function StallSheet({ vendor, jars, owned, dipIndex, crumbsNow, committed
           <p className="sheet-empty">
             {status.kind === 'none' ? 'sells nothing. is here anyway.'
               : status.kind === 'sold-out' ? 'sold out — you own this whole stall.'
+              : status.kind === 'refused' ? 'you burned what was here. back when the bowl goes over.'
               : status.kind === 'locked' ? `nothing for you yet — bring ${status.needs.label} first.`
               : ''}
           </p>

@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
 import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
-import { createBrowserHost, type ChipsHost, type Identity } from './lib/host';
+import { createBrowserHost, CAN_FILE_REPORTS, type ChipsHost, type Identity } from './lib/host';
 import { foldChips, saltFor, SALT_TICK_BONUS, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
 import { withPending } from './lib/chipsPending';
@@ -1093,6 +1093,26 @@ export function App() {
     }
     sfx.pop();
     setNotice(copied ? 'report copied — paste it somewhere' : 'report is in the console (clipboard refused)');
+
+    /* AND ON THE RECORD. The clipboard is the fastest path off a phone, but it
+       is also one Ctrl-C from gone — the operator filed a report mid-bug and
+       the state at the moment of the bug survived only as long as they copied
+       nothing else. The durable copy is a post in the debug space.
+
+       AFTER the clipboard, never before: this mines a post PoW and takes real
+       seconds, and the player must not be made to wait to get their own report
+       out. A failure here changes nothing they can see beyond the notice —
+       they still have the text. */
+    if (!host || !me || !CAN_FILE_REPORTS) return;
+    try {
+      const cid = await host.reportBug(me, text);
+      if (cid) setNotice(copied ? 'report copied — and filed' : 'report filed');
+    } catch (e) {
+      // Deliberately quiet in the UI: the clipboard copy already succeeded and
+      // that is the copy that matters. The ring keeps the reason for the NEXT
+      // report, which is exactly the sort of thing the ring is for.
+      ringNote('note', `report post failed: ${String(e)}`);
+    }
   }
 
   /**
@@ -1716,7 +1736,7 @@ export function App() {
     const out = new Set<string>();
     if (!state) return out;
     for (const m of crewFor(crewDip)) {
-      if (openJarsOf(m.id, state.owned, crewDip).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
+      if (openJarsOf(m.id, state.owned, crewDip, state.declined).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
         out.add(m.id);
       }
     }
@@ -1866,8 +1886,9 @@ export function App() {
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}
-          jars={openJarsOf(sheetVendor.id, state.owned, crewDip)}
+          jars={openJarsOf(sheetVendor.id, state.owned, crewDip, state.declined)}
           owned={state.owned}
+          declined={state.declined}
           dipIndex={crewDip}
           crumbsNow={crumbsNow}
           committed={pendingCommitted}
