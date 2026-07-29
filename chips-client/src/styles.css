@@ -2293,6 +2293,17 @@ h1, h2, h3, p { margin: 0; }
 .bowl-fine { margin-top: 12px; font-family: var(--chalk); font-size: 10px; color: #857e70; }
 
 /* THE TIP: everything pours back in */
+/* WHAT THE OIL STILL HELD. The one line that stops a tip reading as a bug:
+   the fryers empty, and this says who took it and what it was worth. */
+.tip-taken {
+  display: block; margin-top: 10px;
+  font-family: var(--chalk); font-size: clamp(12px, 1.4vw, 16px);
+  line-height: 1.5; color: #e8d7b6;
+}
+.tip-taken em {
+  display: block; margin-top: 3px; font-style: normal; color: #b9ab93;
+  font-size: .92em;
+}
 .tip-ceremony { position: fixed; inset: 0; z-index: 65; display: grid; place-items: center; pointer-events: none; }
 .tip-flood {
   position: absolute; inset: 0;

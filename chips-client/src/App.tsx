@@ -23,7 +23,7 @@ import { enqueue, loadQueue, saveQueue, clearQueue, nextIdAfter, activeFor, type
 import { retireSettled, confirmedMoveKeys } from './lib/chipsSettling';
 import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
-import { isGolden, MAX_CRACKLES, LONG_FRY_CRACKLES, type TickMods } from './lib/cooking';
+import { isGolden, worthOf, MAX_CRACKLES, LONG_FRY_CRACKLES, type TickMods } from './lib/cooking';
 import { toggleOvercook, overcookOff } from './lib/overcook';
 import { sousTakes } from './lib/souschef';
 import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
@@ -191,7 +191,7 @@ export function App() {
   // THE BOTTOM OF THE BOWL: the reveal (once, on striking it), the standing
   // offer thereafter, and the tip ceremony.
   const [bowlOpen, setBowlOpen] = useState(false);
-  const [tipFanfare, setTipFanfare] = useState<{ salt: number; total: number } | null>(null);
+  const [tipFanfare, setTipFanfare] = useState<{ salt: number; total: number; taken: number } | null>(null);
   const struckRef = useRef(false);
   const bowlOpenRef = useRef(false);
   // One speech bubble at a time, app-wide — chatter is seasoning, not soup.
@@ -1329,7 +1329,10 @@ export function App() {
     if (!host || !me || !tableId || !state || tipSalt <= 0) return;
     setBowlOpen(false);
     struckRef.current = false;
-    setTipFanfare({ salt: tipSalt, total: state.oldSalt + tipSalt });
+    // What the fryers still held. Captured BEFORE `resetAll` empties them, so
+    // the ceremony can name it — see TipCeremony.
+    const taken = chips.reduce((sum, c) => sum + worthOf(c), 0);
+    setTipFanfare({ salt: tipSalt, total: state.oldSalt + tipSalt, taken });
     sfx.breakthrough();
     // THE RACK EMPTIES WITH THE BOWL. Without this the resize effect in
     // useCooking carries chip 0 across the tip — old pot, old multiplier —
@@ -1338,9 +1341,13 @@ export function App() {
     // thing the player can SEE, and which the descent already turns out to
     // be about: one more chip is what empties a bowl.
     resetAll();
-    window.setTimeout(() => say('scoop', 'thanks for the chip. that is the one i needed. see you at the bottom.', 9000), 1200);
     window.setTimeout(() => setTipFanfare(null), 6200);
-    window.setTimeout(() => say('scoop', WELCOME_BACK[3], 9000), 6400);
+    // AFTER the hush, and FIRST in the queue. These fired at 1200ms — while
+    // the ceremony still had the crew row at opacity 0 — and the welcome-back
+    // then replaced the bubble at 6400ms, because there is one bubble
+    // app-wide. The thanks was never seen by anybody.
+    window.setTimeout(() => say('scoop', 'see you at the bottom.', 8000), 6400);
+    window.setTimeout(() => say('scoop', WELCOME_BACK[3], 9000), 15_000);
     setQueue((q) => enqueue(
       q, { tableId, author: me.publicKeyHex, kind: 'tip', ms: allocMs() },
       nextId.current++
@@ -1784,7 +1791,7 @@ export function App() {
           onClose={() => setBowlOpen(false)}
         />
       )}
-      {tipFanfare && <TipCeremony salt={tipFanfare.salt} total={tipFanfare.total} />}
+      {tipFanfare && <TipCeremony salt={tipFanfare.salt} total={tipFanfare.total} taken={tipFanfare.taken} />}
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}

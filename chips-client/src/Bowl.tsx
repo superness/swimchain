@@ -122,7 +122,7 @@ export const WELCOME_BACK = [
 ] as const;
 
 /** The tip ceremony: the world pours back in and the salt stays. */
-export function TipCeremony({ salt, total }: { salt: number; total: number }) {
+export function TipCeremony({ salt, total, taken }: { salt: number; total: number; taken: number }) {
   return (
     <div className="tip-ceremony" role="status">
       <div className="tip-flood" aria-hidden="true" />
@@ -130,6 +130,24 @@ export function TipCeremony({ salt, total }: { salt: number; total: number }) {
         <span className="tip-small">the bowl goes back over</span>
         <strong>+{compact(salt)} OLD SALT</strong>
         <span className="tip-total">{compact(total)} in all</span>
+        {/* WHAT THE OIL STILL HELD, NAMED. Tipping empties the fryers, and
+            before this the chips simply vanished with no line anywhere the
+            player could see — the acknowledgement was a speech bubble fired
+            while the ceremony had the crew row hidden, then overwritten
+            before the hush lifted, so it had literally never been visible
+            once (operator: "scoop is not acknowledging my first chip that he
+            eats (I get no points) ... the user is just annoyed and confused
+            and thinks it is broken").
+
+            It belongs HERE and not in a bubble: this overlay is the only
+            thing on screen at the moment the chips go, so it is the only
+            place the explanation cannot be missed. */}
+        {taken > 0 && (
+          <span className="tip-taken">
+            scoop took what was still in the oil — {compact(taken)}.
+            <em>&ldquo;thanks for the chip. that is the one i needed.&rdquo;</em>
+          </span>
+        )}
         <span className="tip-line">salt that has been through a bowl. it does not dissolve and it does not forget.</span>
       </div>
     </div>
