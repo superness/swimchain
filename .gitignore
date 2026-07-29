@@ -36,6 +36,12 @@ config.local.toml
 # Node modules (if any)
 node_modules/
 package-lock.json
+# ...except for clients that CI builds. `npm ci` REQUIRES a lockfile and
+# refuses to run without one, so a client cannot be tested in CI while its
+# lockfile is ignored. This is also the only thing that makes the CI install
+# reproducible: without it every run resolves fresh semver ranges, and a
+# green build proves nothing about the build the player is actually served.
+!chips-client/package-lock.json
 
 # Temporary files from pipelines
 finaloutputtehsis.txt
