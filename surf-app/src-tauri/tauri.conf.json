@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Surf",
+  "version": "0.1.0",
+  "identifier": "com.swimchain.surf",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Surf",
+        "width": 420,
+        "height": 900,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; frame-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:9736 http://localhost:9736; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}
