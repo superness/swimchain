@@ -2828,3 +2828,98 @@ h1, h2, h3, p { margin: 0; }
   opacity: .5; pointer-events: none;
 }
 @media (prefers-reduced-motion: reduce) { .porc, .porc-bowl { animation: none; transition: none; } }
+
+
+/* ── SCOOP'S ───────────────────────────────────────────────────────────────
+   Where char is spent. Warmer than the porcelain's cold takeover — this is the
+   payoff of an eleven-month joke, not a fight — and burnt rather than salted:
+   the ember palette the char readout uses, so the currency and the shop that
+   takes it read as one thing. */
+.scoop-call {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  order: 0; width: 100%;
+  background: rgba(20, 12, 8, .95);
+  border: 1px solid rgba(255, 150, 90, .45);
+  border-radius: 12px; padding: 9px 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .55);
+}
+.scoop-call-art { flex: none; width: 34px; height: 34px; display: block; }
+.scoop-call-art svg { width: 100%; height: 100%; }
+.scoop-go {
+  flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #ffc48a; border: 1px solid rgba(255, 170, 110, .6);
+  border-radius: 999px; padding: 5px 13px;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.scoop-go:hover { color: #fff; border-color: rgba(255, 190, 130, .95); background: rgba(48, 22, 8, .6); }
+
+.scoop-shop {
+  position: relative; z-index: 1;
+  width: min(560px, 94vw); max-height: 88vh; overflow-y: auto;
+  background: linear-gradient(#1b110c, #120a07);
+  border: 1px solid rgba(255, 150, 90, .4);
+  border-radius: 16px; padding: 18px 20px 16px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .7);
+}
+.scoop-head { display: flex; align-items: center; gap: 12px; }
+.scoop-art { flex: none; width: 52px; height: 52px; }
+.scoop-art svg { width: 100%; height: 100%; }
+.scoop-who { flex: 1 1 auto; min-width: 0; }
+.scoop-who strong {
+  display: block; font-family: var(--sign); font-size: 20px; color: #ffd8b0;
+}
+.scoop-who em {
+  display: block; font-style: normal; font-family: var(--chalk);
+  font-size: 12px; color: #c08a63; line-height: 1.35;
+}
+.scoop-char { flex: none; text-align: right; }
+.scoop-char b {
+  display: block; font-family: var(--chalk); font-weight: 700;
+  font-variant-numeric: tabular-nums; font-size: 24px; color: #ffb27a;
+  text-shadow: 0 0 10px rgba(255, 120, 40, .55);
+}
+.scoop-char i { font-style: normal; font-family: var(--chalk); font-size: 9px; color: #c08a63; }
+
+.scoop-rule {
+  margin: 12px 0 8px; font-family: var(--chalk); font-size: 11px;
+  letter-spacing: .04em; color: #9e7a5e;
+}
+
+.scoop-stock { display: flex; flex-direction: column; gap: 8px; }
+.scoop-stock button {
+  display: grid; grid-template-columns: 1fr auto; gap: 2px 12px;
+  width: 100%; text-align: left;
+  background: rgba(0, 0, 0, .35);
+  border: 1px solid rgba(190, 130, 90, .35);
+  border-radius: 10px; padding: 9px 12px;
+  transition: border-color .2s, background .2s;
+}
+.scoop-stock .open button:hover { border-color: rgba(255, 170, 110, .85); background: rgba(48, 22, 8, .5); }
+.scoop-stock button:disabled { cursor: default; }
+.scoop-stock .dear button { opacity: .5; }
+.scoop-stock .got button { border-style: dashed; border-color: rgba(255, 170, 110, .5); }
+.ab-name { font-family: var(--sign); font-size: 15px; color: #f4e2cc; }
+.ab-from {
+  grid-column: 2; grid-row: 1; justify-self: end;
+  font-family: var(--chalk); font-size: 9px; letter-spacing: .05em; color: #8d6a52;
+}
+.ab-blurb {
+  grid-column: 1 / -1; font-family: var(--chalk); font-size: 11px;
+  color: #bda28c; line-height: 1.35;
+}
+.ab-cost {
+  grid-column: 1 / -1; justify-self: start;
+  font-family: var(--chalk); font-size: 10px; letter-spacing: .06em; color: #ffb27a;
+}
+.got .ab-cost { color: #8d6a52; }
+
+.scoop-foot {
+  margin: 12px 0 10px; font-family: var(--chalk); font-size: 10.5px;
+  line-height: 1.45; color: #9e7a5e;
+}
+.scoop-done {
+  font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #b6a385; border: 1px solid rgba(210, 184, 144, .35);
+  border-radius: 999px; padding: 5px 12px;
+}
+.scoop-done:hover { color: #f4e9d8; border-color: rgba(210, 184, 144, .7); }

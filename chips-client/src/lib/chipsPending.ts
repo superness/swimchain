@@ -28,7 +28,7 @@
  * itself is untouched in the real queue, so a real, valid proof for a
  * DIFFERENT entry is never dropped by this guard.
  */
-import { bankBatchBody, buyBody, dipBody, tipBody, brokeBody, burnBody} from './chipsBody';
+import { bankBatchBody, buyBody, dipBody, tipBody, brokeBody, burnBody, spendBody} from './chipsBody';
 import { proofKey } from './proofKey';
 import { activeFor, type QueuedMove } from './chipsQueue';
 import type { ChipsReply } from './chipsEngine';
@@ -69,6 +69,8 @@ export function withPending(
         extra.push({ author_id: me, body: tipBody(m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'broke') {
         extra.push({ author_id: me, body: brokeBody(m.paid, m.ms), block_height: null, content_id: cid, created_at: at });
+      } else if (m.kind === 'spend') {
+        extra.push({ author_id: me, body: spendBody(m.ability, m.cost, m.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'burn') {
         extra.push({ author_id: me, body: burnBody(m.key, m.ms), block_height: null, content_id: cid, created_at: at });
       } else {

@@ -39,6 +39,7 @@ import {
 import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './Crew';
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
 import { PorcelainFight } from './Porcelain';
+import { ScoopShop } from './Scoop';
 import { porcelainInReach, readiness, cracks } from './lib/porcelain';
 import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
@@ -188,6 +189,7 @@ export function App() {
   });
   /** The porcelain takeover is open. Client-only: you choose when it starts. */
   const [porcOpen, setPorcOpen] = useState(false);
+  const [scoopOpen, setScoopOpen] = useState(false);
   const [porcBroke, setPorcBroke] = useState(false);
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
@@ -1180,6 +1182,24 @@ export function App() {
   }
 
   /**
+   * BUY A RULE CHANGE FROM SCOOP.
+   *
+   * The cost travels in the body (policy, retunable); the fold's only job is
+   * that char cannot go negative and nothing is bought twice. Guarded here too
+   * so the button can never send something the chain would reject.
+   */
+  function onSpendChar(a: { key: string; cost: number }): void {
+    if (!host || !me || !tableId || !state) return;
+    if (state.charOwned.has(a.key) || state.char < a.cost) return;
+    sfx.pop();
+    setNotice(`scoop takes ${a.cost} ${a.cost === 1 ? 'grain' : 'grains'}. the rules change.`);
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'spend', ability: a.key, cost: a.cost, ms: allocMs() },
+      nextId.current++
+    ));
+  }
+
+  /**
    * REFUSE A JAR and take BURN_REFUND of its price in crumbs.
    *
    * Not a sale — the jar is never owned. It is given up for the run, and for
@@ -2014,6 +2034,33 @@ export function App() {
           </span>
           <button type="button" className="porc-go" onClick={() => setPorcOpen(true)}>go down</button>
         </div>
+      )}
+      {/* SCOOP IS OPEN FOR BUSINESS. He has asked for one more chip since the
+          first frame; the moment you break something he finally says what for.
+          Shown whenever there is char to spend or anything already bought, so
+          a player who owns the lot can still go and look at it. */}
+      {state && (state.char > 0 || state.charOwned.size > 0) && !scoopOpen && !porcOpen && (
+        <div className="scoop-call" role="status">
+          <span className="scoop-call-art" aria-hidden="true"><CritterArt id="scoop" /></span>
+          <span className="vote-text">
+            <strong>scoop has stopped begging.</strong>{' '}
+            {state.char > 0
+              ? `he is looking at your ${state.char === 1 ? 'grain' : `${state.char} grains`}.`
+              : 'he is looking at you.'}
+          </span>
+          <button type="button" className="scoop-go" onClick={() => setScoopOpen(true)}>
+            {state.char > 0 ? 'see what he wants' : "see what you've got"}
+          </button>
+        </div>
+      )}
+      {scoopOpen && state && (
+        <ScoopShop
+          char={state.char}
+          owned={state.charOwned}
+          broken={state.deepest}
+          onBuy={(a) => { onSpendChar(a); setScoopOpen(false); }}
+          onClose={() => setScoopOpen(false)}
+        />
       )}
       {hermitNow.phase === 'holding' && (
         <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
