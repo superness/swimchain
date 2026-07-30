@@ -36,6 +36,21 @@
 import { parseMove, type ChipsReply } from './chipsEngine';
 import { proofKey } from './proofKey';
 import type { QueuedMove } from './chipsQueue';
+import { noteMove } from './moveJournal';
+// moveKey lives in its own module so the journal can use it without an import
+// cycle; re-exported here because every existing caller and test imports it from
+// this file.
+import { moveKey } from './moveKey';
+export { moveKey };
+
+/** Whatever identifies a move to a human reading a journal line. */
+function detailOf(m: QueuedMove): string | number | undefined {
+  if (m.kind === 'dip') return m.amount;
+  if (m.kind === 'buy') return m.key;
+  if (m.kind === 'spend') return m.ability;
+  if (m.kind === 'broke') return m.paid;
+  return undefined;
+}
 
 /**
  * How long a settling move may go on asserting itself before the chain's silence
@@ -60,25 +75,6 @@ import type { QueuedMove } from './chipsQueue';
  */
 export const SETTLE_TTL_MS = 600_000 + 2 * 15_000;
 
-/**
- * The identity of a move, as the chain will express it once the move lands —
- * table and author folded in, so it can only ever match its own twin.
- *
- * A queued bank carries exactly one chip (`chip: ChipEntry`), which is why this
- * is a single key rather than a set: batching happens at SUBMIT time
- * (`bankBatchBody` over the moves `takeBatch` grouped), never in the queue.
- */
-export function moveKey(m: QueuedMove): string {
-  if (m.kind === 'bank') return proofKey(m.tableId, m.author, m.chip.ms, m.chip.nonce);
-  if (m.kind === 'dip') return `dip:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
-  if (m.kind === 'tip') return `tip:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
-  // Keyed on ms, not key: the same jar can be burned more than once a run.
-  if (m.kind === 'broke') return `broke:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
-  if (m.kind === 'burn') return `burn:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
-  // Keyed on ability, not ms: an ability is bought at most once, ever.
-  if (m.kind === 'spend') return `spend:${m.tableId}:${m.author.toLowerCase()}:${m.ability}`;
-  return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
-}
 
 /**
  * Every move the confirmed base already contains, in `moveKey` form.
@@ -150,8 +146,21 @@ export function retireSettled(
   let changed = false;
   const out = q.filter((m) => {
     if (m.sentAt === undefined) return true; // still queued for submission
-    if (confirmed.has(moveKey(m)) || !settlingStillValid(m.sentAt, now, ttlMs)) {
+    const done = confirmed.has(moveKey(m));
+    if (done || !settlingStillValid(m.sentAt, now, ttlMs)) {
       changed = true;
+      // JOURNAL THE REASON. These two exits look identical from here and are
+      // opposite outcomes: `confirmed` means the chain has it and the local echo
+      // is redundant; `expired` means we sent it, never saw it land, and are now
+      // deleting credit the player already watched arrive. Until 2026-07-29 the
+      // difference was recorded nowhere, so a vanished upgrade was unprovable.
+      // This is the one impure line in the module, and it is worth it.
+      noteMove({
+        at: now, id: m.id, kind: m.kind, key: moveKey(m),
+        phase: done ? 'confirmed' : 'expired',
+        sentForMs: now - m.sentAt,
+        detail: detailOf(m),
+      });
       return false;
     }
     return true;

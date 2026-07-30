@@ -46,6 +46,17 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
     credited: 0, spilled: 4_100_000,
     queuedId: 7,
   }],
+  // A move that was SENT, never seen, and then deleted — a lost upgrade, which
+  // is the thing the whole report now exists to prove.
+  journal: [
+    { at: 1785277000000, id: 7, kind: 'buy', key: 'buy:sha256:abc:deadbeef:fryer3', phase: 'queued', detail: 'fryer3' },
+    { at: 1785277000500, id: 7, kind: 'buy', key: 'buy:sha256:abc:deadbeef:fryer3', phase: 'sent', detail: 'fryer3' },
+    { at: 1785277630500, id: 7, kind: 'buy', key: 'buy:sha256:abc:deadbeef:fryer3', phase: 'expired', sentForMs: 630_000, detail: 'fryer3' },
+  ],
+  regressions: [
+    { at: 1785277630500, field: 'owned', what: 'upgrade "fryer3" was owned and now is not',
+      from: 'fryer3', to: '(gone)', movesFrom: 31, movesTo: 31 },
+  ],
   ceiling: 6, seasoning: 3, crackleHaste: 1,
   errors: [{ at: 1785277990000, kind: 'error', text: 'boom' }],
   build: { rpc: 'https://swimchain.io/rpc', space: 'sp1...', mode: 'production' },
@@ -96,7 +107,7 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
   let threw = false;
   let out = '';
   try {
-    out = snapshotText(input({ state: null, queue: [], chips: [], dips: [], errors: [] }));
+    out = snapshotText(input({ state: null, queue: [], chips: [], dips: [], journal: [], regressions: [], errors: [] }));
   } catch { threw = true; }
   check('a null fold does not throw', !threw);
   check('and still produces JSON', out.length > 0 && JSON.parse(out).v === SNAPSHOT_V);
@@ -181,6 +192,44 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
   check('and the damage banked against the current boss', s.fold.bossDamage === 44_000, s.fold.bossDamage);
   check('and what has been paid to bosses in total', s.fold.paidToBosses === 610_000, s.fold.paidToBosses);
   check('and which abilities are owned', Array.isArray(s.fold.charOwned) && (s.fold.charOwned as string[])[0] === 'crack', s.fold.charOwned);
+}
+
+// 6e) THE MOVE JOURNAL. The client's side of a discrepancy. A snapshot of state
+//     cannot show a disagreement between two histories; only a list of events
+//     can be lined up against the chain's list of events.
+{
+  const s = buildSnapshot(input()) as { journal: Record<string, unknown>[]; lostMoves: number };
+  check('the move journal is captured', s.journal.length === 3, s.journal);
+
+  //   THE HEADLINE. A move sent, never seen, then deleted IS a lost upgrade.
+  //   Surfaced as a count so nobody has to read the journal to notice.
+  check('a move that expired is counted as lost outright', s.lostMoves === 1, s.lostMoves);
+
+  //   The whole life of one move, joined by its queue id.
+  const mine = s.journal.filter((e) => e.id === 7);
+  check('one move carries its whole lifecycle', mine.length === 3, mine.length);
+  check('in order: queued, sent, expired',
+    mine.map((e) => e.phase).join(',') === 'queued,sent,expired', mine.map((e) => e.phase));
+
+  //   THE FIELD THAT DECIDES THE BUG. 'confirmed' means the chain has it and we
+  //   are not showing it; 'expired' means the chain never got it. Opposite
+  //   fixes, and until 2026-07-29 the drop recorded neither.
+  check('a drop says WHICH reason it was', mine[2].phase === 'expired', mine[2]);
+  check('and how long it had waited', mine[2].sentForMs === 630_000, mine[2]);
+
+  //   Joinable against a chain dump by grep, with no arithmetic.
+  check('every event carries the chain key it will have',
+    mine.every((e) => typeof e.key === 'string' && (e.key as string).includes('fryer3')), mine[0]);
+}
+
+// 6f) THE FOLD REGRESSIONS. You cannot photograph a flicker.
+{
+  const s = buildSnapshot(input()) as { regressions: Record<string, unknown>[] };
+  check('regressions are captured', s.regressions.length === 1, s.regressions);
+  check('and name the upgrade that vanished',
+    String(s.regressions[0].what).includes('fryer3'), s.regressions[0]);
+  check('and carry the move counts either side',
+    s.regressions[0].movesFrom === 31 && s.regressions[0].movesTo === 31, s.regressions[0]);
 }
 
 /* ── the ring itself ──────────────────────────────────────────────────── */

@@ -61,6 +61,8 @@ import { snapshotText } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
 import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
 import { noteDip, noteTapAway, dipEntries } from './lib/dipRing';
+import { moveEvents } from './lib/moveJournal';
+import { watchFold, foldRegressions, type FoldFacts } from './lib/foldWatch';
 
 const NAME_KEY = 'chips.cookname.v1';
 /** Whether the Sous Chef is on duty. A client-side PREFERENCE, never a fold
@@ -216,6 +218,34 @@ export function App() {
   const [polish, setPolish] = useState<Polish>(freshPolish);
   const polishRef = useRef(polish);
   useEffect(() => { polishRef.current = polish; }, [polish]);
+
+  /**
+   * THE FOLD MUST NOT GO BACKWARDS — and if it does, catch it AS IT HAPPENS.
+   *
+   * A ⚑ report is a photograph, and an upgrade that appears, vanishes and comes
+   * back leaves no trace in one: every snapshot taken during the whiplash is
+   * individually plausible. This diffs consecutive folds instead, so the moment
+   * `owned` loses a member or `lifetimeChips` drops the event is written down.
+   * Operator, 2026-07-29: "lost a fryer, lost queso angel upgrade. things are
+   * whiplashing around."
+   */
+  const prevFold = useRef<FoldFacts | null>(null);
+  useEffect(() => {
+    if (!state) return;
+    const facts: FoldFacts = {
+      crumbs: state.crumbs, lifetimeChips: state.lifetimeChips, fryers: state.fryers,
+      bowlCap: state.bowlCap, broken: state.broken, paidToBosses: state.paidToBosses,
+      moves: state.moves.length, owned: state.owned, charOwned: state.charOwned,
+    };
+    const back = watchFold(prevFold.current, facts, Date.now());
+    prevFold.current = facts;
+    // Say it out loud. This used to be entirely silent, which is why it cost an
+    // evening: SETTLE_TTL_MS expiring is CORRECT (the chain's silence wins) but
+    // a player watching an upgrade un-buy itself with no explanation has every
+    // reason to think the game is broken.
+    for (const r of back) ringNote('note', `FOLD WENT BACKWARDS: ${r.what} (${r.from} -> ${r.to})`);
+    if (back.length > 0) setNotice(back[0].what);
+  }, [state]);
   const [porcBroke, setPorcBroke] = useState(false);
   /** Which fryer is overcooking — client-only, never persisted. */
   const [overcookAt, setOvercookAt] = useState<number | null>(null);
@@ -1149,6 +1179,7 @@ export function App() {
         tableId, tableName: cookName || null, author: me?.publicKeyHex ?? null,
         state: state ?? null, queue, chips,
         dips: dipEntries(),
+        journal: moveEvents(), regressions: foldRegressions(),
         ceiling, seasoning, crackleHaste,
         errors: ringEntries(),
         build: {

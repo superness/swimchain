@@ -22,8 +22,10 @@ import type { QueuedMove } from './chipsQueue';
 import type { CookingChip } from './cooking';
 import type { RingEntry } from './errorRing';
 import type { DipNote } from './dipRing';
+import type { MoveEvent } from './moveJournal';
+import type { FoldRegression } from './foldWatch';
 
-export const SNAPSHOT_V = 2;
+export const SNAPSHOT_V = 3;
 
 export interface SnapshotInput {
   at: number;
@@ -35,6 +37,12 @@ export interface SnapshotInput {
    *  a move that never left the client shows up nowhere else at all. */
   queue: readonly QueuedMove[];
   chips: readonly CookingChip[];
+  /** EVERY MOVE'S LIFECYCLE — queued / sent / confirmed / expired. The client's
+   *  side of a discrepancy, in the same shape as the chain's, so the two can be
+   *  lined up instead of reconciled by arithmetic. See moveJournal.ts. */
+  journal: readonly MoveEvent[];
+  /** Invariants that went BACKWARDS. See foldWatch.ts. */
+  regressions: readonly FoldRegression[];
   /** THE DIPS, as the client computed them. The rack and the fold are both
    *  states AFTER the fact; a dip is destructive, so without this the pot that
    *  was actually dipped is unrecoverable. See dipRing.ts. */
@@ -67,6 +75,20 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
   return {
     v: SNAPSHOT_V,
     at: i.at,
+
+    // FIRST, BECAUSE THEY ARE THE ANSWER. A snapshot of state cannot show a
+    // discrepancy — only a record of what the client DID can be diffed against
+    // the chain. Operator, 2026-07-29: "we are trying to find discrepancies
+    // between client and on the chain, so we need to be tracking what HAPPENED
+    // ON THE CLIENT."
+    //
+    // `expired` entries are the headline: each one is a move the client sent,
+    // never saw land, and then deleted — taking with it credit the player had
+    // already been shown. That is a lost upgrade, in writing.
+    lostMoves: i.journal.filter((e) => e.phase === 'expired').length,
+    regressions: i.regressions,
+    journal: i.journal,
+
     table: { id: i.tableId, name: i.tableName, author: i.author },
 
     // THE FOLD'S VIEW — what the chain says you have.
