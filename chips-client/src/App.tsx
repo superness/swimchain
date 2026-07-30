@@ -2219,7 +2219,7 @@ export function App() {
       {deepFight && !deepOpen && !porcOpen && !scoopOpen && (
         <div className="deep-call" role="status">
           <span className="vote-text">
-            <strong>{deepFight.label} is in the way.</strong>{' '}
+            <strong>{deepFight.flavour.boss} is in the way.</strong>{' '}
             {deepFight.done > 0
               ? `you have taken ${Math.round(deepFight.frac * 100)}% of it.`
               : 'it is not going to move on its own.'}

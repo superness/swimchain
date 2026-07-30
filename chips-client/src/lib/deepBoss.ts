@@ -18,6 +18,7 @@
  */
 import { bossHp, deepBandFloor, DEEP_BAND_COUNT, FIRST_HP_BAND } from './chipsConst';
 import { DEEP_BANDS } from './tunnelDepth';
+import { flavourFor, type BandFlavour } from './bandFlavour';
 import { worthOf, type CookingChip } from './cooking';
 
 /** You may not walk up to one with a cold rack — the porcelain's courtesy,
@@ -27,8 +28,10 @@ export const DEEP_READY_CRACKLES = 3;
 export interface DeepFight {
   /** Band index, 1..DEEP_BAND_COUNT-1. */
   band: number;
-  /** Its name, from the strata the tunnel already draws. */
+  /** The STRATUM — where you are. What the tunnel draws behind you. */
   label: string;
+  /** What you are HITTING, plus its lines. A location is not a fight. */
+  flavour: BandFlavour;
   /** Total health, in crumbs. */
   hp: number;
   /** Damage dealt so far this bowl. */
@@ -60,6 +63,7 @@ export function fightAt(
   return {
     band,
     label: DEEP_BANDS[band]?.label ?? 'the dark',
+    flavour: flavourFor(band),
     hp,
     done,
     left: hp - done,

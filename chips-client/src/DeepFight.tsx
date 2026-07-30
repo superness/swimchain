@@ -51,13 +51,24 @@ export function DeepFightScreen({ fight, best, ready, onHit, onLeave, broke }: {
       <div className="deep-words">
         {broke ? (
           <>
-            <strong className="deep-through">{fight.label.toUpperCase()} GIVES</strong>
-            <span className="deep-line">there is more of it underneath. of course there is.</span>
+            <strong className="deep-through">{fight.flavour.boss.toUpperCase()} GIVES</strong>
+            <span className="deep-line">{fight.flavour.gives}</span>
+            {/* He has been quiet the whole descent. When he finally speaks it
+                should not share a beat with anything else. */}
+            {fight.flavour.scoop && (
+              <span className="deep-scoop-said">scoop: &ldquo;{fight.flavour.scoop}&rdquo;</span>
+            )}
           </>
         ) : (
           <>
             <span className="deep-small">you are chipping away at</span>
-            <strong>{fight.label}</strong>
+            {/* THE BOSS, not the stratum. "chipping away at The Floor" is a
+                location; naming the thing you are hitting is a fight. */}
+            <strong>{fight.flavour.boss}</strong>
+            <span className="deep-where">in {fight.label.toLowerCase()}</span>
+            {fight.done === 0 && (
+              <p className="deep-arrive">{fight.flavour.arrive}</p>
+            )}
 
             <Health frac={fight.frac} />
             <p className="deep-tally">
