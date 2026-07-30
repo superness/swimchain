@@ -754,48 +754,139 @@ function result(replies: NodeReply[]): GetRepliesResult {
 // `roomIdFor` to the space actually written into — correct for Task 1, but it's
 // where the next symptomless fork lives."* `water.ts` is the binding: one
 // function derives the space id and every room id from ONE name, and everything
-// downstream takes the resulting `Water`.
+// downstream takes the resulting `Water`, which is now a BRANDED type so a
+// hand-built one is a compile error (`water.ts`'s `waterBrand`, pinned by the
+// `@ts-expect-error` in water.test.ts §1).
 //
-// That binding is only worth anything while nothing goes around it. `roomIdFor`
-// and `roomTextFor` still exist — they are the PINNED primitives above, and
-// pinning them is the defence — so this is a source scan rather than an
-// argument: any module that calls either with a bare string is a place a room
-// and a space can drift apart again, silently.
+// The brand stops a fake `Water`. It does NOT stop anyone calling
+// `roomIdFor(someString, epoch)` directly, because that function takes a
+// `string` — and it has to, it is the pinned primitive the literals above
+// protect. So this scan is still load-bearing, and it is the half the brand
+// cannot cover.
 //
-// It scans REAL SOURCE, not this file's opinion of it, and it is deliberately
-// not a lint rule: a lint rule would live in a config nobody reads at review
-// time, and this failure has no symptom to find it by afterwards.
+// ## ROUND 1's SCAN WAS WALKED AROUND THREE WAYS, ALL EXECUTED
+//
+//   1. a hand-built `Water` — closed by the brand, not by this scan;
+//   2. `import { roomIdFor as r }` then `r(name, e)` — the call-form regex
+//      never matched, because the call is spelled `r(`;
+//   3. a file in a SUBDIRECTORY of `src/lib` or `src/ui` — `readdirSync` was
+//      flat, so the file was never opened at all.
+//
+// Both 2 and 3 are fixed below, and the fix for 2 is a change of KIND rather
+// than a longer regex: **the scan reads import specifiers, not call sites.**
+// You cannot call a function you have not imported, and an import records the
+// ORIGINAL name whatever local name it is bound to. The call-form check is kept
+// as a second net (it catches a re-export through some other module, where the
+// import would not name `shoalRoom` at all).
+//
+// ## AND THE SCANNER IS ITSELF SCANNED
+//
+// A checker that silently matched nothing would report exactly what a pass
+// looks like — which is how round 1's holes survived. `offendersIn` is a pure
+// function of one file's text, so it is driven below against synthetic sources
+// for all three walk-arounds plus a legitimate import that must NOT trip it.
 // ---------------------------------------------------------------------------
 {
   console.log('\n--- the string form of the derivation has exactly one caller ---');
-  const here = dirname(fileURLToPath(import.meta.url));
-  const roots = [join(here, '..', 'lib'), join(here, '..', 'ui')];
-  const scriptsDir = join(here, '..', '..', 'scripts');
-  const files: string[] = [];
-  for (const root of [...roots, scriptsDir]) {
-    for (const name of readdirSync(root)) {
-      if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue;
-      if (name.endsWith('.test.ts')) continue;      // tests may call the primitive
-      if (name === 'water.ts') continue;            // the one legal caller
-      if (name === 'shoalRoom.ts') continue;        // where it is defined
-      files.push(join(root, name));
+
+  /** The four functions that turn a bare NAME into a room. Everything else in
+   *  `shoalRoom.ts` (`fetchRooms`, `roomPreimage`, `ROOM_TITLE`, the types) is
+   *  free to be imported by anyone. */
+  const DERIVERS = ['roomIdFor', 'roomTextFor', 'roomIdAtMs', 'roomTextAtMs'];
+
+  /**
+   * Why one file is (or is not) an offender. Pure, so the controls below can
+   * drive it over text this file spells out rather than over the repo.
+   */
+  const offendersIn = (text: string): string[] => {
+    // A mention inside a comment or a doc block is how this codebase explains
+    // itself and must never fail a scan.
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const found: string[] = [];
+
+    // (a) IMPORT SPECIFIERS — alias-proof, because `import { X as y }` still
+    // spells `X` on the left. Every `import { … } from '…'` in the file is
+    // parsed, whatever module it names: a re-export elsewhere would still have
+    // to name one of these somewhere.
+    for (const m of code.matchAll(/import\s*(?:type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      for (const raw of m[1].split(',')) {
+        const original = raw.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
+        if (DERIVERS.includes(original)) found.push(`imports ${original} from '${m[2]}'`);
+      }
     }
-  }
+    // (b) A NAMESPACE IMPORT of the module that defines them — `import * as R
+    // from './shoalRoom'` puts every one of them one property access away, and
+    // no specifier list records it.
+    for (const m of code.matchAll(/import\s*\*\s*as\s+(\w+)\s*from\s*['"]([^'"]*shoalRoom)['"]/g)) {
+      found.push(`namespace-imports ${m[2]} as ${m[1]}`);
+    }
+    // (c) THE CALL FORM, kept as a second net for a re-export path where the
+    // import names some other module entirely.
+    for (const d of DERIVERS) {
+      if (new RegExp(`\\b${d}\\s*\\(`).test(code)) found.push(`calls ${d}(`);
+    }
+    return found;
+  };
+
+  // --- the scanner, scanned ------------------------------------------------
+  const control = (what: string, text: string, shouldTrip: boolean) => {
+    const got = offendersIn(text);
+    check(`CONTROL: the scan ${shouldTrip ? 'CATCHES' : 'ignores'} ${what}`,
+      (got.length > 0) === shouldTrip, got);
+  };
+  control('a plain call', "import { roomIdFor } from './shoalRoom';\nawait roomIdFor('main', 1);", true);
+  control('an ALIASED import (round 1 walked past this)',
+    "import { roomIdFor as r } from './shoalRoom';\nawait r('main', 1);", true);
+  control('an aliased TYPE-ONLY-looking import',
+    "import { type RoomText, roomTextFor as t } from './shoalRoom';\nt('main', 1);", true);
+  control('a namespace import', "import * as R from '../lib/shoalRoom';\nR.roomIdFor('main', 1);", true);
+  control('a call reached through a re-export, with no shoalRoom import at all',
+    "import { helper } from './elsewhere';\nawait roomIdFor('main', 1);", true);
+  control('a legitimate import of the room FETCH path',
+    "import { fetchRooms, roomPreimage, ROOM_TITLE } from './shoalRoom';\nfetchRooms(a, b);", false);
+  control('the name inside a comment or a doc block',
+    "/** roomIdFor(water, epoch) is the primitive. */\n// see roomTextFor(\nconst x = 1;", false);
+
+  // --- the repo ------------------------------------------------------------
+  // RECURSIVE. Round 1's `readdirSync` was flat, so a file one directory down
+  // was never opened — which is walk-around 3, and it needed no cleverness at
+  // all, just a folder.
+  const walk = (dir: string, out: string[]): string[] => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        walk(full, out);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts') && !entry.name.endsWith('.tsx')) continue;
+      if (entry.name.endsWith('.test.ts')) continue;  // tests may call the primitive
+      if (entry.name === 'water.ts') continue;        // the one legal caller
+      if (entry.name === 'shoalRoom.ts') continue;    // where it is defined
+      out.push(full);
+    }
+    return out;
+  };
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const files = [
+    ...walk(join(here, '..'), []),                    // all of src/, at any depth
+    ...walk(join(here, '..', '..', 'scripts'), []),
+  ];
   check('NON-DEGENERACY: the scan found the real source tree',
-    files.length > 25 && files.some((f) => f.endsWith('chainSea.ts')), files.length);
+    files.length > 25 && files.some((f) => f.replace(/\\/g, '/').endsWith('ui/chainSea.ts')),
+    files.length);
+  check('NON-DEGENERACY: ...and it descends, so a subdirectory cannot hide in it',
+    walk(join(here, '..'), []).length > readdirSync(join(here, '..', 'ui')).length,
+    { walked: walk(join(here, '..'), []).length });
 
   const offenders: string[] = [];
   for (const f of files) {
-    const text = readFileSync(f, 'utf8');
-    // Calls only. A mention inside a comment or a doc block is how this
-    // codebase explains itself and must not fail a scan.
-    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
-    if (/\broomIdFor\s*\(|\broomTextFor\s*\(|\broomIdAtMs\s*\(|\broomTextAtMs\s*\(/.test(code)) {
-      offenders.push(f.slice(f.lastIndexOf('\\') + 1).replace(/^.*\//, ''));
-    }
+    const found = offendersIn(readFileSync(f, 'utf8'));
+    if (found.length > 0) offenders.push(`${f.replace(/\\/g, '/').split('/').slice(-2).join('/')}: ${found.join('; ')}`);
   }
-  check('no module but `water.ts` derives a room from a bare name', offenders.length === 0,
-    offenders);
+  check('no module but `water.ts` derives a room from a bare name — by import, by alias, '
+    + 'by namespace or by call', offenders.length === 0, offenders);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -103,14 +103,55 @@ export const WATER_APP = 'shoal';
 const APP_CLASS_BYTE = 0x05;
 
 /**
+ * The phantom property that makes `Water` NOMINAL rather than structural.
+ *
+ * ## WHY A BRAND, AFTER A SOURCE SCAN WAS ALREADY IN PLACE
+ *
+ * The review of the first round walked around the binding three ways with the
+ * suite staying green, and the first was the one that matters: **a hand-built
+ * object type-checked.** `Water` was a plain interface, so
+ * `{ name: 'main', app: 'shoal', spaceName: '@shoal:main', spaceId: someOtherId }`
+ * satisfied it — a water whose name and space have nothing to do with each
+ * other, accepted everywhere, deriving rooms nobody else derives, with no
+ * symptom. Every argument in this module's header was true and none of it was
+ * ENFORCED.
+ *
+ * `unique symbol` is what fixes that. The key is a `declare const`, so it has
+ * no runtime value and cannot be written by anyone — including this file, which
+ * is why `waterNamed` ends in the one type assertion in this module. The symbol
+ * is not exported, so no other module can even name the key. An object literal
+ * of the right shape is therefore a compile ERROR at every call site, which is
+ * strictly stronger than any check that runs later:
+ *
+ *     const w: Water = { name: 'main', app: 'shoal', spaceName: '@shoal:main',
+ *                        spaceId: 'sp1…' };
+ *     //    ~ Property '[waterBrand]' is missing
+ *
+ * ## WHAT THE BRAND COSTS, AND THE ONE HOLE IT DOES NOT CLOSE
+ *
+ * It costs nothing at runtime: the property does not exist, so `Object.keys`,
+ * `JSON.stringify` and structural equality are all unaffected.
+ *
+ * The hole it leaves is SPREADING an existing water — `{ ...realWater, name:
+ * 'smoke' }` keeps the brand and still type-checks. That is narrower than what
+ * it closes (you must already hold a genuine `Water`, which means you called
+ * `waterNamed`), and it is not free to close: making the type opaque enough to
+ * survive a spread would mean hiding the fields, and `name`/`spaceId` are read
+ * by half a dozen legitimate callers. It is called out here rather than papered
+ * over, and `water.test.ts` §1 pins the shape of what is and is not possible.
+ */
+declare const waterBrand: unique symbol;
+
+/**
  * A named body of water and everything that name determines: the space every
  * write goes into, and (through `roomIdIn`) the room for any hour.
  *
- * PRODUCED ONLY BY `waterNamed`. Building one by hand — `{ name: 'main',
- * spaceId: someOtherId }` — is the exact defect this type exists to remove, so
- * do not; nothing in this client does.
+ * PRODUCED ONLY BY `waterNamed`, and now that is enforced by the type rather
+ * than asked for in a comment — see `waterBrand` above.
  */
 export interface Water {
+  /** The phantom brand. Not present at runtime; see `waterBrand`. */
+  readonly [waterBrand]: true;
   /** The DISPLAY name (`main`), never the marker form (`@shoal:main`). */
   readonly name: string;
   /** The app namespace, always `WATER_APP`. Carried so a caller printing a
@@ -165,12 +206,17 @@ export async function waterNamed(name: string): Promise<Water> {
   id16[0] = APP_CLASS_BYTE;
   id16.set(digest.subarray(0, 15), 1); // apply_class: class byte + hash[..15]
 
+  // THE ONE TYPE ASSERTION IN THIS MODULE, and the reason the brand works:
+  // `waterBrand` is a `declare const`, so the key cannot be written by anybody
+  // — not even here. Every field is derived from `name` on the four lines
+  // above, so this cast is asserting nothing about the VALUES, only that this
+  // is the one function allowed to produce the type.
   return {
     name,
     app: WATER_APP,
     spaceName: `@${WATER_APP}:${name}`,
     spaceId: encodeWireSpaceId(id16),
-  };
+  } as Water;
 }
 
 // ===================================================================================

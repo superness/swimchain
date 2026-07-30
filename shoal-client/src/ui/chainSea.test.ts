@@ -40,7 +40,7 @@
  */
 import { createHash } from 'node:crypto';
 
-import { chainSea, type ChainSea } from './chainSea';
+import { chainSea, DEFAULT_POLL_INTERVAL_MS, type ChainSea } from './chainSea';
 import { wildSeedFrom } from './demoSea';
 import { afterWrite, AT_THE_EDGE, OPEN_WATER, type Standing } from './wayIn';
 import type { SendFailure } from '../lib/shoalSend';
@@ -132,6 +132,15 @@ interface Stub {
   replies: NodeReply[];
   /** When true, `submit_reply` answers with a JSON-RPC error. */
   rejectSubmit: boolean;
+  /** How long `get_replies` takes to answer. 0 = immediately. Used to hold a
+   *  read in flight while another is asked for. */
+  repliesDelayMs: number;
+  /** How long `submit_post` takes to answer. */
+  mintDelayMs: number;
+  /** `Date.now()` when each `submit_reply` and each `submit_post` ANSWERED —
+   *  so a check can ask which finished first rather than only that both did. */
+  submitDoneAtMs: number[];
+  mintDoneAtMs: number[];
   /** When true, `submit_post` answers with a JSON-RPC error — the shape a
    *  node takes when this identity is not sponsored, or when the space is
    *  not one it will accept a post into. */
@@ -147,8 +156,14 @@ interface Stub {
    *  the room it went into — the latter is what plan 4d Task 2's decision 2 is
    *  asserted on. */
   submitted: { body: string; author: string; parent: string }[];
-  /** Every room post the sea MINTED (`submit_post`), in order. */
+  /** Every room post the sea MINTED (`submit_post`), in order. Successes only —
+   *  a `rejectMint` run pushes nothing here. */
   minted: { title: string; body: string; space: string }[];
+  /** Every `submit_post` ATTEMPT's body, in order, refused or not. Counted per
+   *  HOUR rather than in total: the ahead-mint for `epoch + 1` is chained
+   *  behind the current hour's and lands whenever it lands, so a total is a
+   *  race and a per-hour count is not. */
+  mintAttempts: string[];
   /** Every `content_id` `get_replies` was asked for, in order. The crossing is
    *  visible here: a fold of epoch E asks for E-1's room and E's, every time. */
   roomsRead: string[];
@@ -159,7 +174,7 @@ interface Stub {
    * never coming back.
    */
   landSubmissions: boolean;
-  calls: { getReplies: number; submit: number; submitPost: number; getInfo: number };
+  calls: { getReplies: number; repliesDone: number; submit: number; submitPost: number; getInfo: number };
 }
 
 function installStub(): { stub: Stub; restore: () => void } {
@@ -171,12 +186,17 @@ function installStub(): { stub: Stub; restore: () => void } {
     replies: [],
     rejectSubmit: false,
     rejectMint: false,
+    repliesDelayMs: 0,
+    mintDelayMs: 0,
+    submitDoneAtMs: [],
+    mintDoneAtMs: [],
     submitErrorCode: -32_000,
     submitted: [],
     minted: [],
+    mintAttempts: [],
     roomsRead: [],
     landSubmissions: false,
-    calls: { getReplies: 0, submit: 0, submitPost: 0, getInfo: 0 },
+    calls: { getReplies: 0, repliesDone: 0, submit: 0, submitPost: 0, getInfo: 0 },
   };
 
   const json = (body: unknown) => ({
@@ -201,11 +221,15 @@ function installStub(): { stub: Stub; restore: () => void } {
     }
     if (req.method === 'get_replies') {
       stub.calls.getReplies++;
+      if (stub.repliesDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, stub.repliesDelayMs));
+      }
       // FILTERED BY PARENT, the way the node's own parent index is. A stub that
       // handed every room the whole list would make the crossing tests pass for
       // a client that read one room, which is the mutation they exist to catch.
       const parent = req.params?.content_id ?? '';
       stub.roomsRead.push(parent);
+      stub.calls.repliesDone++;
       const mine = stub.replies.filter((r) => r.parent_id === parent);
       return json({
         jsonrpc: '2.0',
@@ -215,6 +239,11 @@ function installStub(): { stub: Stub; restore: () => void } {
     }
     if (req.method === 'submit_post') {
       stub.calls.submitPost++;
+      stub.mintAttempts.push(req.params?.body ?? '');
+      if (stub.mintDelayMs > 0) {
+        await new Promise((r) => setTimeout(r, stub.mintDelayMs));
+      }
+      stub.mintDoneAtMs.push(Date.now());
       if (stub.rejectMint) {
         return json({
           jsonrpc: '2.0', id: req.id,
@@ -255,6 +284,7 @@ function installStub(): { stub: Stub; restore: () => void } {
       const author = req.params?.author_id ?? '';
       const parent = req.params?.parent_id ?? '';
       stub.submitted.push({ body, author, parent });
+      stub.submitDoneAtMs.push(Date.now());
       // A distinct id per accepted write, the way a real node derives one from
       // the body. `landSubmissions` decides whether the room then serves it.
       const contentId = `sha256:${(0xf000 + stub.submitted.length).toString(16).padStart(64, '0')}`;
@@ -532,7 +562,7 @@ async function anUnansweredRowExpires(): Promise<void> {
 //   'b' (98):  ^ 98         =   35950555 (0x02248fdb)
 //              * 16777619 mod 2^32 =  982414785 (0x3a8e75c1)
 //   & 0x7fffffff (already positive, high bit clear) = 982414785
-function wildSeedFromIsPinnedAndAgreesAcrossShells(): void {
+async function wildSeedFromIsPinnedAndAgreesAcrossShells(): Promise<void> {
   check('hand-derived: wildSeedFrom("a", "b") = 982414785',
     wildSeedFrom('a', 'b') === 982414785, wildSeedFrom('a', 'b'));
   check('the same key derives the same seed every time',
@@ -559,10 +589,14 @@ function wildSeedFromIsPinnedAndAgreesAcrossShells(): void {
   check('NON-DEGENERACY: seeding from the hour\'s own room WOULD have re-rolled it',
     new Set([PREV_ROOM, ROOM, NEXT_ROOM].map((r) => wildSeedFrom(SPACE, r))).size === 3,
     [PREV_ROOM, ROOM, NEXT_ROOM].map((r) => wildSeedFrom(SPACE, r)));
-  // And two waters are still two seas (open item 13).
+  // And two waters are still two seas (open item 13). Built through
+  // `waterNamed` rather than by spreading this one and swapping the name: a
+  // spread keeps the brand and would type-check, and a water whose name and
+  // space disagree is the exact object the brand exists to forbid — not
+  // something a test should be modelling even where it happens to be harmless.
   check('a different water is a different wild shoal',
     wildSeedFrom(SPACE, roomFamilyKey(WATER))
-      !== wildSeedFrom(SPACE, roomFamilyKey({ ...WATER, name: 'smoke' })));
+      !== wildSeedFrom(SPACE, roomFamilyKey(await waterNamed('smoke'))));
   check('the seed is always non-negative (the high bit is always cleared)',
     wildSeedFrom('a', 'b') >= 0 && wildSeedFrom(SPACE, ROOM) >= 0 && wildSeedFrom('', '') >= 0,
     { ab: wildSeedFrom('a', 'b'), room: wildSeedFrom(SPACE, ROOM), empty: wildSeedFrom('', '') });
@@ -1155,9 +1189,30 @@ const CROSSING_SEED: Checkpoint = {
   recent: [],
 };
 
+/**
+ * A swimmer who wrote ONLY below the admit floor — the half of the union proof
+ * §9b would otherwise leave untested.
+ *
+ * The proof has two halves: `E_N ⊆ union` (§9c proves that, by deleting the
+ * previous room and watching the fold change) and `union \ E_N` is exactly the
+ * below-floor entries, WHICH THE FOLD PROVABLY CANNOT SEE. Round 1's fixture
+ * held nothing outside the two rooms' useful window, so the second half was
+ * asserted nowhere and mutating `admitFloorMs` left §9b green.
+ *
+ * GHOST fixes that: it is in the union, it is in the previous hour's room, and
+ * it must make no difference at all. 64 lowercase hex, sorting after both other
+ * swimmers so no ordering is disturbed if it ever DOES appear.
+ */
+const GHOST = 'c3'.repeat(32);
+/** GHOST's one presence: 5 minutes before the hour, comfortably below
+ *  `admitFloorMs(EPOCH)` (which is 180 s before it). Asserted, not assumed. */
+const GHOST_MS = EPOCH_START - 300_000;
+
 /** Every reply in the crossing fixture, each in the room of its own hour. */
 function crossingReplies(): NodeReply[] {
   return [
+    // BELOW THE ADMIT FLOOR — in the union, invisible to the fold. See GHOST.
+    landedBy(30, GHOST, encodePresence(vecAtOn(GHOST_MS, CENTRE_F), GHOST), 0, PREV_ROOM),
     // --- epoch E-1, in the CLOSING hour's room ---------------------------
     landedBy(31, ID, encodePresence(vecAtOn(EPOCH_START - 100_000, CENTRE), ID), 0, PREV_ROOM),
     landedBy(32, OTHER, encodePresence(vecAtOn(EPOCH_START - 100_000, CENTRE_F), OTHER), 0, PREV_ROOM),
@@ -1192,6 +1247,19 @@ function theCrossingFixtureGeometryIsWhatItAssumes(): void {
     && EPOCH_START - 100_000 >= admitFloorMs(EPOCH)
     && epochOf(EPOCH_START - 100_000) === EPOCH - 1,
     { warmStart: epochWarmStartMs(EPOCH), floor: admitFloorMs(EPOCH) });
+
+  // ...AND THE OTHER HALF OF THE PROOF HAS A SUBJECT. GHOST is BELOW the floor,
+  // in the previous hour's room, and therefore part of the union a client
+  // fetches and no part of what the fold can see. Round 1 had no such entry, so
+  // "the union outside E_N is exactly the below-floor entries" was asserted
+  // nowhere.
+  check('GHOST is genuinely below the admit floor, and in the previous hour\'s room',
+    GHOST_MS < admitFloorMs(EPOCH) && epochOf(GHOST_MS) === EPOCH - 1,
+    { GHOST_MS, floor: admitFloorMs(EPOCH) });
+  check('...and it is really in the union a client fetches, not merely declared',
+    crossingReplies().some((r) => r.parent_id === PREV_ROOM && r.author_id === GHOST)
+    && repliesToLog(crossingReplies()).some((e) => e.id === GHOST && e.ms === GHOST_MS),
+    crossingReplies().filter((r) => r.author_id === GHOST).length);
 }
 
 /**
@@ -1280,6 +1348,42 @@ async function theUnionIsThePreChangeFold(): Promise<void> {
     check('THE UNION IS THE OLD LOG: two rooms fold byte-for-byte to what one room did',
       fingerprint(union) === fingerprint(before),
       { union: fingerprint(union), before: fingerprint(before) });
+
+    // ── THE OTHER HALF OF THE PROOF: `union \ E_N` is exactly the below-floor
+    // entries, and the fold provably cannot see them.
+    //
+    // The equality above cannot test this on its own — both sides apply the
+    // same floor, so moving the floor moves both and the comparison stays
+    // green. That is the coverage gap round 1's review found, and these three
+    // checks are the fix. They are ABSOLUTE assertions about the fold rather
+    // than comparisons of two things that travel together, so a floor that
+    // moved by one tick in either direction fails them.
+    const withoutGhost = crossingReplies().filter((r) => r.author_id !== GHOST);
+    check('a below-floor entry makes NO difference: dropping GHOST changes nothing',
+      fingerprint(foldShoal(repliesToLog(withoutGhost), JUST_AFTER,
+        { epoch: EPOCH, seed: CROSSING_SEED })) === fingerprint(before),
+      { withGhost: fingerprint(before).slice(0, 120) });
+    check('...and GHOST is nowhere in the folded world, neither live nor departed',
+      !union.fish.has(GHOST) && !union.departed.has(GHOST) && !union.outsideTicks.has(GHOST),
+      { fish: [...union.fish.keys()], departed: [...union.departed.keys()] });
+
+    // THE FLOOR IS EXACT, NOT CONSERVATIVE (shoalLoop.ts section 3), and this
+    // is the check that dies if it moves. An entry AT the floor expires on the
+    // first warm-up tick — `foldTick` evicts on `t > expiresMs`, so it is alive
+    // for that tick, leaves a `departed` row and DOES change the fold. One
+    // millisecond below it, nothing changes. Both directions, one swimmer, so
+    // neither is satisfied by an unrelated difference.
+    const ghostAt = (ms: number): NodeReply[] => [
+      ...withoutGhost,
+      landedBy(46, GHOST, encodePresence(vecAtOn(ms, CENTRE_F), GHOST), 0, PREV_ROOM),
+    ];
+    const foldOf = (rs: NodeReply[]) => fingerprint(
+      foldShoal(repliesToLog(rs), JUST_AFTER, { epoch: EPOCH, seed: CROSSING_SEED }));
+    const baseline = foldOf(withoutGhost);
+    check('AT the admit floor, an entry DOES change the fold — the floor is exact',
+      foldOf(ghostAt(admitFloorMs(EPOCH))) !== baseline, admitFloorMs(EPOCH));
+    check('...and one millisecond below it, nothing changes',
+      foldOf(ghostAt(admitFloorMs(EPOCH) - 1)) === baseline, admitFloorMs(EPOCH) - 1);
 
     // ...and at 00:05 as well, where the warm-up is long past but the floor has
     // not moved, so the previous room is still load-bearing.
@@ -1598,26 +1702,137 @@ async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
     stub.replies = crossingReplies();
     sea = makeSea(undefined, undefined, JUST_AFTER);
     await until(() => stub.calls.getReplies >= 2, 'both rooms');
-    const postsAfterOpen = stub.calls.submitPost;
-    check('NON-DEGENERACY: opening the sea did attempt a mint', postsAfterOpen >= 1, postsAfterOpen);
+    // COUNTED FOR THIS HOUR ONLY. A total over every `submit_post` races the
+    // AHEAD-mint: `noteEpoch` chains `ensureRoom(epoch + 1)` behind
+    // `ensureRoom(epoch)`, so the second attempt lands at some point after the
+    // first and has nothing to do with the four writes below, all of which are
+    // authored in `epoch`. Counting the total made this test flaky and, worse,
+    // made it flaky for a reason that was not the behaviour under test.
+    const thisHour = `room:shoal:v1:main:${EPOCH}`;
+    const attemptsForThisHour = () => stub.mintAttempts.filter((b) => b === thisHour).length;
+    const attemptsAfterOpen = attemptsForThisHour();
+    check('NON-DEGENERACY: opening the sea did attempt a mint for this hour',
+      attemptsAfterOpen === 1, stub.mintAttempts);
 
     // Four writes inside the cooldown. None of them may mine another Post.
     for (let i = 1; i <= 4; i++) {
       sea.publish(vecAtOn(JUST_AFTER + i * 1_000, CENTRE));
       await until(() => stub.calls.submit >= i, `write ${i}`);
     }
-    check('four writes inside the cooldown mined no further room posts',
-      stub.calls.submitPost === postsAfterOpen,
-      { before: postsAfterOpen, after: stub.calls.submitPost });
+    check('four writes inside the cooldown mined no further room posts for this hour',
+      attemptsForThisHour() === attemptsAfterOpen,
+      { before: attemptsAfterOpen, after: attemptsForThisHour(), all: stub.mintAttempts });
     check('...while every one of the four writes still went out',
       stub.calls.submit >= 4, stub.calls.submit);
 
     // And past the cooldown it tries again — a transient failure must not lock
     // an hour out for the life of the window.
     sea.publish(vecAtOn(JUST_AFTER + MINT_RETRY_MS + 1_000, CENTRE));
-    await until(() => stub.calls.submitPost > postsAfterOpen, 'the retry past the cooldown');
-    check('a write past the cooldown DOES try to mint again', stub.calls.submitPost > postsAfterOpen,
-      { before: postsAfterOpen, after: stub.calls.submitPost });
+    const retried = await until(() => attemptsForThisHour() > attemptsAfterOpen,
+      'the retry past the cooldown', 10_000).then(() => true).catch(() => false);
+    check('a write past the cooldown DOES try to mint again', retried,
+      { before: attemptsAfterOpen, after: attemptsForThisHour() });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aRolloverReadIsNotDroppedByAReadInFlight(): Promise<void> {
+  console.log('\n9j. a read fired at the rollover is not lost to one already in flight');
+  // `inFlight` used to DROP a concurrent `refetch` rather than queue it, and
+  // there is exactly one moment where that matters: `noteEpoch` fires a read the
+  // instant the pair of rooms changes, and if a read was already in the air that
+  // call vanished. The client then went on holding the OLD pair — up to
+  // RECHECK_MS, and in the worst case a whole DEFAULT_POLL_INTERVAL_MS — while
+  // every write from that moment on was landing in a room it was not reading.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = boundaryRoom();
+    // Hold the constructor's read in the air for a third of a second.
+    stub.repliesDelayMs = 300;
+    sea = makeSea(undefined, undefined, EPOCH_START);
+    // Wait only for the constructor's read to be ISSUED — the room ids are a
+    // sha256 away, so it does not leave synchronously — and no longer, so the
+    // 300 ms hold is still in force when the pair changes below.
+    await until(() => stub.calls.getReplies >= 2, 'the first pair to be asked for', 2_000);
+    check('NON-DEGENERACY: the first read really was still IN FLIGHT — asked for, unanswered',
+      stub.calls.getReplies >= 2 && stub.calls.repliesDone === 0
+      && !stub.roomsRead.includes(NEXT_ROOM),
+      { asked: stub.calls.getReplies, answered: stub.calls.repliesDone });
+
+    // Jump to an instant in the NEXT epoch, which changes the pair from
+    // (E-1, E) to (E, E+1) — the read `noteEpoch` fires here is the one round 1
+    // dropped.
+    sea.step(TARGET);
+
+    // Nothing else can rescue this: no roll happened (the loop was created
+    // directly in epoch E+1), so no checkpoint is published, and the poll
+    // heartbeat is DEFAULT_POLL_INTERVAL_MS away.
+    const sawNewPair = await until(() => stub.roomsRead.includes(NEXT_ROOM),
+      'the new pair to be read', 3_000).then(() => true).catch(() => false);
+    check('the new pair IS read, without waiting for a poll or an event',
+      sawNewPair, stub.roomsRead.map((r) => r.slice(7, 15)));
+    check('...and both of its rooms were asked for',
+      stub.roomsRead.includes(ROOM) && stub.roomsRead.includes(NEXT_ROOM),
+      stub.roomsRead.map((r) => r.slice(7, 15)));
+    check('...well inside the poll heartbeat that would otherwise have rescued it',
+      DEFAULT_POLL_INTERVAL_MS > 3_000, DEFAULT_POLL_INTERVAL_MS);
+
+    // NON-DEGENERACY the other way: coalescing is a FLAG, not a counter. Ten
+    // calls arriving mid-flight must cost one extra fetch, not ten — the fetch
+    // storm `inFlight` exists to prevent is still prevented.
+    const roundsBefore = stub.calls.getReplies;
+    stub.repliesDelayMs = 200;
+    for (let i = 0; i < 10; i++) sea.step(TARGET + i);
+    await new Promise((r) => setTimeout(r, 700));
+    check('NON-DEGENERACY: ten reads asked for at once cost at most one extra round',
+      stub.calls.getReplies - roundsBefore <= 4,
+      { before: roundsBefore, after: stub.calls.getReplies });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function theFirstWriteDoesNotQueueBehindItsOwnMint(): Promise<void> {
+  console.log('\n9k. a newcomer\'s first write does not wait on its own redundant Post mine');
+  // `noteEpoch` fires the mint at construction and the first vector is authored
+  // on the first frame ~16 ms later, so awaiting the mint put a whole Argon2id
+  // `Post` in front of the write that matters most — measured at ~6.5 s median
+  // at the mainnet profile (base difficulty 20 against a Reply's 18). In the
+  // ordinary case that mine is pure redundancy: a peer minted the hour an hour
+  // ago, because everybody ahead-mints.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = crossingReplies();
+    // A slow mine, and a fast reply — the shape the measurement describes.
+    stub.mintDelayMs = 600;
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    const openedAt = Date.now();
+    sea.publish(vecAtOn(JUST_AFTER, CENTRE));
+
+    const wrote = await until(() => stub.submitted.length >= 1, 'the first write', 5_000)
+      .then(() => true).catch(() => false);
+    check('the first write reached the node', wrote, stub.submitted.length);
+    check('...into the hour\'s derived room, which is known without minting anything',
+      stub.submitted[0]?.parent === ROOM, stub.submitted[0]?.parent);
+    check('THE FIRST WRITE DID NOT WAIT FOR THE MINE: it answered BEFORE the mint did',
+      stub.submitDoneAtMs[0] !== undefined
+      && (stub.mintDoneAtMs[0] === undefined || stub.submitDoneAtMs[0] < stub.mintDoneAtMs[0]),
+      { write: stub.submitDoneAtMs[0] - openedAt, mint: (stub.mintDoneAtMs[0] ?? -1) - openedAt });
+    check('...by a margin the mine itself explains', stub.submitDoneAtMs[0] - openedAt < 600,
+      stub.submitDoneAtMs[0] - openedAt);
+
+    // NON-DEGENERACY: the mint really is slow and really does happen — without
+    // this the check above would pass for a client that had stopped minting.
+    const minted = await until(() => stub.minted.length >= 1, 'the mint to land', 5_000)
+      .then(() => true).catch(() => false);
+    check('NON-DEGENERACY: the mint really was in flight and really did land, later',
+      minted && stub.mintDoneAtMs[0] - openedAt >= 600,
+      { mint: (stub.mintDoneAtMs[0] ?? -1) - openedAt });
   } finally {
     sea?.stop();
     restore();
@@ -1625,7 +1840,7 @@ async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  wildSeedFromIsPinnedAndAgreesAcrossShells();
+  await wildSeedFromIsPinnedAndAgreesAcrossShells();
   await landedEatMustNotRetireAPendingVector();
   await landedVectorMustNotRetireAPendingEat();
   await aRejectedWriteIsRolledBack();
@@ -1648,6 +1863,8 @@ async function main(): Promise<void> {
   await theCheckpointGoesIntoTheOpeningRoom();
   await aFailedMintDoesNotSwallowTheWrite();
   await aRefusedMintIsNotRetriedOnEveryWrite();
+  await aRolloverReadIsNotDroppedByAReadInFlight();
+  await theFirstWriteDoesNotQueueBehindItsOwnMint();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

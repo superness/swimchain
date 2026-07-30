@@ -31,6 +31,7 @@ import { encodeWireSpaceId } from './shoalRpc';
 import { roomPreimage } from './shoalRoom';
 import {
   WATER_APP, assertWaterName, roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, waterNamed,
+  type Water,
 } from './water';
 
 let failures = 0;
@@ -58,6 +59,37 @@ function handSpaceId(app: string, name: string): string {
   console.log('\n1. a water is one name, and everything it determines');
 
   const main = await waterNamed('main');
+
+  // ── THE BRAND, PINNED AS A COMPILE ERROR ────────────────────────────────
+  //
+  // This is a TYPE-LEVEL test and it runs as part of `npm test`, because that
+  // script is `tsc --noEmit` twice before it is `tsx` anything. The
+  // `@ts-expect-error` directive asserts that the line below DOES NOT COMPILE:
+  // if the brand is removed from `Water`, the line starts compiling and tsc
+  // fails with "Unused '@ts-expect-error' directive". So the check cannot pass
+  // vacuously — it fails in both directions.
+  //
+  // What it forbids is the exact object round 1's review built and got past the
+  // suite: a water whose `name` and `spaceId` have nothing to do with each
+  // other. Note the `spaceId` here is `smoke`'s, under the name `main` — a
+  // client holding this would derive `main`'s rooms and write them into
+  // `smoke`'s space, be accepted, read back, and share the sea with nobody.
+  {
+    const elsewhere = await waterNamed('smoke');
+    // @ts-expect-error a hand-built Water is a compile error — `waterBrand` is
+    // a `declare const unique symbol` that no module outside water.ts can name.
+    const forged: Water = {
+      name: 'main', app: 'shoal', spaceName: '@shoal:main', spaceId: elsewhere.spaceId,
+    };
+    check('COMPILE-TIME: a hand-built `Water` does not type-check (see the directive above)',
+      // Reading a field keeps `noUnusedLocals` quiet; the assertion is the
+      // directive, not this expression.
+      typeof forged.spaceId === 'string');
+    // ...and the honest way round costs one call and cannot be wrong.
+    const real = await waterNamed('main');
+    check('...while the one legal constructor produces one that does',
+      real.name === 'main' && real.spaceId !== elsewhere.spaceId, real.spaceId);
+  }
 
   check('the display name is carried as given', main.name === 'main', main.name);
   check('the app namespace is the frozen `shoal`',

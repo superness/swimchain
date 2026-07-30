@@ -7,11 +7,8 @@
  * something to show each other. It asserts nothing and is not a test — it is
  * the hand on the tiller for a screenshot.
  *
- * Run the smoke FIRST. It creates the space and the room, sponsors both
- * identities on both nodes, and prints the two windows' URLs; this script
- * assumes all of that already exists and refuses to create any of it, so a
- * capture can never quietly be of a different room than the one that was
- * proven.
+ * Run the smoke FIRST. It creates the SPACE and sponsors both identities on
+ * both nodes, and prints the two windows' URLs; this script creates neither.
  *
  *   # after `npm run smoke:two` has passed, and with `npm run dev` running
  *   SHOAL_RPC_A=http://127.0.0.1:29736 \
@@ -20,6 +17,21 @@
  *   SHOAL_COOKIE_B=/tmp/shoal-b-regtest/.cookie \
  *   SHOAL_DRIVE_MS=120000 \
  *   npm run drive:two
+ *
+ * ## `SHOAL_SPACE`/`SHOAL_ROOM` ARE GONE, AND THIS SCRIPT ROTATES
+ *
+ * It used to take a space id and a room id out of the URLs the smoke printed.
+ * Both are wrong now and the script was BROKEN rather than merely stale: the
+ * smoke prints `&water=` and neither of the other two, so the recipe named
+ * variables nothing produced, and a room id fixed at launch would have stopped
+ * being the room within the hour anyway.
+ *
+ * So it takes `SHOAL_WATER` (a display name, default `two`) and does exactly
+ * what the shipped client does: `waterNamed` derives the space, and every write
+ * goes to `roomIdIn(water, epochOf(authorMs))` — the room of the hour the
+ * vector was AUTHORED in. It mints the hour it needs and the next one, like
+ * every client. A capture taken across a boundary therefore shows the rotation
+ * working rather than the driver falling silent at the top of the hour.
  *
  * ## Why a driver at all, rather than steering the windows by hand
  *
@@ -46,8 +58,12 @@ import { readFileSync } from 'node:fs';
 import { createHash, createPrivateKey, createPublicKey, sign as edSign } from 'node:crypto';
 
 import type { RpcAuth } from '../src/lib/shoalRpc';
-import { powProfileFor, sendPresence, type SendCtx, type SignFn } from '../src/lib/shoalSend';
+import {
+  mintRoom, powProfileFor, sendPresence, type SendCtx, type SignFn,
+} from '../src/lib/shoalSend';
 import { shouldEmit } from '../src/lib/shoalEmit';
+import { roomIdIn, roomTextIn, waterNamed } from '../src/lib/water';
+import { epochOf } from '../src/lib/epoch';
 import { HEADING_STEPS, SPEED_CRUISE, TICK_MS, WORLD_H, WORLD_W } from '../src/lib/shoalConst';
 import type { Vec } from '../src/lib/shoalTypes';
 
@@ -76,8 +92,9 @@ function player(label: string): { publicKeyHex: string; sign: SignFn } {
   };
 }
 
-const SPACE_ID = (process.env.SHOAL_SPACE ?? '').trim();
-const ROOM_ID = (process.env.SHOAL_ROOM ?? '').trim();
+/** The water to swim in, by DISPLAY name — never the `@shoal:` marker form,
+ *  which `assertWaterName` refuses. `two` is what `smoke:two` mints. */
+const WATER_NAME = (process.env.SHOAL_WATER ?? 'two').trim();
 
 /**
  * The two swimmers circle a shared centre in opposite directions, at
@@ -93,7 +110,10 @@ const ROOM_ID = (process.env.SHOAL_ROOM ?? '').trim();
  */
 interface Swimmer {
   readonly label: string;
-  readonly ctx: SendCtx;
+  /** Everything but the room: the room depends on WHEN each vector is
+   *  authored, so it is chosen per write (`roomAt`) exactly as `chainSea`
+   *  chooses it. */
+  readonly ctx: Omit<SendCtx, 'roomContentId'>;
   readonly centre: { x: number; y: number };
   readonly radius: number;
   readonly rate: number;
@@ -123,10 +143,7 @@ function intentAt(s: Swimmer, atMs: number): Vec {
 const WORDS = ['hello', 'over here', 'still swimming', 'two nodes', 'one sea'];
 
 async function main(): Promise<void> {
-  if (!SPACE_ID || !ROOM_ID) {
-    throw new Error('two-client-drive requires SHOAL_SPACE and SHOAL_ROOM — take them from '
-      + 'the URLs `npm run smoke:two` prints, so the capture is provably of the room the smoke proved');
-  }
+  const water = await waterNamed(WATER_NAME);
   const authA = authFrom('SHOAL_RPC_A', 'SHOAL_COOKIE_A');
   const authB = authFrom('SHOAL_RPC_B', 'SHOAL_COOKIE_B');
   const alice = player('alice');
@@ -137,7 +154,7 @@ async function main(): Promise<void> {
     {
       label: 'alice@A',
       ctx: {
-        auth: authA, spaceId: SPACE_ID, roomContentId: ROOM_ID,
+        auth: authA, spaceId: water.spaceId,
         authorIdHex: alice.publicKeyHex, sign: alice.sign, powProfile: await powProfileFor(authA),
       },
       centre, radius: 200, rate: 0.22, phase: 0, last: null, lastEmitMs: 0, writes: 0,
@@ -145,7 +162,7 @@ async function main(): Promise<void> {
     {
       label: 'bob@B',
       ctx: {
-        auth: authB, spaceId: SPACE_ID, roomContentId: ROOM_ID,
+        auth: authB, spaceId: water.spaceId,
         authorIdHex: bob.publicKeyHex, sign: bob.sign, powProfile: await powProfileFor(authB),
       },
       centre, radius: 300, rate: -0.16, phase: Math.PI, last: null, lastEmitMs: 0, writes: 0,
@@ -155,7 +172,25 @@ async function main(): Promise<void> {
   const durationMs = Number(process.env.SHOAL_DRIVE_MS ?? 120_000);
   const until = Date.now() + durationMs;
   console.log(`[drive] swimming ${swimmers.map((s) => s.label).join(' and ')} for ${durationMs / 1000}s`);
-  console.log(`[drive] room ${ROOM_ID} in space ${SPACE_ID}`);
+  console.log(`[drive] water ${water.spaceName} -> space ${water.spaceId}`);
+
+  // Mint the hour being swum and the next one, on BOTH nodes, exactly as the
+  // client does — so a run that crosses the top of the hour keeps writing
+  // instead of piling up "Parent content not found".
+  const minted = new Set<string>();
+  const ensureRoom = async (s: Swimmer, epoch: number): Promise<void> => {
+    const key = `${s.ctx.auth.endpoint}|${epoch}`;
+    if (minted.has(key)) return;
+    minted.add(key);
+    try {
+      await mintRoom(s.ctx, roomTextIn(water, epoch), Date.now());
+    } catch (e) {
+      // Idempotent by design and usually redundant — a peer has minted it. The
+      // write below is attempted either way, which is what `chainSea` does.
+      console.error(`[drive] ${s.label} could not mint hour ${epoch}:`,
+        e instanceof Error ? e.message : e);
+    }
+  };
 
   while (Date.now() < until) {
     // Authored one tick ahead of the wall clock, exactly like App.tsx's frame
@@ -167,7 +202,14 @@ async function main(): Promise<void> {
       if (!shouldEmit(s.last, intent, s.lastEmitMs)) continue;
       const say = s.writes % 5 === 0 ? WORDS[(s.writes / 5) % WORDS.length] : undefined;
       try {
-        await sendPresence(s.ctx, intent, say);
+        // THE ROOM OF THE HOUR THIS VECTOR WAS AUTHORED IN — the same rule
+        // `chainSea.roomFor` follows, so a capture and the shipped client can
+        // never be writing into different rooms.
+        const epoch = epochOf(intent.t);
+        await ensureRoom(s, epoch);
+        void ensureRoom(s, epoch + 1); // ahead, so the boundary is not a stall
+        await sendPresence(
+          { ...s.ctx, roomContentId: await roomIdIn(water, epoch) }, intent, say);
         s.last = intent;
         s.lastEmitMs = intent.t;
         s.writes++;

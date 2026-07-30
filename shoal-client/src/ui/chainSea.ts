@@ -388,6 +388,9 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   let stopped = false;
   let serial = 0;
   let inFlight = false;
+  /** A `refetch` arrived while one was in flight. See `refetch` — this is
+   *  what stops a rollover's read being the one that gets dropped. */
+  let refetchQueued = false;
   const recheckTimers: ReturnType<typeof setTimeout>[] = [];
 
   /**
@@ -505,44 +508,48 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   }
 
   /**
-   * The room one write goes into, MINTED IF IT CAN BE AND NAMED EITHER WAY.
+   * The room one write goes into. **The mint is fired and never waited on.**
    *
-   * ## A FAILED MINT MUST NOT SWALLOW THE WRITE, and an earlier draft of this
-   * file let it — which was a real defect and worth writing down.
+   * The room id is DERIVED, so it is known before anything is minted, and the
+   * whole of `ensureRoom`'s value is making the post EXIST — not telling this
+   * function anything it did not already know. Three reasons the write does not
+   * wait on it, and the third is why this changed:
    *
-   * The room id is DERIVED, so it is known whether this client minted the post
-   * or not. Two things follow, and both were wrong when the write simply
-   * awaited `ensureRoom`:
-   *
-   *  - **A peer may already have minted it.** Everybody mints, so the ordinary
-   *    case for the second client into an hour is that the post is already
-   *    there and its own `submit_post` is redundant. Letting a failure of the
-   *    redundant call cancel the write would drop moves for a reason that does
-   *    not exist.
-   *  - **A player the water has REFUSED would stop knocking.** `submit_post`
+   *  - **A peer has almost certainly minted it already.** Everybody mints, and
+   *    everybody ahead-mints the next hour, so by the time an hour arrives its
+   *    room is usually an hour old. This client's own `submit_post` is then
+   *    pure redundancy, and waiting on redundancy is pure loss.
+   *  - **A player the water has REFUSED must go on knocking.** `submit_post`
    *    runs `check_identity_sponsored` exactly as `submit_reply` does
    *    (methods.rs:2204), so an unsponsored client's mint fails with the same
-   *    -32015 — and if that cancelled the write, `submit_reply` would never be
+   *    -32015. If that cancelled the write, `submit_reply` would never be
    *    reached, `onWrite` would never see a write's outcome, and the one signal
-   *    that can ever lift the edge of the water (`wayIn.ts`) would be gone.
-   *    That is the silent permanent lockout `seaChoice.chooseWater` exists to
-   *    prevent, reintroduced from a new direction.
+   *    that can ever lift the edge of the water (`wayIn.ts`) would be gone —
+   *    the silent permanent lockout `seaChoice.chooseWater` exists to prevent,
+   *    reintroduced from a new direction.
+   *  - **A NEWCOMER'S FIRST WRITE IS THE ONE THAT MATTERS MOST, and it was the
+   *    one being delayed.** `noteEpoch` fires the mint at construction and the
+   *    first vector is authored on the first frame ~16 ms later, so awaiting
+   *    the mint put a whole Argon2id `Post` in front of it — base difficulty 20
+   *    against a Reply's 18, four times the expected work, measured at roughly
+   *    6.5 s median at the mainnet profile. That is 6.5 s before anybody else
+   *    can see the new swimmer, and 6.5 s before the write that tells THEM they
+   *    are in the water.
    *
-   * So this reports a failed mint and hands back the derived room anyway. If
-   * the room really is not there, the write fails on its own with the node's
-   * own "Parent content not found" and is classified and reported like any
-   * other refusal — one honest error instead of two.
+   * WHAT IT COSTS, stated rather than hidden: for the one client that really is
+   * first into an hour nobody has minted, the first write races its own mint
+   * and can lose. The node answers "Parent content not found"
+   * (methods.rs:3204-3218), `classifySendFailure` puts that in the `'unknown'`
+   * bucket, `'unknown'` moves no standing in either direction (`wayIn.ts`), the
+   * optimistic row is withdrawn, and the next emit — at most `MAX_EMIT_GAP_MS`
+   * later, by which time the mint has long since landed — carries the same
+   * swimmer. One vector, in the rarest case, against 6.5 s for every joiner.
    */
   async function roomFor(base: BaseCtx, authoredMs: number): Promise<SendCtx> {
     const epoch = epochOf(authoredMs);
-    let room: string;
-    try {
-      room = await ensureRoom(epoch, authoredMs);
-    } catch (e) {
-      report('mintRoom', e);
-      room = await roomIdOf(epoch);
-    }
-    return { ...base, roomContentId: room };
+    // FIRED, NEVER AWAITED. See the doc above on why the write does not wait.
+    void ensureRoom(epoch, authoredMs).catch((e) => { report('mintRoom', e); });
+    return { ...base, roomContentId: await roomIdOf(epoch) };
   }
 
   /**
@@ -575,9 +582,35 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       .catch((e) => { report('mintRoomAhead', e); });
   }
 
+  /**
+   * Read the pair of rooms and fold what comes back into `remote`.
+   *
+   * ## ONE AT A TIME, BUT NOT AT THE COST OF LOSING ONE
+   *
+   * `inFlight` stops N concurrent polls becoming N concurrent fetches of a room
+   * that can hold tens of thousands of rows. It used to do that by DROPPING the
+   * extra calls, and that was wrong at exactly one moment: the rollover.
+   * `noteEpoch` fires a read the instant the pair of rooms changes, and if a
+   * read was already in the air that call vanished — so a client that had just
+   * crossed the hour went on holding the OLD pair until something else asked,
+   * up to `RECHECK_MS` later and in the worst case a whole
+   * `DEFAULT_POLL_INTERVAL_MS`. The new room is where every write from that
+   * moment on is landing, so the window is a window of not seeing anybody.
+   *
+   * So a call that arrives mid-flight is COALESCED rather than dropped: it sets
+   * a flag, and the in-flight read runs once more when it finishes. A flag and
+   * not a counter, so ten dropped calls cost one extra fetch and not ten — the
+   * fetch storm `inFlight` exists to prevent is still prevented.
+   *
+   * It cannot spin: the flag is cleared when the follow-up STARTS, so only
+   * calls that arrive during that follow-up can queue another, and a client
+   * that is not being asked to refetch stops after one.
+   */
   async function refetch(): Promise<void> {
-    if (stopped || inFlight || foldEpoch === null) return;
+    if (stopped || foldEpoch === null) return;
+    if (inFlight) { refetchQueued = true; return; }
     inFlight = true;
+    refetchQueued = false;
     try {
       const ids = await Promise.all(roomEpochsFor(foldEpoch).map(roomIdOf));
       const room = await fetchRooms(cfg.auth, ids);
@@ -599,6 +632,10 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     } finally {
       inFlight = false;
     }
+    // Somebody asked while that was in the air — most importantly `noteEpoch`
+    // at a rollover, whose read named a different pair of rooms from the one
+    // just fetched. Run it once more.
+    if (refetchQueued && !stopped) await refetch();
   }
 
   const live = startLive({
