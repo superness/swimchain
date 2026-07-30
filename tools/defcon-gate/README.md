@@ -72,8 +72,9 @@ later if chain sync/storage needs more; the keeper itself is a few-MB Node
 process and doesn't drive the requirement.)
 
 **1.2 — Base packages + firewall.** P2P (9735) open, RPC (9736) never opened —
-the node's RPC server hardcodes bind `127.0.0.1` (`src/rpc/server.rs`; there
-is no `--rpc-bind`/config flag to change it), so simply never punching 9736
+the node's RPC bind defaults to `127.0.0.1` (`NodeConfig::rpc_bind`,
+`src/node/config.rs:232,357`; there is no `--rpc-bind` CLI flag or other way
+to set it from anything else), so simply never punching 9736
 through the firewall is the whole enforcement:
 ```bash
 ssh -i "$GATE_KEY" root@$GATE_IP <<'EOF'
@@ -90,7 +91,7 @@ EOF
 workflow — same recipe `docs/TESTNET_DEPLOY_RUNBOOK.md` §5 step 2 uses,
 pointed at `main` instead of a testnet magic bump):
 ```bash
-wsl bash -lc 'cd ~ && rm -rf sb && git clone -q https://github.com/adminwizardtech/swimchain.git sb && cd sb && cargo build --release'
+wsl bash -lc 'cd ~ && rm -rf sb && git clone -q https://github.com/superness/swimchain.git sb && cd sb && cargo build --release'
 ```
 Do **not** reuse a copied `target/` cache (stale-mtime gotcha, same doc) —
 build clean.
@@ -330,7 +331,10 @@ are all present in `web-gateway/rpc-proxy/rpc-allowlist-proxy.mjs` — no
 allowlist change required). But the *repo copy* of that file hardcodes
 `port: 19736` (testnet), while the deployed proxy must talk to the mainnet
 node on `9736`. Before go-live, confirm the **live** proxy config, not the
-repo file:
+repo file. The deployed path is still `/opt/chess-rpc-proxy/` — a name left
+over from before this proxy served every client, not just chess; see
+`web-gateway/rpc-proxy/README.md` for the current scope/allowlist behind
+that historical name:
 ```bash
 ssh -i "$HOME/.ssh/swimchain_seed_ed25519" root@$SEED "grep -n 'port:' /opt/chess-rpc-proxy/chess-rpc-proxy.mjs"
 ```
