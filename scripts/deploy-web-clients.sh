@@ -51,7 +51,13 @@ for client in "${CLIENTS[@]}"; do
   #
   # Deliberately FATAL rather than a warning: a warning in a script whose output
   # is 30 lines of green ticks is a warning nobody reads.
-  dirty=$(git -C "$ROOT" status --porcelain -- "$dir" 2>/dev/null | grep -v '/dist/' | head -20)
+  # `|| true` is REQUIRED, not defensive noise. This script runs `set -euo
+  # pipefail`, and when the tree is CLEAN `grep -v` matches nothing and exits 1,
+  # which pipefail propagates and `set -e` turns into an instant silent death —
+  # exit 1, zero output, before a single echo. The guard written to prevent
+  # silent mistakes failed silently, and only ever on the happy path. Caught by
+  # trying to deploy immediately after adding it.
+  dirty=$(git -C "$ROOT" status --porcelain -- "$dir" 2>/dev/null | grep -v '/dist/' | head -20 || true)
   if [ -n "$dirty" ]; then
     echo "FATAL: $client has uncommitted source changes — deploying would put code"
     echo "       on the web that does not exist in git:"
