@@ -285,17 +285,51 @@ function anAcceptedWriteLiftsTheEdge(): void {
   // the session a player actually has — the moment is entered, the timer ends
   // it, and the writes keep coming — so the sequence is run and the ENTRIES are
   // counted. A fold that replayed reads 100 here.
+  // THE TIMER FIRES ON ITS OWN CLOCK, NOT ONCE PER WRITE, and settling on every
+  // pass was a gap of its own: it meant the sequence never sat in `CROSSING`
+  // while another accepted write arrived, so the one state a write can arrive
+  // in mid-lift was never exercised (plan 4c whole-branch review, M-3). The
+  // real clocks say it happens: writes are `MAX_EMIT_GAP_MS` (8 s) apart at the
+  // keep-alive and `MIN_EMIT_GAP_MS` (3 s) apart at the floor, against a
+  // `CROSSING_MS` of 2.6 s — so a player turning the pointer during the lift
+  // puts a write inside it. Modelled by settling only every third pass, which
+  // holds the standing in `CROSSING` across the two in between.
   let entries = 0;
+  let duringLift = 0;
   let session: Standing = AT_THE_EDGE;
   for (let i = 0; i < 100; i++) {
+    const wasCrossing = session.crossing;
     const next = afterWrite(session, null);
-    if (next.crossing && !session.crossing) entries++;
-    session = settled(next); // the moment's own timer, which always eventually fires
+    if (next.crossing && !wasCrossing) entries++;
+    if (wasCrossing) duringLift++;
+    session = i % 3 === 2 ? settled(next) : next;
   }
   check('across a hundred accepted writes the moment is entered exactly ONCE',
     entries === 1, entries);
+  check('NON-DEGENERACY: and writes really did arrive while the lift was still playing',
+    duringLift >= 2, duringLift);
   check('...and the player ends simply in the water, not stuck mid-lift and not back outside',
     session === OPEN_WATER, session);
+
+  // WHAT CANNOT BE CLOSED HERE, said rather than left as a gap somebody
+  // rediscovers. `CROSSING` is a module-level singleton, so a fold that
+  // RE-ENTERED the moment on an accepted write mid-lift and one that simply
+  // LEFT IT ALONE both return the identical object: there is no observation,
+  // here or in the component, that can tell them apart. That indistinguishability
+  // is also exactly what makes the difference harmless — `App.tsx:615` keys the
+  // settle timer on `standing.crossing`, a boolean, so a value that cannot
+  // change cannot restart the clock, and the moment ends `CROSSING_MS` after it
+  // began whatever arrives during it.
+  //
+  // The property that IS load-bearing is therefore the one checked: an accepted
+  // write mid-lift leaves the standing untouched, so a React caller re-renders
+  // nothing and the timer keeps its own time. Making the two distinguishable
+  // would mean giving `CROSSING` a start instant — a new field, a new source of
+  // time in a module that has none, and the loss of the same-object property
+  // three other checks in this file rest on — to catch a difference with no
+  // consequence.
+  check('an accepted write while the lift is playing changes nothing at all',
+    afterWrite(CROSSING, null) === CROSSING, afterWrite(CROSSING, null));
 
   // THE THREE STATES ARE EXCLUSIVE. `chooseWater` reads `atTheEdge` and
   // `TheEdge` reads `crossing`, so a standing with both raised would put a

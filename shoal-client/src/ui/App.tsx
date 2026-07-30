@@ -132,7 +132,9 @@ import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { shallowsSea } from './shallows';
 import { type ChainSea } from './chainSea';
-import { chooseSeaSource, chooseWater, knockOn, nodeWriteDue, retryDelayMs, seaFrom } from './seaChoice';
+import {
+  chooseSeaSource, chooseWater, knockBackstopDue, knockOn, nodeWriteDue, retryDelayMs, seaFrom,
+} from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
 import { afterWrite, CROSSING_MS, OPEN_WATER, settled, type Standing } from './wayIn';
@@ -155,6 +157,7 @@ import { bodiesOf } from '../lib/shoalEngine';
 import type { Body, ShelterBody } from '../lib/shelter';
 import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import type { SendFailure } from '../lib/shoalSend';
+import type { Vec } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
@@ -335,6 +338,18 @@ function chainParams(): ChainParams | null {
   return { rpc, cookie: devParam('cookie'), space, room, id, who };
 }
 
+/**
+ * How often the knock backstop looks at the clock.
+ *
+ * Not the knock's own rate — `knockBackstopDue` decides that, and it is a
+ * deadline rather than an interval. This only sets how promptly the deadline is
+ * NOTICED, and it is deliberately far below it so that a window which is being
+ * throttled rather than halted still trips the backstop at roughly the right
+ * moment. A background engine will clamp this to about once a minute whatever
+ * is asked for, which is the ceiling that actually applies.
+ */
+const KNOCK_TICK_MS = 1_000;
+
 /** How long a swept swimmer is drawn dazed. Spec 2.9's "a few seconds". */
 const DAZED_MS = 2_500;
 
@@ -475,15 +490,29 @@ export function App() {
    */
   const [shell, setShell] = useState<ShellSeaConfig | null>(null);
   /**
-   * WHEN THIS WINDOW LAST PUT A WRITE ON THE WIRE, on the wall clock. `-1` until
-   * it has.
+   * WHEN THIS WINDOW LAST PUT A WRITE ON THE WIRE, on a MONOTONIC clock
+   * (`performance.now()`). `-1` until it has.
    *
    * A REF, AND THAT IS THE WHOLE REASON IT EXISTS: it has to outlive the frame
    * effect, because the effect is torn down and rebuilt whenever the standing
    * changes and the `InputState` that normally holds the emit floor goes with
-   * it. See `seaChoice.nodeWriteDue`.
+   * it. See `seaChoice.nodeWriteDue`, which also says why the reading is
+   * monotonic rather than `Date.now()` — a backwards clock step used to stall
+   * every write for the length of the step.
    */
   const lastNodeWriteRef = useRef(-1);
+  /**
+   * THE LAST VECTOR THIS WINDOW PUT ON THE WIRE, and the chain sea it went to.
+   *
+   * Both are here so that the BACKSTOP can knock without a frame: a window that
+   * has stopped rendering has no `sea`, no `input` and no frame clock, because
+   * all three live inside the frame effect, but it does still have whatever it
+   * last published — which for a player who is not touching anything (they have
+   * minimised the window) is exactly what the next keep-alive would have said.
+   * See `seaChoice.knockBackstopDue`.
+   */
+  const lastVecRef = useRef<Vec | null>(null);
+  const chainRef = useRef<ChainSea | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const typingRef = useRef<string | null>(null);
   typingRef.current = typing;
@@ -560,7 +589,8 @@ export function App() {
   }, []);
 
   /**
-   * THE END OF THE MOMENT, and the only timer in this component.
+   * THE END OF THE MOMENT. One of the two timers in this component; the
+   * other is the knock backstop below.
    *
    * `crossing` is raised by the write the node accepted and is lowered here,
    * `CROSSING_MS` later, purely so the boundary can be seen leaving instead of
@@ -583,6 +613,71 @@ export function App() {
     const t = setTimeout(() => { setStanding(settled); }, CROSSING_MS);
     return () => { clearTimeout(t); };
   }, [standing.crossing]);
+
+  /**
+   * THE KNOCK BACKSTOP — the one write path that does not need a frame.
+   *
+   * ## The gap it closes
+   *
+   * Every other write this client makes is authored inside
+   * `requestAnimationFrame`. A THROTTLED window is fine: at one frame a second,
+   * or one every five, the loop still reaches its keep-alive on time. A window
+   * that has stopped RENDERING is not — minimise it, fully occlude it, or send
+   * it to a background desktop and rAF stops rather than slows. Measured with
+   * rAF halted: one write, and none at all after the halt, over sixty seconds,
+   * against five per forty in the control.
+   *
+   * It is not the permanent lockout — the next rendered frame resumes it — and
+   * it is still the wrong player to do it to. The shallows is an hours-long
+   * waiting room, and somebody waiting to be let in is exactly the person who
+   * minimises the window: they come back an hour later still outside, having
+   * been accepted forty minutes ago.
+   *
+   * ## What it sends, and why that is honest
+   *
+   * The last vector this window put on the wire, re-stamped to now. A window
+   * that is not rendering is a window nobody is steering, so the keep-alive the
+   * frame loop would have produced is the same vector — `shouldEmit` republishes
+   * an unchanged intent, and the intent cannot change while nothing is reading
+   * the mouse. Nothing here invents a position.
+   *
+   * ## Why it cannot double the write rate
+   *
+   * `knockBackstopDue` is a strictly later deadline than the keep-alive
+   * (`KNOCK_BACKSTOP_MS` is `MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS`), so a window
+   * that is rendering never reaches it and this never fires beside the frame
+   * loop. Both paths anchor the SAME monotonic ref, so whichever writes last is
+   * what the other one measures from, and `App.test.ts` §6 holds the refused
+   * cadence against an accepted window's own gaps on the wire.
+   *
+   * ## The clock
+   *
+   * `performance.now()` for the deadline, because it is monotonic and no NTP
+   * correction or sleep/wake can move it; `Date.now()` for the write's own
+   * timestamp, because the node checks that against a window in calendar time.
+   * A timer is throttled in a background window like everything else — roughly
+   * one a minute in current engines — so this is "a knock whenever the machine
+   * lets a timer run" rather than one every eleven seconds. Against a wait
+   * measured in hours, that is the whole difference.
+   */
+  useEffect(() => {
+    if (!standing.atTheEdge) return;
+    const t = setInterval(() => {
+      const chain = chainRef.current;
+      const last = lastVecRef.current;
+      if (chain === null || last === null) return;
+      const mono = performance.now();
+      if (!knockBackstopDue(lastNodeWriteRef.current, mono)) return;
+      lastNodeWriteRef.current = mono;
+      const t2 = Date.now() + TICK_MS;
+      lastVecRef.current = { ...last, t: t2 };
+      knockOn(chain, chooseWater(true, true), { ...last, t: t2 }, t2);
+    }, KNOCK_TICK_MS);
+    return () => { clearInterval(t); };
+    // Keyed on the standing alone: the chain sea is read through a ref, so a
+    // sea rebuild does not have to restart the timer and a restart cannot lose
+    // the deadline (it is held in a ref too).
+  }, [standing.atTheEdge]);
 
   /**
    * The queue between the DOM's event handlers and the frame loop.
@@ -677,6 +772,10 @@ export function App() {
     // exists. The reverse of that sentence is the lockout described on
     // `SceneKind`.
     const chain = buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); });
+    // Reachable from outside the frame loop, so the backstop can knock on a
+    // window that has stopped rendering. Cleared by this effect's cleanup, so
+    // nothing ever writes into a sea that has been stopped.
+    chainRef.current = chain;
     /**
      * WHICH WATER THE PLAYER'S OWN BODY IS IN (spec §2.16). Three answers, and
      * the third is the newcomer's: real water that will not have them yet, so
@@ -847,8 +946,15 @@ export function App() {
         // input state it holds the floor against is one of the things the
         // rebuild replaces. `nodeWriteDue`'s header carries the measurement and
         // what a turned-away write costs.
-        if (!nodeWriteDue(lastNodeWriteRef.current, wall)) return;
-        lastNodeWriteRef.current = wall;
+        // The floor is measured on a MONOTONIC reading and the write's own
+        // timestamp is `Date.now()`-derived: two clocks, two jobs, and the
+        // reason for each is on `nodeWriteDue`.
+        const mono = performance.now();
+        if (!nodeWriteDue(lastNodeWriteRef.current, mono)) return;
+        lastNodeWriteRef.current = mono;
+        // What the backstop will re-send if this window stops rendering. The
+        // vector as the WIRE would carry it, so the two paths cannot drift.
+        lastVecRef.current = water === 'chain' ? vec : { ...vec, t: wall + TICK_MS };
         if (water === 'chain') sea.publish(vec, say);
         else knockOn(chain, water, vec, wall + TICK_MS, say);
       });
@@ -1075,6 +1181,7 @@ export function App() {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      chainRef.current = null;
       chain?.stop();
     };
     // `shell` is a dependency and not a ref read on purpose: the sea has to be

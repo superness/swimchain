@@ -195,6 +195,18 @@ async function main() {
     check('NON-DEGENERACY: a node that answers with a content_id is an accepted write',
       write === `sha256:${'ab'.repeat(32)}`, write);
 
+    // NON-DEGENERACY, THE OTHER WAY. Tightening this check is the dangerous
+    // direction — a client that refused a well-formed id it did not recognise
+    // would classify a real acceptance as `'unknown'`, which lifts no edge, and
+    // a player who had been let in would wait at the boundary forever while the
+    // node said yes on every write. So an id that is not this node's format but
+    // is plainly an identifier must still be accepted.
+    const oddButReal = await withFakeFetch(fakeFetch(() => okResponse({
+      jsonrpc: '2.0', result: { content_id: 'blake3-7f3a91' }, id: 8,
+    })), async () => submitToRoom(writeCtx(auth), 'a body', 1_700_000_000_000));
+    check('...and an identifier this client does not recognise is STILL an accepted write',
+      oddButReal === 'blake3-7f3a91', oddButReal);
+
     // Four shapes of "answered 200, landed nothing". None of them may resolve,
     // and each must land in `unknown` — the honest bucket — so that a caller
     // folding the classification changes no standing at all.
@@ -203,6 +215,19 @@ async function main() {
       ['a null result', null],
       ['an empty content_id', { content_id: '' }],
       ['a content_id that is not a string', { content_id: 42 }],
+      // THE ONE THAT GOT THROUGH. `length === 0` is not "empty" — a single
+      // space has length 1, resolved, and a resolved write lifts the edge of
+      // the water for a swimmer nobody has let in. Every whitespace shape is
+      // here rather than the one that was reported, because a check that
+      // named ' ' alone would be a patch with a test around it.
+      ['a content_id that is one space', { content_id: ' ' }],
+      ['a content_id that is a tab', { content_id: String.fromCharCode(9) }],
+      ['a content_id that is a newline', { content_id: String.fromCharCode(10) }],
+      ['a content_id padded around nothing', { content_id: '   ' }],
+      // ...and one that carries real characters but is still not an
+      // identifier: no content id has a space in the middle of it, and a
+      // rule that only trimmed the ends would take this.
+      ['a content_id with a space in it', { content_id: 'sha256:ab cd' }],
     ];
     for (const [name, result] of answers) {
       const outcome = await caughtWrite(fakeFetch(() => okResponse({ jsonrpc: '2.0', result, id: 9 })), auth);

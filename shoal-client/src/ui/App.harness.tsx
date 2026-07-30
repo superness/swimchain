@@ -151,6 +151,16 @@ export interface Observation {
    *  the DOM, or `null` when there was no boundary. Compared against
    *  `wayIn.EDGE_BODY` rather than retyped — the copy has exactly one home. */
   readonly edgeLine: string | null;
+  /**
+   * HOW LONG THIS WINDOW HAD GONE WITHOUT PAINTING when it was torn down.
+   *
+   * The control for `haltFramesAfterWrites`. A check that asserted only "writes
+   * kept coming" would pass just as well against a window that was still
+   * rendering happily, i.e. against no halt at all — so the scenario has to
+   * prove it produced the state it claims to. Measured off the frame callbacks
+   * themselves rather than off the flag that stopped them.
+   */
+  readonly msSinceLastFrame: number;
 }
 
 export interface Scenario {
@@ -247,6 +257,32 @@ export interface Scenario {
    * this one.
    */
   readonly thenUnknown?: number;
+  /**
+   * STOP RENDERING once this many writes have been made, and never render
+   * again — a window that has been minimised, fully occluded, or sent to a
+   * background desktop.
+   *
+   * `requestAnimationFrame` STOPS in that state rather than slowing down, and
+   * that is the whole reason this is a separate knob from a slow frame rate:
+   * every check in this file that watches writes accumulate goes on passing
+   * under a window that renders once every five seconds, and none of them can
+   * see a window that renders never. Modelled exactly rather than approximated
+   * — the shim below simply does not schedule, so the frame loop's own
+   * `raf = requestAnimationFrame(frame)` finds nothing to run it again.
+   */
+  readonly haltFramesAfterWrites?: number;
+  /**
+   * STEP THE WALL CLOCK BACKWARDS BY THIS MANY MS, once, after the first write
+   * — NTP correcting a machine that had drifted forward, a laptop waking from
+   * sleep, timezone tooling.
+   *
+   * `Date.now()` is replaced for the window under observation; nothing else
+   * moves, which is exactly the real shape of the event. A step is not a slow
+   * clock: elapsed real time is unchanged, and any rule that measures "how long
+   * since X" by subtracting two `Date.now()` readings simply reports a negative
+   * number for the length of the step.
+   */
+  readonly stepClockBackMs?: number;
 }
 
 /** Nothing here mines for longer than this even on a slow machine; a scenario
@@ -260,13 +296,21 @@ const NODE_ADDRESS = 'sw1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 /**
  * The water's space id, DERIVED exactly as the shipped client derives it.
  *
- * It was an invented `sp1qqq…` that the fake `list_spaces` handed back. That
- * cannot work any more, and the way it failed is worth recording: the client
- * now derives the id, but the fake sponsorship offer below is SPACE-SCOPED, and
- * `ensureSponsored` only claims an offer whose `space_scope` matches the space
- * asked for. A hand-written constant here therefore made every claim silently
- * find no eligible offer — the same "the game sponsor has no open slots"
- * dead end a real scope mismatch produces.
+ * It was an invented `sp1qqq…` that the fake `list_spaces` handed back, and it
+ * has to be derived now because the client derives it too: a hand-written
+ * constant here would name a different space from the one the window resolves,
+ * so every write would go to a room the window is not in and every "reached
+ * water" check in `App.test.ts` would be measuring this file instead of the
+ * client.
+ *
+ * THIS PARAGRAPH USED TO DESCRIBE A FAKE SPONSORSHIP OFFER AND AN
+ * `ensureSponsored` THAT MATCHED ITS `space_scope`. NEITHER EXISTS. Both went
+ * with the claim flow (`passage.ts`, removed on the ruling that sponsorship is
+ * part of being on the network and not something the game grants), and the
+ * comment outlived them by two plans — sitting two hundred lines under this
+ * file's own "NO SPONSORSHIP METHOD IS FAKED HERE", describing machinery for
+ * the one rule this client is strictest about. Nothing in this harness answers
+ * any sponsorship method, and `App.test.ts` §6 proves the window never asks.
  */
 export const SHOAL_SPACE = await waterSpaceId();
 const SIG_HEX = Array.from({ length: 64 }, (_, i) => (i * 5 + 11) & 0xff)
@@ -328,6 +372,12 @@ export async function observe(s: Scenario): Promise<Observation> {
   const submitted: { author: string; parent: string; body: string; atMs: number }[] = [];
   const rpcCalls: string[] = [];
   let sockets = 0;
+  /** When a frame callback last actually ran. See the `requestAnimationFrame`
+   *  shim: a halted window stops stamping this, and the observation is the
+   *  measured silence rather than the flag that caused it. */
+  let lastFrameMs = 0;
+  /** What `stepClockBackMs` has done to this window's wall clock so far. */
+  let clockOffsetMs = 0;
   let socketsClosed = 0;
   let socketsOpen = 0;
   let maxSocketsOpen = 0;
@@ -446,6 +496,10 @@ export async function observe(s: Scenario): Promise<Observation> {
           body: String(req.params.body ?? ''),
           atMs: Date.now(),
         });
+        // ...and, once, the machine's clock jumps backwards under the window.
+        if (s.stepClockBackMs !== undefined && submitted.length === 1) {
+          clockOffsetMs = -s.stepClockBackMs;
+        }
         // RECORDED FIRST, THEN REFUSED. A refused write is still a write the
         // window mined, signed and sent — `submitted` is how every other check
         // in `App.test.ts` knows the window reached the water at all, and an
@@ -515,8 +569,33 @@ export async function observe(s: Scenario): Promise<Observation> {
   put('Node', dom.window.Node);
   put('Event', dom.window.Event);
   put('KeyboardEvent', dom.window.KeyboardEvent);
-  put('requestAnimationFrame', (cb: FrameRequestCallback) => dom.window.requestAnimationFrame(cb));
+  // THE HALT (`haltFramesAfterWrites`): from the named write onward this
+  // schedules nothing, so no further frame ever runs. It still returns a
+  // handle, because the component stores one and cancels it on teardown.
+  //
+  // `lastFrameMs` is stamped by the WRAPPER around every callback that actually
+  // runs, so `msSinceLastFrame` is a measurement of silence rather than an
+  // inference from the flag that caused it.
+  put('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    const halt = s.haltFramesAfterWrites;
+    if (halt !== undefined && submitted.length >= halt) return 0;
+    return dom.window.requestAnimationFrame((t: number) => { lastFrameMs = Date.now(); cb(t); });
+  });
   put('cancelAnimationFrame', (h: number) => dom.window.cancelAnimationFrame(h));
+  // THE BACKWARDS STEP (`stepClockBackMs`). Only `Date.now()` and a bare
+  // `new Date()` move; `performance.now()` is untouched, which is the whole
+  // point — it is monotonic, and a rule that measures elapsed time with it
+  // cannot be stalled by a clock correction. Installed for every scenario so
+  // the shape of the global is identical whether or not a step is asked for.
+  const RealDate = Date;
+  class SteppedDate extends RealDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) super(RealDate.now() + clockOffsetMs);
+      else super(...(args as [number]));
+    }
+    static now(): number { return RealDate.now() + clockOffsetMs; }
+  }
+  put('Date', SteppedDate);
   put('fetch', nodeFetch);
   put('WebSocket', QuietSocket);
   put('IS_REACT_ACT_ENVIRONMENT', false);
@@ -600,6 +679,7 @@ export async function observe(s: Scenario): Promise<Observation> {
   return {
     submitted, sockets, socketsClosed, maxSocketsOpen, askedShell, rpcCalls,
     edgeAtEnd, edgeLine, edgeAppearances, liftAppearances,
+    msSinceLastFrame: lastFrameMs === 0 ? -1 : Date.now() - lastFrameMs,
     msFromAcceptToLift: firstAcceptMs < 0 || firstLiftMs < 0 ? -1 : firstLiftMs - firstAcceptMs,
   };
 }

@@ -641,10 +641,27 @@ export async function submitToRoom(ctx: SendCtx, body: string, ms: number): Prom
   // and 'unknown' leaves every standing untouched, raising no edge and lifting
   // none. `result` is JSON the node just sent, so stringifying it for the
   // message cannot cycle.
+  //
+  // WHITESPACE IS NOT AN IDENTIFIER, and `length === 0` alone let one through:
+  // `{"content_id":" "}` — a single space — resolved, and one resolved write is
+  // all it takes to lift the edge of the water for a swimmer nobody has let in
+  // (plan 4c whole-branch review). Nine other malformed shapes were already
+  // refused; this was the tenth.
+  //
+  // THE RULE IS "CARRIES NO WHITESPACE AND IS NOT EMPTY", AND IT IS
+  // DELIBERATELY NOT "MATCHES `sha256:` PLUS 64 HEX", though that is exactly
+  // what this node answers (methods.rs:2923). Over-validating here is the more
+  // dangerous mistake of the two, and in the same direction as everything else
+  // this arc is about: a client that rejected a well-formed id it did not
+  // recognise would classify a genuine acceptance as `'unknown'`, `'unknown'`
+  // lifts no edge, and a player who had really been let in would wait at the
+  // boundary forever with the node saying yes on every write. A refusal shaped
+  // like a format opinion is a lockout. So this rejects what cannot be an
+  // identifier and accepts anything that could be one.
   const contentId: unknown = (result as SubmitReplyResult | null)?.content_id;
-  if (typeof contentId !== 'string' || contentId.length === 0) {
+  if (typeof contentId !== 'string' || contentId.trim().length === 0 || /\s/.test(contentId)) {
     throw new Error(
-      `submit_reply answered a success envelope with no content_id: ${JSON.stringify(result)}`,
+      `submit_reply answered a success envelope with no usable content_id: ${JSON.stringify(result)}`,
     );
   }
   return contentId;

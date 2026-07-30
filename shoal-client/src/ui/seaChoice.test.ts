@@ -43,14 +43,16 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import {
-  chooseSeaSource, chooseWater, knockOn, retryDelayMs, seaFrom,
-  RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN, type PlayedWater, type SeaSource,
+  chooseSeaSource, chooseWater, knockBackstopDue, knockOn, nodeWriteDue, retryDelayMs, seaFrom,
+  KNOCK_BACKSTOP_MS, RETRY_BASE_MS, RETRY_CAP_MS, SEA_SPAWN,
+  type PlayedWater, type SeaSource,
 } from './seaChoice';
 import type { ChainSea } from './chainSea';
 import type { Vec } from '../lib/shoalTypes';
 import { shellConfig, waterSpaceId, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
 import { wildSeedFrom } from './demoSea';
 import { decodeBody } from '../lib/shoalWire';
+import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 import type { SendFailure } from '../lib/shoalSend';
 
@@ -227,6 +229,55 @@ function whichWater(): void {
     let threw = false;
     try { knockOn(null, 'shallows', vec, WALL); } catch { threw = true; }
     check('a window with no water to knock on does not try, and does not throw', !threw);
+  }
+
+  // -------------------------------------------------------------------------
+  // THE TWO DEADLINES, at the boundary where each of them is reachable.
+  //
+  // Both are held END TO END as well — `App.test.ts` §8 drives a real window
+  // through a ten-minute backwards clock step and through a halt — but the two
+  // mechanisms are redundant THERE and neither mutation fails alone: with the
+  // reading monotonic the backwards arms are unreachable, and with the arms
+  // present a wall-clock reading still gets through. Removing both together
+  // reproduces the defect (one write against five). So each is pinned here,
+  // where the function takes two numbers and every arm is reachable, and the
+  // end-to-end check is what says the pair of them add up to the behaviour.
+  // -------------------------------------------------------------------------
+  {
+    const T = 1_000_000;
+    check('a window that has never written may write at once',
+      nodeWriteDue(-1, T) === true);
+    check('...and one that just wrote may not',
+      nodeWriteDue(T, T) === false && nodeWriteDue(T, T + MIN_EMIT_GAP_MS - 1) === false,
+      [nodeWriteDue(T, T), nodeWriteDue(T, T + MIN_EMIT_GAP_MS - 1)]);
+    check('...until exactly the floor has passed',
+      nodeWriteDue(T, T + MIN_EMIT_GAP_MS) === true);
+    // THE BACKWARDS ARM. A negative gap is a clock that moved, not time that
+    // passed, and the only safe answer is to let the write through and
+    // re-anchor: holding it back stalls for the length of a step that has no
+    // bound. Measured before this existed: a ten-minute step gave one write
+    // where the control made five.
+    check('a reading that went BACKWARDS is a clock that moved, not a floor to wait out',
+      nodeWriteDue(T, T - 600_000) === true && nodeWriteDue(T, T - 1) === true,
+      [nodeWriteDue(T, T - 600_000), nodeWriteDue(T, T - 1)]);
+
+    check('the backstop does not fire before this window has written anything at all',
+      knockBackstopDue(-1, T) === false);
+    check('...nor while the frame loop is still inside its own deadline',
+      knockBackstopDue(T, T + KNOCK_BACKSTOP_MS - 1) === false,
+      knockBackstopDue(T, T + KNOCK_BACKSTOP_MS - 1));
+    check('...and does fire once the silence has run past it',
+      knockBackstopDue(T, T + KNOCK_BACKSTOP_MS) === true);
+    check('...and treats a backwards reading the same way the floor does',
+      knockBackstopDue(T, T - 600_000) === true);
+    // THE RELATIONSHIP THAT KEEPS THEM FROM RACING, and it is the whole reason
+    // the backstop cannot change the rate a node sees: a window that is
+    // rendering writes every MAX_EMIT_GAP_MS, so it can never be silent long
+    // enough to trip a deadline that is strictly longer than that. Derived from
+    // the two constants rather than compared against 11_000.
+    check('the backstop deadline is strictly longer than the keep-alive it backs up',
+      KNOCK_BACKSTOP_MS > MAX_EMIT_GAP_MS && KNOCK_BACKSTOP_MS === MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS,
+      { KNOCK_BACKSTOP_MS, MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS });
   }
 }
 

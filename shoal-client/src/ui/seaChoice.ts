@@ -34,7 +34,7 @@ import { chainSea, type ChainSea } from './chainSea';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { SendFailure, SignFn } from '../lib/shoalSend';
 import type { Vec } from '../lib/shoalTypes';
-import { MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
+import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 
 /**
@@ -145,18 +145,26 @@ export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater 
  *
  * ## Why this is a re-stamp of the player's own vector and not a second life
  *
- * There is exactly ONE emitter in this client (`input.emitDue`, called once
- * per frame from `App.tsx` step 3, and only when `shouldEmit` agrees), and
- * that is a rate discipline as much as an architecture: `MIN_EMIT_GAP_MS`
- * is the only thing keeping one window from crowding the per-space mempool
- * budget every swimmer shares (shoalEmit.ts). A separate knocker with a timer
- * of its own would be a second emitter answering to nothing, and it would
- * double this window's write rate the moment the edge went up — at exactly the
- * moment the node has told us it wants fewer of our writes, not more.
+ * The ordinary emitter is `input.emitDue`, called once per frame from
+ * `App.tsx` step 3 and only when `shouldEmit` agrees, and that is a rate
+ * discipline as much as an architecture: `MIN_EMIT_GAP_MS` is the only thing
+ * keeping one window from crowding the per-space mempool budget every swimmer
+ * shares (shoalEmit.ts). A knocker with a schedule of its OWN would be a second
+ * emitter answering to nothing, and it would double this window's write rate at
+ * exactly the moment the node has told us it wants fewer of our writes.
  *
  * So the knock is the write the player's own game was making anyway. Nothing
  * is fabricated: the vector is theirs, from the swimmer they are steering, in
  * the same world coordinates. The only thing that changes is the timestamp.
+ *
+ * THERE IS A SECOND CALLER NOW AND IT IS NOT A SECOND CADENCE — see
+ * `knockBackstopDue`. A window that has stopped RENDERING makes no frames, so
+ * the emitter above is never called and the knocking simply stops; the backstop
+ * is a timer that notices the silence and re-sends THE LAST VECTOR THIS WINDOW
+ * AUTHORED. Its deadline is deliberately past the keep-alive, so it can only
+ * fire when the frame loop has already failed to, and the two can never write
+ * alongside each other. The rate a node sees is unchanged, which is asserted on
+ * the wire rather than argued here.
  *
  * ## The timestamp is the load-bearing part
  *
@@ -253,11 +261,78 @@ export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater 
  * protects everybody else in the space, to save one vector at a moment when
  * this window has just published a nearly identical one.
  *
- * `lastNodeWriteMs < 0` is "this window has never written", which must not be
- * treated as a write at the epoch.
+ * ## THE READING IS MONOTONIC, NOT THE WALL CLOCK, AND THAT IS A FIX
+ *
+ * It took `Date.now()` and it stalled for the length of any backwards step the
+ * machine's clock made: NTP correcting a drifted laptop, waking from sleep,
+ * timezone tooling. `wallMs - lastNodeWriteMs` goes NEGATIVE, the floor reads
+ * "not yet" and goes on reading it until real time has caught the step back up.
+ * Measured against this client: a −10 min step gave ONE write where the control
+ * made five; a −20 s step gave a single 28.1 s hole. Unbounded, because the step
+ * is.
+ *
+ * So the caller passes a MONOTONIC reading (`performance.now()`), which no
+ * clock correction moves. The two clocks are doing two different jobs and both
+ * are needed: elapsed time is measured here, and the WRITE'S OWN TIMESTAMP is
+ * still `Date.now()`-derived, because that one is checked against the node's
+ * timestamp window and has to agree with the world's calendar rather than with
+ * this process's uptime.
+ *
+ * The `< lastMs` arm is belt and braces for a reading that is not monotonic
+ * after all (a coarsened or virtualised timer): a negative gap is a clock that
+ * moved rather than time that passed, and the safe answer to that is to let the
+ * write through and re-anchor, never to hold it back for an unbounded stretch.
+ *
+ * `lastMs < 0` is "this window has never written", which must not be treated as
+ * a write at the epoch.
  */
-export function nodeWriteDue(lastNodeWriteMs: number, wallMs: number): boolean {
-  return lastNodeWriteMs < 0 || wallMs - lastNodeWriteMs >= MIN_EMIT_GAP_MS;
+export function nodeWriteDue(lastMs: number, monoMs: number): boolean {
+  if (lastMs < 0 || monoMs < lastMs) return true;
+  return monoMs - lastMs >= MIN_EMIT_GAP_MS;
+}
+
+/**
+ * THE BACKSTOP: is it so long since this window wrote that something must have
+ * stopped calling the frame loop?
+ *
+ * ## The gap this exists for
+ *
+ * Every write this client makes is authored inside `requestAnimationFrame`.
+ * Throttling is survivable — a window rendering once a second, or once every
+ * five, still writes on the same schedule — but a MINIMISED, fully occluded or
+ * backgrounded window does not render AT ALL, and rAF stops rather than slows.
+ * Measured with rAF halted: one write, and none after the halt, over sixty
+ * seconds, against five per forty seconds in the control.
+ *
+ * That is not the permanent lockout — it heals on the next rendered frame — and
+ * it is still the wrong person to do it to. THE SHALLOWS IS AN HOURS-LONG
+ * WAITING ROOM, and somebody waiting to be let in is exactly the player who
+ * minimises the window. They come back an hour later still outside, having been
+ * accepted forty minutes earlier, because the write that would have told them
+ * was never attempted.
+ *
+ * ## Why the deadline is longer than the keep-alive rather than equal to it
+ *
+ * `MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS`. A window that IS rendering writes every
+ * `MAX_EMIT_GAP_MS` (8 s), so it can never reach 11 s between writes, so this
+ * can never fire alongside the frame loop — no doubled rate, and the refused
+ * player's cadence stays the accepted player's cadence, which is measurable
+ * from outside and is measured (`App.test.ts` §6). A deadline equal to the
+ * keep-alive would race the frame loop for every write.
+ *
+ * ## What it cannot do
+ *
+ * Timers are throttled too — a background window gets roughly one a minute in
+ * every current engine, and an intensively throttled one no better. So this is
+ * not "a write every 11 s while minimised"; it is "a write whenever the
+ * machine lets a timer run, instead of never". That is the whole claim.
+ */
+export const KNOCK_BACKSTOP_MS = MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS;
+
+export function knockBackstopDue(lastMs: number, monoMs: number): boolean {
+  if (lastMs < 0) return false; // nothing has been written yet; the frame loop opens
+  if (monoMs < lastMs) return true; // a clock that moved, not time that passed
+  return monoMs - lastMs >= KNOCK_BACKSTOP_MS;
 }
 
 export function knockOn(

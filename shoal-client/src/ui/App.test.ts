@@ -99,7 +99,7 @@ import { roomContentId } from './shellConfig';
 import { EDGE_BODY } from './wayIn';
 /** The two spawns, imported rather than retyped: they are what tells the two
  *  seas apart on the wire (see `whereFrom`). */
-import { SEA_SPAWN } from './seaChoice';
+import { KNOCK_BACKSTOP_MS, SEA_SPAWN } from './seaChoice';
 import { SHALLOWS_SPAWN } from './shallows';
 /** The shipping decoder, so a check reads a write the way a peer would. */
 import { decodeBody } from '../lib/shoalWire';
@@ -675,6 +675,75 @@ async function main(): Promise<void> {
     check('...gap for gap, and not merely write for write',
       acceptedGaps.length > 0 && Math.abs(mean(gaps) - mean(acceptedGaps)) <= SAME_CADENCE_MS,
       { refusedMean: mean(gaps), acceptedMean: mean(acceptedGaps), SAME_CADENCE_MS });
+
+    // (a2) AND IT SURVIVES A WINDOW THAT HAS STOPPED BEING RENDERED.
+    //
+    // Every claim above is about a window that is drawing frames, because every
+    // write this client makes is authored inside `requestAnimationFrame`.
+    // Throttling is survivable and was measured to be — a window rendering once
+    // a second or once every five still reaches its keep-alive on time — but a
+    // MINIMISED, fully occluded or backgrounded window does not render at all,
+    // and rAF stops rather than slows. Measured before the backstop existed:
+    // ONE write, and none after the halt, over sixty seconds.
+    //
+    // It heals on the next rendered frame, so it is not the permanent lockout.
+    // It is still the wrong player to do it to: the shallows is an hours-long
+    // waiting room, and the person waiting to be let in is exactly the one who
+    // minimises the window — they come back an hour later still outside, having
+    // been accepted forty minutes earlier, because the write that would have
+    // told them was never attempted.
+    //
+    // NO CHECK ABOVE CAN SEE THIS. They all watch writes accumulate, and they
+    // all keep passing under any frame rate above zero. `haltFramesAfterWrites`
+    // is the only knob that produces the state, and it produces it exactly: the
+    // shim stops scheduling, so the frame loop's own re-arm finds nothing to run
+    // it again. The window is torn down normally at the end, so this is not a
+    // frozen process — only an unpainted one.
+    const halted = await observe({
+      writesRefused: true, awaitWrite: true, haltFramesAfterWrites: 1, settleMs: 30_000,
+    });
+    const afterHalt = halted.submitted.length - 1;
+    check('CONTROL: the halt really did stop the frames — this window has not painted for 20 s',
+      halted.msSinceLastFrame >= 20_000, halted.msSinceLastFrame);
+    check('IT KEEPS KNOCKING WITH THE WINDOW MINIMISED — writes go out with no frames at all',
+      afterHalt >= 2, { writes: halted.submitted.length, afterHalt });
+    // ...on the backstop's own deadline, which is deliberately LATER than the
+    // keep-alive so it can never fire beside a frame loop that is working. Two
+    // knocks in a thirty-second settle is 11 s apart, not 8; anything at 8 here
+    // would mean the two paths are racing, and the cadence checks above are
+    // what would catch that in a window that renders.
+    const haltedTs = vectorsOf(halted).map((v) => v.t);
+    const haltedGaps = haltedTs.slice(1).map((t, i) => t - haltedTs[i]);
+    check('...on the backstop deadline rather than the keep-alive, so the two never race',
+      haltedGaps.length > 0 && Math.min(...haltedGaps) >= KNOCK_BACKSTOP_MS,
+      { haltedGaps, KNOCK_BACKSTOP_MS });
+
+    // (a3) AND IT SURVIVES THE MACHINE'S CLOCK STEPPING BACKWARDS.
+    //
+    // NTP correcting a laptop that had drifted forward, a wake from sleep,
+    // timezone tooling: the wall clock jumps back, and every rule that measures
+    // "how long since the last write" by subtracting two `Date.now()` readings
+    // reads a NEGATIVE gap and answers "not yet" for as long as real time takes
+    // to catch the step back up. THE STEP IS UNBOUNDED, so the stall is too.
+    // Measured against this client before the fix: a ten-minute step gave ONE
+    // write where the control made five.
+    //
+    // The knock is measured on `performance.now()` now, which no correction can
+    // move (`nodeWriteDue`, `knockBackstopDue`). Ten minutes is chosen because
+    // it is far longer than any settle here: a client still measuring elapsed
+    // time on the wall clock cannot pass this by waiting.
+    const stepped = await observe({
+      writesRefused: true, awaitWrite: true, stepClockBackMs: 600_000, settleMs: 26_000,
+    });
+    check('IT SURVIVES A BACKWARDS CLOCK STEP — ten minutes back, and it keeps knocking',
+      stepped.submitted.length >= 3, stepped.submitted.length);
+    // NON-DEGENERACY: the step really happened, and it really did move the
+    // instants the writes carry. Without this the check above would pass on any
+    // window that simply ignored the scenario.
+    const steppedTs = vectorsOf(stepped).map((v) => v.t);
+    check('...having really been stepped: the writes are dated before the run began',
+      steppedTs.length > 1 && steppedTs[steppedTs.length - 1] < steppedTs[0],
+      steppedTs.map((t) => t - steppedTs[0]));
 
     // (b) A SLOW YES SURVIVES THE APP BEING CLOSED.
     //
