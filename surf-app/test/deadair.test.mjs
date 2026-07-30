@@ -6,6 +6,7 @@ import {
   isMetered,
   classifyChannelDeadAir,
   pickFlareTarget,
+  flareTargetReady,
   classifyAfterFlare,
 } from '../web/deadair.mjs';
 
@@ -91,19 +92,56 @@ test('classifyChannelDeadAir: metered + stale -> real classification', () => {
   assert.equal(r.state, 'dying');
 });
 
-// --- pickFlareTarget ---------------------------------------------------------
+// --- pickFlareTarget (final-review fix IMPORTANT 1: body-aware target) -----
 
-test('pickFlareTarget: picks the newest item by created_at', () => {
+test('pickFlareTarget: a body-present item -> present:true, chosen even when a newer body-less item exists', () => {
+  const items = [
+    { content_id: 'sha256:newer-coldbody', created_at: 900 }, // no `body` at all
+    { content_id: 'sha256:present', created_at: 500, body: 'hi' },
+    { content_id: 'sha256:older-present', created_at: 100, body: 'old' },
+  ];
+  assert.deepEqual(pickFlareTarget(items), { contentId: 'sha256:present', present: true });
+});
+
+test('pickFlareTarget: newest body-present item wins when several are present', () => {
+  const items = [
+    { content_id: 'sha256:older', created_at: 100, body: 'old' },
+    { content_id: 'sha256:newer', created_at: 900, body: 'new' },
+  ];
+  assert.deepEqual(pickFlareTarget(items), { contentId: 'sha256:newer', present: true });
+});
+
+test('pickFlareTarget: no body-present items -> present:false, newest metadata row as the request target', () => {
   const items = [
     { content_id: 'sha256:old', created_at: 100 },
-    { content_id: 'sha256:new', created_at: 900 },
+    { content_id: 'sha256:new', created_at: 900, body: null },
     { content_id: 'sha256:mid', created_at: 500 },
   ];
-  assert.equal(pickFlareTarget(items), 'sha256:new');
+  assert.deepEqual(pickFlareTarget(items), { contentId: 'sha256:new', present: false });
 });
 
 test('pickFlareTarget: empty items -> null (nothing retrievable, "beyond flares")', () => {
   assert.equal(pickFlareTarget([]), null);
+});
+
+// --- flareTargetReady (the arrival-poll predicate) --------------------------
+
+test('flareTargetReady: true once the matching item has a body', () => {
+  const items = [
+    { content_id: 'sha256:other', body: 'x' },
+    { content_id: 'sha256:target', body: 'landed' },
+  ];
+  assert.equal(flareTargetReady(items, 'sha256:target'), true);
+});
+
+test('flareTargetReady: false when the matching item is still body-less', () => {
+  const items = [{ content_id: 'sha256:target', body: null }];
+  assert.equal(flareTargetReady(items, 'sha256:target'), false);
+});
+
+test('flareTargetReady: false when the item is absent from the listing entirely', () => {
+  assert.equal(flareTargetReady([], 'sha256:target'), false);
+  assert.equal(flareTargetReady([{ content_id: 'sha256:other', body: 'x' }], 'sha256:target'), false);
 });
 
 // --- classifyAfterFlare (the optimistic flare test) -------------------------

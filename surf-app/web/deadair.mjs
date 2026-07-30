@@ -52,17 +52,54 @@ export function classifyChannelDeadAir(channel, healthEntries, now) {
   return classification.state === 'alive' ? null : classification;
 }
 
-// The flare's target: the single most-recent item across all of a channel's
-// spaces. An item still returned by list_space_content is, by definition,
-// "surviving" (decayed-to-zero content stops being listed) — this does NOT
-// filter on `.body` the way dwell's selectForEngage does, because the
-// flare's own request_content call is what fetches the body; requiring it
-// up front would make the flare permanently unable to revive a channel with
-// nothing locally cached, which is precisely the case it exists for. Returns
-// null when nothing is retrievable — the spec's "beyond flares" case.
+// The flare's target. Final-review fix (IMPORTANT 1): node truth
+// (submit_engagement, src/rpc/methods.rs — verified in review) only records
+// an ENGAGE when the target content is locally present
+// (content_store.get() -> Some); against a body-less item it returns
+// `engaged:false` and drops it silently. Firing engageOne() against a truly
+// cold item wastes the mined PoW for nothing and leaves the flare's caller
+// with zero feedback. So this now returns a shape the caller can act on:
+//   - a body-PRESENT recent item, when one exists across the channel's
+//     spaces — the common partly-warm case (some items landed, some
+//     haven't yet) — { present: true }, engage it immediately.
+//   - otherwise, the single newest metadata row (necessarily body-less,
+//     since none qualified above) as the REQUEST target only —
+//     { present: false } — the caller must request_content it and WAIT for
+//     arrival before ever calling engageOne (spec §3.3: "engage it on
+//     arrival"; see shell.mjs's pollFlareArrival).
+// An item still returned by list_space_content is, by definition,
+// "surviving" (decayed-to-zero content stops being listed) — the fallback
+// branch still does NOT require a body up front, because the flare's own
+// request_content call is what's meant to fetch it; requiring one before
+// ever considering a channel flareable would make the flare permanently
+// unable to revive a channel with nothing locally cached yet, which is
+// precisely the case it exists for.
+// Returns null when nothing is retrievable at all — the spec's "beyond
+// flares" case.
 export function pickFlareTarget(items) {
+  if (!items.length) return null;
   const sorted = items.slice().sort((a, b) => (b.created_at ?? 0) - (a.created_at ?? 0));
-  return sorted.length ? sorted[0].content_id : null;
+  const present = sorted.find((it) => it.body);
+  if (present) return { contentId: present.content_id, present: true };
+  return { contentId: sorted[0].content_id, present: false };
+}
+
+// Poll predicate for the caller's arrival-wait loop (IMPORTANT 1, cont'd):
+// given a FRESH list_space_content items array (re-fetched — not the stale
+// listing pickFlareTarget was originally called on) and the content_id the
+// flare requested, true once that item's body has landed. Pure — the shell
+// wraps this in the actual RPC re-fetch + poll/timeout loop (DOM/RPC-wired,
+// not unit-testable the way this predicate is; see shell.mjs's
+// pollFlareArrival). Deliberately checked via list_space_content's own
+// `.body` field rather than a get_content round-trip: get_content THROWS
+// ContentNotFound when the body isn't locally present yet (src/rpc/
+// methods.rs:5052 — no body:null success case), which would conflate "still
+// fetching" with "genuine RPC error" if used to drive a poll; list_space_content
+// already returns an explicit `body: null` row for chain-indexed-but-
+// unfetched content, the same convention dwell.mjs's selectForEngage and
+// shell.mjs's localItemCount/tuneDriver already rely on.
+export function flareTargetReady(items, contentId) {
+  return items.some((it) => it.content_id === contentId && !!it.body);
 }
 
 // Post-flare reclassification. On a SUCCESSFUL flare, the flare's own engage

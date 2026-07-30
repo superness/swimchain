@@ -10,7 +10,7 @@ import { createStatic } from './static-shader.mjs';
 import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './measure.mjs';
 import { createDwell, ledgerMark } from './dwell.mjs';
 import { mineSignSubmit } from './engage.mjs';
-import { classifyChannelDeadAir, classifyAfterFlare, freshestTs, isMetered, pickFlareTarget } from './deadair.mjs';
+import { classifyChannelDeadAir, classifyAfterFlare, classifyDeadAir, freshestTs, isMetered, pickFlareTarget, flareTargetReady } from './deadair.mjs';
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
 
@@ -173,6 +173,56 @@ async function checkDeadAir(target) {
   if (classification) showDeadAirCard(ch, classification, freshestTs(entries));
 }
 
+// Final-review fix (IMPORTANT 1): the SEARCHING state painted on the
+// dead-air card while the flare waits for a requested body to arrive.
+// Deliberately does NOT touch deadAirState (channelId/lastEngagementTs stay
+// exactly what checkDeadAir last set) — this only repaints the card's text;
+// every later branch (poll success, poll timeout, engage failure) still
+// reads deadAirState.lastEngagementTs to decide what to show next.
+function showFlareSearching(ch) {
+  const el = document.getElementById('dead-air');
+  el.querySelector('.da-name').textContent = `CH ${ch.number} ${ch.name}`;
+  el.querySelector('.da-last-signal').textContent = 'SEARCHING…';
+  el.querySelector('.da-dying').hidden = true;
+  el.hidden = false;
+}
+
+// Final-review fix (IMPORTANT 1): arrival-poll loop for a flare's
+// request_content. Node truth (submit_engagement, verified in review):
+// engaging before the body lands is silently dropped (engaged:false), so
+// the flare must WAIT for the body before ever calling engageOne (spec
+// §3.3, "engage it on arrival") instead of mining PoW that gets thrown
+// away. Not pure — real RPC calls + a real timer; the pure "is it here now?"
+// half of this is flareTargetReady (deadair.mjs), unit-tested there. Polls
+// every FLARE_POLL_INTERVAL_MS up to FLARE_POLL_TIMEOUT_MS total, re-using
+// the exact same list_space_content call the flare's own initial listing
+// (and tuneDriver/localItemCount) already use — NOT get_content, which
+// THROWS ContentNotFound on an absent body rather than returning body:null,
+// which would make "still fetching" indistinguishable from "genuine RPC
+// error" if used to drive a poll (see deadair.mjs's flareTargetReady doc
+// comment for the full node-truth trace). Race-safe like checkDeadAir:
+// bails (returns false) the instant the viewer flips away from this channel
+// or a fresher card supersedes this one, same guard shape used everywhere
+// else in this handler.
+const FLARE_POLL_INTERVAL_MS = 1000;
+const FLARE_POLL_TIMEOUT_MS = 10000;
+async function pollFlareArrival(ch, targetId, channelId) {
+  const deadline = Date.now() + FLARE_POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return false; // flipped away
+    let items = [];
+    for (const space of ch.spaces) {
+      try {
+        const listed = await rpc('list_space_content', { space_id: space, limit: 5 });
+        items = items.concat(listed?.items ?? []);
+      } catch { /* keep going with whichever spaces answered */ }
+    }
+    if (flareTargetReady(items, targetId)) return true;
+    await new Promise((resolve) => setTimeout(resolve, FLARE_POLL_INTERVAL_MS));
+  }
+  return false;
+}
+
 document.getElementById('flare-btn').addEventListener('click', async () => {
   if (!deadAirState) return;
   const { channelId } = deadAirState;
@@ -194,17 +244,39 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
         items = items.concat(listed?.items ?? []);
       } catch { /* keep going with whichever spaces answered */ }
     }
-    const targetId = pickFlareTarget(items);
+    const target = pickFlareTarget(items);
     if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return; // flipped away
-    if (!targetId) {
+    if (!target) {
       // spec §3.3's defined fallback: nothing retrievable across any of this
       // channel's spaces — the card says the channel is beyond flares.
       showDeadAirCard(ch, { state: 'dying', days: Infinity }, deadAirState.lastEngagementTs, true);
       return;
     }
-    // Flare = request_content on the newest surviving item + one engage via
-    // the same signing path dwell uses (engageOne, closed over rpc/sign/myPk).
-    rpc('request_content', { content_id: targetId }).catch(() => {});
+    let { contentId: targetId, present } = target;
+    let searched = false;
+    // Final-review fix (IMPORTANT 1): only engage immediately when the
+    // target is already body-present. Otherwise request_content it and WAIT
+    // for the body (pollFlareArrival) before ever mining/submitting an
+    // engage — see pickFlareTarget's and pollFlareArrival's doc comments for
+    // the node-truth trace this closes.
+    if (!present) {
+      rpc('request_content', { content_id: targetId }).catch(() => {});
+      showFlareSearching(ch);
+      searched = true;
+      present = await pollFlareArrival(ch, targetId, channelId);
+      if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return; // flipped away mid-poll
+      if (!present) {
+        // Poll window elapsed with no body — spec §3.3's "beyond flares"
+        // fallback again, and critically: do NOT mine/submit against a body
+        // that still isn't here.
+        showDeadAirCard(ch, { state: 'dying', days: Infinity }, deadAirState.lastEngagementTs, true);
+        return;
+      }
+    }
+    // Flare = (request_content, already fired above when it was needed) +
+    // one engage via the same signing path dwell uses (engageOne, closed
+    // over rpc/sign/myPk) — reached now only once the body is confirmed
+    // present, either from the initial listing or from the arrival poll.
     const r = await engageOne(targetId);
     if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return; // flipped away
     if (r.ok) {
@@ -228,9 +300,16 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
       // card, must also stop after this single rejection. Card stays up,
       // unchanged; no error surface (§2.5).
       dwell.markReceiveOnly(channelId);
+    } else if (searched) {
+      // non-latching failure (mining/RPC error) reached after a SEARCHING
+      // repaint — restore the card to the pre-flare classification instead
+      // of leaving "SEARCHING…" frozen on screen; a later FLARE press may
+      // retry.
+      showDeadAirCard(ch, classifyDeadAir(deadAirState.lastEngagementTs, Date.now()), deadAirState.lastEngagementTs);
     }
-    // non-latching failure (mining/RPC error): leave the card up as-is; a
-    // later FLARE press may retry.
+    // else: non-latching failure with the target already present — leave
+    // the card up as-is, unchanged (original behavior); a later FLARE press
+    // may retry.
   } finally {
     btn.disabled = false;
   }
@@ -529,14 +608,36 @@ async function renderChart() {
   // the same one RPC call either way; the node's own 3s-TTL cache (Task 1)
   // still keeps a second open moments later cheap.
   const healthByChannel = {};
+  // Final-review fix (MINOR 3): channels whose get_space_health call THREW
+  // this render, kept distinct from a successful-but-empty response. The
+  // old catch left healthByChannel[ch.id] unassigned on a throw, which
+  // chartRows' `healthByChannel?.[ch.id] ?? []` then collapsed onto the
+  // exact same [] a genuinely empty success returns -> freshestTs([]) ->
+  // glow(null) -> glowValue 0 -> a live channel painting measured-dead over
+  // a transient RPC blip. Dead-air's own checkDeadAir is conservative on
+  // RPC failure (shows no card at all rather than fabricating "dead"); the
+  // Chart gets the same stance now. A success that simply lacks the space
+  // is unaffected — it still legitimately glows 0 (honest, measured; see
+  // chart.mjs's own module comment).
+  const unknown = new Set();
   for (const ch of metered) {
     try {
       const res = await rpc('get_space_health', { space_ids: ch.spaces });
       healthByChannel[ch.id] = res?.spaces ?? [];
-    } catch { /* best-effort: an RPC failure just leaves this channel's health empty for this open (glow reads as measured-dead, not fabricated) */ }
+    } catch {
+      unknown.add(ch.id); // best-effort: a transient RPC failure reads as "unknown", not "dead"
+    }
   }
   if (!chartOpen) return; // closed while the fetch was in flight
   const rows = chartRows(cfg.channels, healthByChannel, new Set(deck.warm), moored, Date.now());
+  // Repaint any THROW-marked row with the same "NO TELEMETRY" / glowValue
+  // null treatment chartRows already gives a channel with no declared spaces
+  // — visually the honest read for "we don't know right now", distinct from
+  // "measured, confirmed dark". Scoped to shell.mjs only: chartRows itself
+  // still decides `unmetered` purely from `ch.spaces`, unchanged.
+  for (const row of rows) {
+    if (unknown.has(row.id)) { row.unmetered = true; row.glowValue = null; }
+  }
   paintChart(rows);
 }
 

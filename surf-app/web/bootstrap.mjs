@@ -11,11 +11,22 @@
 // `last_activity` field, NOT a second `get_space_health` call. `list_spaces`
 // is already the one RPC this function consumes, and its `last_activity` is
 // populated from the same content-block/mempool scan `get_space_health`
-// itself draws `last_engagement_ts` from (src/rpc/methods.rs
-// `build_space_list`, Source 2/3) -- a second RPC round-trip to re-rank by a
-// numerically-equivalent signal would only add boot latency for no better
-// data. get_space_health remains the Chart's own (separately fetched, B3)
-// finer-grained per-space recency view once a channel is metered.
+// draws its numbers from (src/rpc/methods.rs `build_space_list`,
+// Source 2/3) -- but it is NOT the same signal as get_space_health's
+// `last_engagement_ts`, and this comment previously overclaimed that it
+// was ("numerically-equivalent"). `last_activity` counts ALL activity
+// (posts and replies, not just engagements); `last_engagement_ts` counts
+// only engagements. A space that is post-active but unengaged can rank near
+// the top here and still show a fading/dying dead-air card moments later,
+// once checkDeadAir's own get_space_health call runs against the very
+// spaces this function just picked -- that divergence is real and expected,
+// not a bug. It's a deliberate choice, not an oversight: `last_activity` is
+// the right signal for THIS function's actual job -- "find a space with
+// content to show" for the feed channel's bootstrap set -- and a second
+// get_space_health round-trip here would only add boot latency to re-rank
+// by a signal this function doesn't need. get_space_health remains the
+// Chart's own (separately fetched, B3) finer-grained per-space
+// engagement-recency view once a channel is metered.
 //
 // id-format (verified, not assumed -- src/rpc/types.rs SpaceSummary's own
 // doc comment + methods.rs decode_space_id/parse_space_id_16): list_spaces'
