@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1785402168659,
+  "lastUpdate": 1785427655436,
   "repoUrl": "https://github.com/superness/swimchain",
   "entries": {
     "Swimchain benchmarks": [
@@ -78231,6 +78231,1158 @@ window.BENCHMARK_DATA = {
             "name": "cache_persist/10000",
             "value": 667918,
             "range": "± 33790",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "super.hero.excuse@gmail.com",
+            "name": "superness",
+            "username": "superness"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4dede49f4a5593b44882c107efea69d64e2e8b88",
+          "message": "Surf Phase B — the soul: the set knows its channels are alive (#239)\n\n* docs(surf): Phase B decision sheet - six dials for the operator\n\nRecon-backed: space_health score is half-stubbed (posts_at_risk and\nsync_age hardcoded; manager never constructed) so B1 offers a minimal-\nhonest RPC instead; submit_engagement has no weight field (low-weight =\nlow PoW difficulty) and no rate limit exists node-side (24h rule must be\nclient policy); the shell can only sign engages via the node sign_message\nRPC (flagged for explicit ruling); list_spaces already ranks by activity\n(bootstrap-via-health can close the A1 debt row).\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(surf): B decision sheet ruled - all six dials, operator-delegated\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(surf): fix decision-sheet encoding mangled by a PS5.1 re-encode\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>\n\n* docs(surf): Phase B implementation plan draft (pre-review)\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* docs(surf): fold B plan review — 10 confirmed + carried findings\n\nPoW recipe corrected (blocks::action::ActionType not types; pow_nonce as\nu64 number; timestamp seconds); unmetered spaces:[] channels exempt from\ndead-air/Chart health; dwell snapshots rendered items at tune with body\nfilter; flare clears optimistically; freshestTs + glow anchors made\nnon-vacuous; bootstrap routes to all consumers via persisted feed.spaces;\nuntuned re-arm and receive-only latch visibility fixed; 5d dead-air\nboundary matches ruling B6.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): get_space_health RPC - minimal-honest per-space engagement stats\n\nFold Engage actions from iter_content_blocks() into per-space\n(last_engagement_ts, engagements_7d, unique_actors_7d), cached whole-map\nwith the same 3s-TTL pattern as resolved_space_list. Auth-exempt,\nRead-category. No health_score (Surf Phase B decision B1: minimal-honest,\nits inputs are stubbed for a later phase).\n\nTDD'd the pure fold first (red on missing fn, green after implementing),\nwith both required mutation checks run and reverted as evidence. Verified\nlive against a freshly mainnet-synced node.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): B policy dials + engage PoW worker (node-true params)\n\npolicy.mjs: every Phase B dial in one place, including glow() (recency ->\nbrightness, log-8-scaled against the 7-day half-life) with a mutation-tested\nanchor suite (log2(8)->log2(4) breaks both mid-curve anchors).\n\nengage.worker.mjs: wraps swimchain-react's already-shipped computePow\n(dist/lib/action-pow.js, git-tracked, no React dep) rather than hand-rolling\nthe Argon2id loop -- its byte layout, difficulty constants, and hash-wasm\nmemorySize handling are independently node-true and already exercised by\nforum-client's lineage, so reusing it is less drift risk. Cross-checked\nline-by-line against src/crypto/action_pow.rs (82-byte challenge layout, u64\nBE timestamp, salt = nonce_space, leading-zero-BIT counting) and\nsrc/network/mode.rs (mainnet Engage = 6 bits, 8 MiB/1/2 Argon2id).\n\nbuild-worker.cjs bundles it via esbuild (resolved from feed-client's\nnode_modules, same trick build-channels.cjs uses for vite) into\nweb/workers/engage.worker.js -- gitignored, wired as npm run build:worker\nand folded into build-channels.cjs's tail so one bake command produces\neverything.\n\nLive arbiter (CDP into a real mainnet-synced desktop dev app, real worker\nbundle, real WebView): mined a valid 6-bit engage PoW in 204ms, signed it via\nsign_message, and submit_engagement returned {\"engaged\":true} against a real\nbootstrap-space content id -- the node independently re-verified the same\nPoW and signature server-side. (The dev identity needed the same\nstanding-offer sponsorship onboarding reef/chess/trench use first; that\nonboarding is documented as part of the live check, not a workaround.)\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): dwell-engage - 45s tuned mines a minimum-weight engage, 24h ledger, receive-only latch\n\ndwell.mjs: pure timer/selection logic (TDD'd first, 10 tests, all 5 named\nmutation checks in the brief run and reverted as evidence). Snapshots\nlist_space_content AT TUNE TIME so fire() never re-fetches (an item that\nappears after tuned() is never engaged); selectForEngage filters body-null\nrows before the 24h ledger check, newest-first, capped at K=3. The\nreceive-only latch is a per-channel Set checked at the top of fire(), so a\nsponsorship rejection silences the channel for the rest of the session, not\njust the remainder of the fire that hit it -- proven by a second\ntuned()->fire() cycle asserting zero additional engageOne calls.\n\nengage.mjs: mine (Task 2's worker) -> sign (engage:{content_id}:{nonce}:\n{timestamp}, seconds, decimal nonce) -> submit_engagement (pow_nonce as a\nplain Number, not the worker's decimal string -- SubmitEngagementParams.\npow_nonce is a bare u64 with no string shim). Classifies a sponsorship\nrejection by matching the real node's -32015 message text (A1's rpc()\ndiscards error.code by design), since a fresh identity being unsponsored on\nmainnet is the default new-user path, not an error.\n\nshell.mjs: sign() helper wraps sign_message; dwell armed only from settle's\nonReady (acquired, spaces.length, !isReceiveOnly guards); untuned() in\nflip() placed AFTER both of A1's existing guard-returns so a debounced/\nguarded no-op flip can't permanently disarm dwell on the channel the viewer\nstays on (only onReady re-arms it); untuned() also on powerOff.\n\nLive via CDP against Task 2's already-sponsored dev identity: 6 real engages\nlanded (engaged:true, distinct nonces/hashes/signatures) across two dwell\ncycles, the second of which the ledger correctly steered onto fresh items\ninstead of re-attempting the first cycle's three. A genuinely unsponsored\nsynthetic identity hit the real node's -32015 path exactly once, was\nclassified receive-only, and a second tuned() cycle on the same channel\nproduced zero additional attempts.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): dead air + flare - decayed channels flip to a dying test card that can be revived\n\ndeadair.mjs: classifyDeadAir(lastEngagementTs, now) (>5d=dying, >=2d=fading,\nelse alive; null ts is honest dying, not \"no data\") and freshestTs(entries)\n(max last_engagement_ts, ignoring nulls) exactly per the brief -- the one\nplace this aggregation happens, reused by Task 5's chart.mjs later.\nisMetered/classifyChannelDeadAir compose the unmetered guard (a channel with\nspaces:[] -- wiki, reef today -- never gets a card, and the guard is\nindependently provable by a mutation test since shell.mjs itself has no\nharness). pickFlareTarget picks the newest surviving item across a\nchannel's spaces (null when nothing is retrievable -- \"beyond flares\").\nclassifyAfterFlare(lastEngagementTs, now, flareOk) is the optimistic\nreclassification: on success, uses `now` as the effective ts (always alive)\nWITHOUT re-calling get_space_health, since that RPC only reflects a fresh\nengage after block inclusion (chain+mempool law) -- verified live below.\n\nTDD'd first: 17 tests covering every named boundary/case in the brief\n(exactly-5d=fading, exactly-2d=fading, null=dying, freshestTs max/all-null,\nthe unmetered guard, the flare test), plus all 4 named mutation checks run\nand reverted as evidence (>-vs->=, max-vs-min, guard removed, optimistic\noverride dropped -- each broke exactly its predicted test and nothing else).\n\nindex.html: #dead-air overlay, same bleached-coral SMPTE structure as\n#signal-lost, z-index 5550 (between signal-lost/node-dead's 5500/5600,\nabove any channel iframe, below OSD/flip-strip) so it draws OVER the\nstill-playing channel per spec 3.3, not instead of it.\n\nshell.mjs: checkDeadAir() wired into settle()'s onReady (same integration\npoint dwell uses), owns the unmetered guard itself so get_space_health is\nnever called for wiki/reef; hideDeadAirCard() added to settle()'s existing\nhide-on-settle line so the card is dismissed on next flip. FLARE reuses\nengageOne (the same mineSignSubmit path dwell uses) after\nlist_space_content + pickFlareTarget + request_content; guarded by\ndwell.isReceiveOnly() OR'd with a small parallel flareLatched Set (dwell.mjs\nexposes no setter and isn't in this task's file list, so a flare's own\nrejection is tracked separately) for \"one try then silent\" per 2.5.\n\nLive via CDP: the classifier matched real mainnet last_engagement_ts data\nexactly (and incidentally found genuine 7-day-stale dead air on FEED's\nbootstrap spaces before Task 3's own prior live engages had revived them).\nDrove the CARD via a CDP fetch-interception injection (screenshot captured,\nz-index confirmed above the live channel frame) since this identity's own\nhistory had organically revived the channel by check time. A real end-to-\nend FLARE landed engaged:true on mainnet and the card cleared\noptimistically with zero additional get_space_health calls; reloading and\nre-querying the real RPC immediately after confirmed it still showed the\npre-flare value, live-proving why the optimistic path is necessary. The\nunmetered guard was confirmed live: zero get_space_health calls on WIKI/REEF.\n\nnpm test: 57/57 (40 pre-existing + 17 new).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(surf): unify the flare and dwell receive-only latch (M-7)\n\nshell.mjs's Task 4 flare handler kept a shell-local `flareLatched` Set\nparallel to dwell.mjs's own private `receiveOnly` Set. Since the dead-air\ncard draws OVER a still-playing channel, dwell keeps running underneath it\nregardless of whether a card is up -- so a flare-first sponsorship rejection\nlatched only the flare, leaving dwell's own 45s timer free to fire later and\nre-mine + re-submit a doomed engage on the same unsponsored identity,\nviolating section 2.5 \"one try then silent\" across the flare<->dwell\nboundary. ledgerMark only runs on r.ok, so nothing else in the pipeline\nwould have caught this.\n\ndwell.mjs: add markReceiveOnly(channelId) to createDwell's returned\ncontroller -- one method, writes the exact same private Set isReceiveOnly()\nreads and fire() checks. No other change to the file.\n\nshell.mjs: delete flareLatched entirely. The flare guard is now just\ndwell.isReceiveOnly(channelId); the flare's rejection branch calls\ndwell.markReceiveOnly(channelId) instead. One latch, written and read from\nboth call sites, closes the gap in both directions.\n\ndwell.test.mjs: two new tests -- isReceiveOnly reads what markReceiveOnly\nwrites, and a tuned->fire cycle after an external markReceiveOnly() call\nmakes zero engageOne calls (proves fire() honors a latch set from outside\nits own loop). Mutation (markReceiveOnly as a no-op): both new tests fail,\nnothing else.\n\nLive re-verified against a real node: a genuinely unsponsored throwaway\nidentity's submit_engagement hit the real -32015 path; using the real,\nunmodified dwell.mjs, an external markReceiveOnly() call (what the flare\nhandler now does) fed the exact same state isReceiveOnly() reads, and a\nsubsequent tuned->fire cycle made zero engageOne calls.\n\nnpm test: 59/59 (57 prior + 2 new).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): the Chart - depth-ordered water column, glow = engagement recency, mooring\n\nTask 5 of Surf Phase B (decision B3, spec §3.4). chart.mjs: pure bandOf/\nchartRows/toggleMoor, TDD'd with mutation evidence for all 4 named checks\n(band boundary, unmetered-vs-measured-dead, cap-over-toggle, afterglow\ndrop). Unmetered channels (spaces:[]) get glowValue:null + unmetered:true,\nrendered as a distinct dim NO TELEMETRY row, never collapsed onto the\ndecayed-glow-0 \"measured and dead\" scale. Reuses deadair.mjs's freshestTs\nfor the freshest-across-a-channel's-spaces aggregation (single source).\n\nWired a pull-down drawer (#chart, new #chart-strip top edge) into index.html/\nshell.mjs: tap-to-tune, horizontal-flick-to-moor per row, a distinct\nhorizontal flick on the moored-buoys strip to cycle (DOM-zone separation\nresolves the three-gesture ambiguity, and proves #flip-strip inert while\nthe chart's full-screen z-6600 drawer is open). Moored set persists in\nlocalStorage across reloads.\n\nLive-caught and fixed two real bugs before trusting any of this: (1)\nget_space_health's response space_id comes back bech32 regardless of the\nhex ids channels.json declares, so an initial combined multi-channel call\nre-split by id silently matched nothing (every glowValue read 0 regardless\nof real data) — fixed by scoping one call per metered channel instead; (2)\nflip() wasn't guarded against an open chart drawer for keyboard input\n(DOM z-index occlusion only blocks pointer/touch, not keydown), so\nArrowDown could silently change the hidden deck.\n\nnpm test: 71/71 (59 pre-existing + 12 new). Live via CDP against the real\nrunning app (Task 4's persisted synced mainnet data dir): real varied\nlast_engagement_ts rendered correctly, unmetered rows confirmed dim not\nblack, mooring flick + persistence across two reloads + set-cycling all\nverified, real drag gesture on the new top strip confirmed with a\nthreshold test.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(surf): loadMoored degrades corrupt localStorage instead of bricking boot\n\nReview finding (Important): shell.mjs's original\n`new Set(JSON.parse(localStorage.getItem(MOORED_KEY) ?? '[]'))` ran at\nmodule top level with no guard, unlike every other localStorage read in\nthe file (all raw strings, no parse). A corrupted or hand-edited\nsurf.moored value would throw a SyntaxError during shell.mjs's own module\nevaluation and brick the entire app - no channels mount, no power-on.\n\nExtracted loadMoored(store, key) into chart.mjs, following dwell.mjs's\nexisting ledgerHas/ledgerMark store-parameter convention so it is\nunit-testable without any DOM/localStorage mocking. Catches any JSON.parse\nfailure AND guards valid-JSON-but-wrong-shape values (Array.isArray check\n- a bare number or string parses without throwing but isn't a moored-id\nlist), degrading either case to an empty Set rather than propagating.\n\n4 new tests (valid array, missing key, garbage JSON, wrong-shape JSON);\nmutation (remove the try/catch) reproduces exactly the predicted\nmodule-eval SyntaxError, caught by exactly the one test aimed at it.\nnpm test: 75/75.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(surf): health-driven bootstrap + Phase B README/debt\n\nCloses A1's hardcoded-space debt (B5): acquisitionBoot now ranks the\nnode's own live list_spaces (top-3 class==='social' by last_activity,\nbootstrap.mjs's pure pickBootstrap) and adopts the pick as the feed\nchannel's spaces via a single mutation (byId.get(FEED_ID).spaces =\npicked), persisted to localStorage['surf.feedSpaces']. Every boot\nre-applies the persisted pick immediately after byId is built, before\nany consumer reads it -- tuneDriver, the acquisition lock's\nlocalItemCount, dwell, dead-air, and the Chart all see the live set\nwith no per-consumer changes. channels.json's trio is fallback-only\nnow (empty listing, or first-ever run) -- its spaces field gained a\nspacesNote saying so.\n\n14 new bootstrap.test.mjs cases (npm test: 89/89), the brief's named\nmutation (drop the social filter) confirmed to break exactly the 3\ntargeted tests. Live-verified via CDP route-interception against the\nreal running app in both directions: an intercepted empty list_spaces\nproduces follow_space/list_space_content calls against exactly\nchannels.json's 3 HEX trio ids with surf.feedSpaces left unwritten\n(the fallback observable); the real list_spaces response produces a\ntop-3-social BECH32 pick independently observed reaching\nfollow_space, list_space_content, get_space_health (dead-air), and\nthe Chart's own get_space_health call.\n\nREADME gains a \"Phase B - the soul\" section (what shipped B1-B6, the\npolicy.mjs dial list, the engage worker build step folded into\nbuild:channels) and the debt table marks the A1 bootstrap-decay row\nCLOSED (B5), adding four B-carry rows (get_space_health v2, node-side\nrate limiting, dwell's rendered-approximation gap, the un-pruned\nengage ledger).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(surf-b): flare waits for arrival before engaging; honest chart/comment fixes\n\nFinal-review fix wave for Surf Phase B:\n\n- deadair.mjs/shell.mjs: pickFlareTarget now reports whether its target is\n  body-present. On a cold item the flare fires request_content and POLLS\n  (flareTargetReady, 1s/10s) for the body before ever engaging, instead of\n  engaging blind — submit_engagement silently drops an engage against an\n  absent body (node truth), wasting the mined PoW and leaving the dead-air\n  card with no feedback until a second press. Shows a SEARCHING state while\n  polling; falls back to the \"beyond flares\" card on timeout without\n  mining/submitting.\n- shell.mjs: a get_space_health THROW while rendering the Chart now paints\n  a channel as unmetered/unknown (NO TELEMETRY, glow null) instead of\n  glow-0 measured-dead — a transient RPC error no longer paints a live\n  channel as confirmed dark. A genuinely empty successful response is\n  unaffected.\n- bootstrap.mjs: corrected a comment overclaiming list_spaces.last_activity\n  is \"numerically-equivalent\" to get_space_health's engagement recency; it\n  is not (all-activity vs. engagement-only), which is a deliberate,\n  documented tradeoff, not a bug.\n\nnpm test: 94/94 (was 89; +5 from mutation-tested pickFlareTarget/\nflareTargetReady coverage).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: AdminWizard <admin@adminwizard.tech>\nCo-authored-by: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-07-30T09:34:08-04:00",
+          "tree_id": "2cf54e470ff5e4490e312c1d1206805967238bdf",
+          "url": "https://github.com/superness/swimchain/commit/4dede49f4a5593b44882c107efea69d64e2e8b88"
+        },
+        "date": 1785427654133,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "mobile_single_hash/mobile_64mib_p2",
+            "value": 96618362,
+            "range": "± 1525313",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/desktop_64mib_p4",
+            "value": 3149706,
+            "range": "± 11587",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_single_hash/test_1mib_p1",
+            "value": 389569,
+            "range": "± 413",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/4",
+            "value": 1071504724,
+            "range": "± 1398127230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/6",
+            "value": 1592472465,
+            "range": "± 3257422596",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_mining/8",
+            "value": 13062792440,
+            "range": "± 25644637143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/4",
+            "value": 5901871,
+            "range": "± 626957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/6",
+            "value": 28601035,
+            "range": "± 8058809",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/8",
+            "value": 90390319,
+            "range": "± 21839377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/10",
+            "value": 269501995,
+            "range": "± 460192238",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "test_config_mining/12",
+            "value": 980162579,
+            "range": "± 861444880",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Post",
+            "value": 763903692,
+            "range": "± 621565674",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Reply",
+            "value": 1093735927,
+            "range": "± 939905935",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "mobile_action_types/Engage",
+            "value": 1430542999,
+            "range": "± 1338569403",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/3G_2mbps",
+            "value": 3034053983,
+            "range": "± 1451046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/4G_10mbps",
+            "value": 3290,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_sync/WiFi_50mbps",
+            "value": 3411,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/1KB",
+            "value": 5181,
+            "range": "± 15",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/4KB",
+            "value": 1348,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/16KB",
+            "value": 403,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_transfer/64KB",
+            "value": 141,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/3G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/4G_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_1k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_10k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "theoretical_sync/WiFi_100k_headers",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_startup",
+            "value": 2524190146,
+            "range": "± 647861526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "node_shutdown",
+            "value": 2357622617,
+            "range": "± 2175661",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/2",
+            "value": 4965849546,
+            "range": "± 115612377",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/3",
+            "value": 7311043866,
+            "range": "± 104854760",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/5",
+            "value": 12241322450,
+            "range": "± 240668367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "harness_creation/10",
+            "value": 24445679575,
+            "range": "± 1598137884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chain_store_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "connection_manager_access",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_info",
+            "value": 147799,
+            "range": "± 1496",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_sync_status",
+            "value": 755880,
+            "range": "± 4727",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_chain_stats",
+            "value": 147968,
+            "range": "± 2360",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/get_peers",
+            "value": 139643,
+            "range": "± 2033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_read/list_spaces",
+            "value": 139888,
+            "range": "± 4460",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/feed_poll",
+            "value": 1060119,
+            "range": "± 9326",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/create_space",
+            "value": 8181104,
+            "range": "± 994458",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/submit_post",
+            "value": 18810328,
+            "range": "± 2483461",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "rpc_use_case/list_space_content_populated",
+            "value": 5662983,
+            "range": "± 18102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "keypair_generation",
+            "value": 20962,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_32bytes",
+            "value": 41217,
+            "range": "± 35",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sign_1kb",
+            "value": 45684,
+            "range": "± 25",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_signature",
+            "value": 42344,
+            "range": "± 37",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encode_address",
+            "value": 361,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decode_address",
+            "value": 530,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/8",
+            "value": 40573,
+            "range": "± 257",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/12",
+            "value": 332214,
+            "range": "± 16973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "pow_mining/16",
+            "value": 5081208,
+            "range": "± 1269415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "encrypt_private_key",
+            "value": 89994252,
+            "range": "± 199140",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decrypt_private_key",
+            "value": 89775411,
+            "range": "± 249917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "export_identity",
+            "value": 90080897,
+            "range": "± 2096379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "import_identity",
+            "value": 89833298,
+            "range": "± 597555",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_1mib",
+            "value": 390403,
+            "range": "± 185",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/4",
+            "value": 5531737,
+            "range": "± 868162",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/8",
+            "value": 112467986,
+            "range": "± 44606194",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/10",
+            "value": 578634460,
+            "range": "± 285951870",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_mining_test/12",
+            "value": 1934055093,
+            "range": "± 2424089855",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_64mib",
+            "value": 3148689,
+            "range": "± 1118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_verify_mobile",
+            "value": 92000540,
+            "range": "± 176033",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/test_1mib",
+            "value": 391965,
+            "range": "± 3192",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/mobile_64mib_p2",
+            "value": 91959049,
+            "range": "± 493538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "action_pow_config_comparison/prod_64mib_p4",
+            "value": 3155863,
+            "range": "± 70107",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/100",
+            "value": 1688507,
+            "range": "± 484165",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/500",
+            "value": 5582289,
+            "range": "± 453919",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "fracture_overhead/threads/1000",
+            "value": 10963379,
+            "range": "± 78338",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/100",
+            "value": 264,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/1000",
+            "value": 274,
+            "range": "± 13",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "branch_lookup/threads/5000",
+            "value": 352,
+            "range": "± 5",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_default_threshold",
+            "value": 22966,
+            "range": "± 1430",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "insert_with_branch/insert_small_threshold",
+            "value": 100393,
+            "range": "± 11984",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "space_state_lookup/get_space_branch_state",
+            "value": 261,
+            "range": "± 1",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_unfractured",
+            "value": 234,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "hash_branch_matching/assign_branch_fractured",
+            "value": 286,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/2MB",
+            "value": 1551895,
+            "range": "± 323",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/10MB",
+            "value": 12534455,
+            "range": "± 138507",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/50MB",
+            "value": 64623040,
+            "range": "± 214592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "chunk_data/size/100MB",
+            "value": 129622215,
+            "range": "± 442478",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/2MB",
+            "value": 3077856,
+            "range": "± 25286",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/10MB",
+            "value": 15415943,
+            "range": "± 101355",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "store_chunked/size/50MB",
+            "value": 102237186,
+            "range": "± 401739",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/2MB",
+            "value": 1681327,
+            "range": "± 794",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/10MB",
+            "value": 8385093,
+            "range": "± 6923",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "reassemble/size/50MB",
+            "value": 43842407,
+            "range": "± 80129",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/2",
+            "value": 652,
+            "range": "± 2",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/10",
+            "value": 2713,
+            "range": "± 6",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/50",
+            "value": 12591,
+            "range": "± 31",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/100",
+            "value": 24598,
+            "range": "± 67",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/500",
+            "value": 121441,
+            "range": "± 402",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_serialization/chunks/1024",
+            "value": 245718,
+            "range": "± 579",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/2",
+            "value": 919,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/10",
+            "value": 4026,
+            "range": "± 17",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/50",
+            "value": 18704,
+            "range": "± 76",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/100",
+            "value": 36538,
+            "range": "± 48",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/500",
+            "value": 182471,
+            "range": "± 284",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_deserialization/chunks/1024",
+            "value": 376142,
+            "range": "± 766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1MB",
+            "value": 777253,
+            "range": "± 209",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/10MB",
+            "value": 7791895,
+            "range": "± 6155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/100MB",
+            "value": 129979125,
+            "range": "± 338399",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/500MB",
+            "value": 645516731,
+            "range": "± 5234443",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest_overhead/file_size/1024MB",
+            "value": 1326580435,
+            "range": "± 9512014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/10",
+            "value": 38236,
+            "range": "± 97",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/50",
+            "value": 147217,
+            "range": "± 139",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "check_availability/chunks/100",
+            "value": 290347,
+            "range": "± 465",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation/10k_posts_60_days",
+            "value": 18188768,
+            "range": "± 422287",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_simulation_large/100k_posts_60_days",
+            "value": 226525419,
+            "range": "± 2348046",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/1000",
+            "value": 30,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/10000",
+            "value": 49082,
+            "range": "± 347",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "prune_tick/50000",
+            "value": 217579,
+            "range": "± 2438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100",
+            "value": 33318,
+            "range": "± 473",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/1000",
+            "value": 332553,
+            "range": "± 1330",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/10000",
+            "value": 3320966,
+            "range": "± 3358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "verify_header_chain/100000",
+            "value": 33262441,
+            "range": "± 41210",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/1000",
+            "value": 1967,
+            "range": "± 14",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/10000",
+            "value": 18165,
+            "range": "± 332",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "identify_relevant_blocks/100000",
+            "value": 143297,
+            "range": "± 570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "header_hash",
+            "value": 332,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "meets_difficulty",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Budget_1GB",
+            "value": 2722175,
+            "range": "± 40916",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Standard_5GB",
+            "value": 14538342,
+            "range": "± 92776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_hit_rate/zipf_access/Flagship_10GB",
+            "value": 29972388,
+            "range": "± 170322",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/50",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/75",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/90",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/95",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction_overhead/evict_at_fill_pct/99",
+            "value": 4,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/1KB",
+            "value": 329848,
+            "range": "± 16967",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/10KB",
+            "value": 356666,
+            "range": "± 32891",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "caching_store_put/put/100KB",
+            "value": 563477,
+            "range": "± 13147",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/100",
+            "value": 1435,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/1000",
+            "value": 15417,
+            "range": "± 147",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "statistics_overhead/collect_stats/10000",
+            "value": 228707,
+            "range": "± 2804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_12_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_100_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_7",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_14",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_30",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_60",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_projection/users_1000_days_90",
+            "value": 1,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/steady_state",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/daily_growth",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "decay_calculation/avg_post_size",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/100_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/1000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "user_scale/10000_users",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/budget_1gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/standard_5gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "storage_requirements/flagship_10gb",
+            "value": 0,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/root_block",
+            "value": 4924,
+            "range": "± 446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/space_block",
+            "value": 600,
+            "range": "± 3",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "sequential_write/content_block",
+            "value": 588,
+            "range": "± 7",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1024",
+            "value": 8776,
+            "range": "± 6562",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/4096",
+            "value": 14445,
+            "range": "± 8953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/65536",
+            "value": 159749,
+            "range": "± 59591",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_write/1048576",
+            "value": 2184327,
+            "range": "± 103904",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "random_read/root_block_1000",
+            "value": 746,
+            "range": "± 4",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1024_bytes",
+            "value": 10530,
+            "range": "± 158",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/65536_bytes",
+            "value": 60004,
+            "range": "± 491",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "blob_read/1048576_bytes",
+            "value": 825520,
+            "range": "± 1381",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/add_entry",
+            "value": 585,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache/access",
+            "value": 279,
+            "range": "± 0",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/100",
+            "value": 28890,
+            "range": "± 99",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/1000",
+            "value": 50441,
+            "range": "± 195",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "eviction/10000",
+            "value": 50546,
+            "range": "± 219",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/1048576_bytes",
+            "value": 780238,
+            "range": "± 368",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/5242880_bytes",
+            "value": 3904340,
+            "range": "± 1397",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "manifest/10485760_bytes",
+            "value": 7823141,
+            "range": "± 43784",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/empty_db",
+            "value": 2213152,
+            "range": "± 33789",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "startup/populated_db",
+            "value": 6553829,
+            "range": "± 321298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/100",
+            "value": 416172,
+            "range": "± 6658",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/1000",
+            "value": 529007,
+            "range": "± 12230",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "cache_persist/10000",
+            "value": 544704,
+            "range": "± 30411",
             "unit": "ns/iter"
           }
         ]
