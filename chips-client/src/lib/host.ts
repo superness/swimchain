@@ -59,6 +59,18 @@ const GAME_SPONSOR = (import.meta.env?.VITE_GAME_SPONSOR as string | undefined)?
  * from running.
  */
 const DEBUG_SPACE = (import.meta.env?.VITE_CHIPS_DEBUG_SPACE as string | undefined)?.trim() || '';
+/**
+ * THE BOTTOM OF THE BOWL — the space the secret wall lives in.
+ *
+ * Minted on mainnet 2026-07-29 by the chips util identity. Spaces and posts are
+ * ordinary network use; no special permission is involved, which is why this
+ * could simply be created rather than requested.
+ *
+ * Readable by anyone who knows the id, which is exactly WHY the gate is
+ * client-side and total: the moment is shown only on coming up through the
+ * bottom, never from a menu and never twice.
+ */
+const BOTTOM_SPACE = (import.meta.env?.VITE_CHIPS_BOTTOM_SPACE as string | undefined)?.trim() || '';
 
 /**
  * Reef runs these "testnet" PoW params live on mainnet today (see
@@ -107,7 +119,14 @@ export interface ChipsHost {
    * has already succeeded by then.
    */
   reportBug(id: Identity, text: string, onProgress?: ProgressCallback): Promise<string | null>;
+  /** Everyone who has come up through the bottom, newest first. */
+  readTheBottom(): Promise<{ body: string; at: number }[]>;
+  /** Leave your mark. Resolves to the content id, or null if unconfigured. */
+  signTheBottom(id: Identity, body: string, onProgress?: ProgressCallback): Promise<string | null>;
 }
+
+/** Whether the wall exists to be read or signed at all. */
+export const HAS_THE_BOTTOM = BOTTOM_SPACE !== '';
 
 /** Whether reports can be filed at all — lets the UI promise only what it can do. */
 export const CAN_FILE_REPORTS = DEBUG_SPACE !== '';
@@ -355,6 +374,48 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
     },
 
     submitMove: (id, tableId, body, onProgress) => submitMinedReply(rpc, id, tableId, body, onProgress),
+
+    async readTheBottom() {
+      if (!BOTTOM_SPACE) return [];
+      // Bounded: the wall is a moment, and `wall()` collapses and caps it anyway.
+      // POSITIONAL, not an object — the same trap documented at listTables
+      // below: `rpc.listSpacePosts(spaceId, { limit })`.
+      const res = await rpc.listSpacePosts(BOTTOM_SPACE, { limit: 500 });
+      // `headerJson` strips the title-and-blank-line prefix a post is stored
+      // with; without it every mark would arrive still carrying "was here" and
+      // parse as nothing.
+      return (res.items ?? []).map((p) => ({
+        body: headerJson(p.body ?? ''),
+        at: p.created_at ?? 0,
+      }));
+    },
+
+    async signTheBottom(id, body, onProgress) {
+      if (!BOTTOM_SPACE) return null;
+      // The mark rides in the BODY; the title is fixed so the wall reads as one
+      // thing in any feed that happens to list it.
+      const title = 'was here';
+      // Same preimage contract as createTable: the node reconstructs
+      // `${title}\n\n${body}` to verify PoW, so hashing anything else fails.
+      const content = [title, body].join('\n\n');
+      const challenge = await createChallenge(
+        ActionType.Post,
+        new TextEncoder().encode(content),
+        hexToBytes(id.publicKeyHex),
+        getDifficulty(ActionType.Post, POW_TESTNET_PARAMS)
+      );
+      const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
+      const p = solutionToRpcParams(solution);
+      const contentHash = await contentHashForPost(title, body);
+      const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
+      const res = await rpc.submitPost({
+        spaceId: BOTTOM_SPACE, title, body, authorId: id.publicKeyHex,
+        powNonce: Number(p.pow_nonce), powDifficulty: p.pow_difficulty,
+        powNonceSpace: p.pow_nonce_space, powHash: p.pow_hash,
+        signature, timestamp: p.timestamp,
+      });
+      return res.content_id;
+    },
 
     async reportBug(id, text, onProgress) {
       if (!DEBUG_SPACE) return null;   // clipboard-only deployment; not an error

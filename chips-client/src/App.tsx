@@ -14,7 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
 import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
-import { createBrowserHost, CAN_FILE_REPORTS, type ChipsHost, type Identity } from './lib/host';
+import { createBrowserHost, CAN_FILE_REPORTS, HAS_THE_BOTTOM, type ChipsHost, type Identity } from './lib/host';
 import { foldChips, saltFor, SALT_TICK_BONUS, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
 import { withPending } from './lib/chipsPending';
@@ -41,6 +41,8 @@ import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from '.
 import { PorcelainFight } from './Porcelain';
 import { ScoopShop } from './Scoop';
 import { DeepFightScreen } from './DeepFight';
+import { TheBottom } from './TheBottom';
+import { parseMark, wall, markBody, hasBeenThere, type Mark } from './lib/theBottom';
 import { fightAt, ready as deepReady, bestBlow } from './lib/deepBoss';
 import { freshPolish, polishMult, advance as advancePolish, polishLook, type Polish } from './lib/polish';
 import { porcelainInReach, readiness, cracks } from './lib/porcelain';
@@ -194,6 +196,17 @@ export function App() {
   const [porcOpen, setPorcOpen] = useState(false);
   const [scoopOpen, setScoopOpen] = useState(false);
   const [deepOpen, setDeepOpen] = useState(false);
+  /* ── THE BOTTOM OF THE BOWL ──────────────────────────────────────────────
+     A MOMENT, NOT A PAGE. Opened only by `bowls` rising — never from a menu,
+     never twice for the same arrival. `bottomSeenAt` remembers which arrival
+     has already been shown so a re-fold (a poll, a reconnect) cannot reopen it.
+     Operator: "it should stay only an ephemeral moment for people who got there
+     to see at all." */
+  const [bottomOpen, setBottomOpen] = useState(false);
+  const [bottomMarks, setBottomMarks] = useState<Mark[]>([]);
+  const [bottomLoading, setBottomLoading] = useState(false);
+  const [bottomSigned, setBottomSigned] = useState(false);
+  const bottomSeenAt = useRef<number | null>(null);
   /** Set for the beat after a band gives, so the screen can say so before it
    *  closes — the same courtesy the porcelain's breakthrough gets. */
   const [deepBroke, setDeepBroke] = useState(false);
@@ -1227,6 +1240,50 @@ export function App() {
     };
   }
 
+  /* ── THE MOMENT OPENS ITSELF ─────────────────────────────────────────────
+     Fires when `bowls` rises, which happens exactly once per arrival: the fold
+     increments it on coming up through the bottom. Guarded by `bottomSeenAt` so
+     a re-fold of the same chain cannot show it twice — the moment is supposed to
+     be unrepeatable, and a poll that reopened it would make it a page. */
+  useEffect(() => {
+    if (!state || !HAS_THE_BOTTOM || !host) return;
+    if (!hasBeenThere(state.bowls)) return;
+    if (bottomSeenAt.current === state.bowls) return;
+    bottomSeenAt.current = state.bowls;
+    setBottomSigned(false);
+    setBottomOpen(true);
+    setBottomLoading(true);
+    // Read the wall fresh. Never cached: it should be whoever has been there as
+    // of THIS moment, and a client must not pretend to know while offline.
+    host.readTheBottom()
+      .then((posts) => {
+        const marks = posts
+          .map((x) => parseMark(x.body, x.at))
+          .filter((m): m is Mark => m !== null);
+        setBottomMarks(wall(marks));
+      })
+      .catch((e) => { ringNote('note', `the bottom would not load: ${String(e)}`); })
+      .finally(() => setBottomLoading(false));
+  }, [state?.bowls, host]);
+
+  /** Leave a mark on the wall. One post, then the form closes for good. */
+  function onSignBottom(who: string): void {
+    if (!host || !me || !state) return;
+    let body: string;
+    try {
+      body = markBody(who, state.bowls);
+    } catch {
+      return;   // sanitised to nothing — the button is disabled for this anyway
+    }
+    setBottomSigned(true);
+    sfx.pop();
+    host.signTheBottom(me, body).catch((e) => {
+      // Quiet: the moment is folklore, not a transaction. Losing a mark is a
+      // shame, not a failure the player can do anything about.
+      ringNote('note', `mark did not land: ${String(e)}`);
+    });
+  }
+
   /**
    * CHIP AT A DEEP BOSS. One blow: feed a basket, it does its worth in damage.
    *
@@ -2171,6 +2228,18 @@ export function App() {
             {deepFight.done > 0 ? 'back to it' : 'have a go'}
           </button>
         </div>
+      )}
+      {/* THE BOTTOM OF THE BOWL. No call-to-action anywhere: this cannot be
+          opened, only arrived at. */}
+      {bottomOpen && state && (
+        <TheBottom
+          bowls={state.bowls}
+          marks={bottomMarks}
+          loading={bottomLoading}
+          signed={bottomSigned}
+          onSign={onSignBottom}
+          onClose={() => setBottomOpen(false)}
+        />
       )}
       {deepOpen && deepFight && (
         <DeepFightScreen
