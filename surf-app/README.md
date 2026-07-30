@@ -61,9 +61,7 @@ consensus or node-side RPC work.
   (e.g. the old Swimchain mobile app running on the same phone) surfaces as
   the §6 node-failure state — full-screen static, diegetic line, details
   toggle — never a crash. README warns: stop/uninstall the old app when
-  testing Surf on the same device. *(Not theoretical — this exact collision
-  happened during Task 5's own device testing; see the port-conflict warning
-  in the build recipe below.)*
+  testing Surf on the same device.
 - **D3 — Identity model copied verbatim, including `identity.pass`.** §1
   explicitly accepts filesystem-level protection on Android app-private
   storage for v1. First-launch identity PoW (difficulty 20) runs during the
@@ -105,15 +103,21 @@ consensus or node-side RPC work.
 - **D6 — Instrumentation ships, hidden.** measure.mjs + HUD stay (keys
   `m`/`r`/`e`, invisible corners) — A1's device verification includes
   re-running the G2 background check on the **real WebView**, the explicit
-  obligation RESULTS.md carries. *(Still pending — see "Open items" below.)*
+  obligation RESULTS.md carries.
 - **D7 — A1 ends at a debug arm64 APK sideloaded on the Pixel.** Release
-  signing/size gates are Phase C. The Dev-Mode gradle workaround from
+  signing/size gates are Phase C (§5). The Dev-Mode gradle workaround from
   `mobile-app/README.md:40-81` is the documented build path.
 - **D8 — External opens are https-only, checked in Rust.** §2.2: mobile-app's
   unchecked opener is not inherited. Surf's `open_external` command validates
   `^https://` before `opener().open_url`; the shell's message handler
   additionally requires `event.source` to be the current channel's frame
   (exact-origin, foreground-only).
+
+*Two asides, kept true and useful but moved out of the decision text above
+so D1–D8 stay verbatim: D2's port collision is not theoretical — it occurred
+during Task 5's own device testing; see the port-conflict warning in the
+build recipe below. D6's G2 background re-check is still pending; see "Open
+items" below.*
 
 ## Build recipe
 
