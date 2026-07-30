@@ -11,7 +11,7 @@ import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './
 import { createDwell, ledgerMark } from './dwell.mjs';
 import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, freshestTs, isMetered, pickFlareTarget } from './deadair.mjs';
-import { chartRows, toggleMoor } from './chart.mjs';
+import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -202,8 +202,15 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
 // default supplies it). "Numbers persist" (brief wording) falls out for
 // free: only channel ids are stored, and channels.json's number/name for
 // each id never changes underneath a stored id.
+//
+// Review fix: loadMoored (chart.mjs) — not a raw inline JSON.parse — reads
+// the persisted set. A raw `new Set(JSON.parse(localStorage.getItem(...)))`
+// here would throw at MODULE TOP LEVEL on any corrupted/malformed stored
+// value and brick the entire shell import (no channels mount, no power-on).
+// loadMoored degrades any parse failure or wrong-shape value to an empty
+// Set instead.
 const MOORED_KEY = 'surf.moored';
-let moored = new Set(JSON.parse(localStorage.getItem(MOORED_KEY) ?? '[]'));
+let moored = loadMoored(localStorage, MOORED_KEY);
 function persistMoored() { localStorage.setItem(MOORED_KEY, JSON.stringify([...moored])); }
 let chartOpen = false;
 let mooredCycleIndex = 0; // which moored buoy is highlighted in the SET strip

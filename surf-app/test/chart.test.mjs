@@ -1,7 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chartRows, bandOf, toggleMoor } from '../web/chart.mjs';
+import { chartRows, bandOf, toggleMoor, loadMoored } from '../web/chart.mjs';
 import { glow, MOOR_CAP } from '../web/policy.mjs';
+
+// Minimal getItem-only fake store (dwell.test.mjs's fakeStore convention).
+function fakeStore(initial = {}) {
+  const m = new Map(Object.entries(initial));
+  return { getItem: (k) => (m.has(k) ? m.get(k) : null) };
+}
 
 const NOW = 10_000_000_000; // an arbitrary epoch-ms "now" (exact multiple of 1000, so ts*1000 round-trips exactly)
 const NOW_S = Math.floor(NOW / 1000);
@@ -122,4 +128,29 @@ test('toggleMoor: default cap is MOOR_CAP from policy.mjs', () => {
   const moored = new Set(['a', 'b', 'c']);
   const next = toggleMoor(moored, 'd'); // no explicit cap arg
   assert.equal(next, moored);
+});
+
+// --- loadMoored (review fix: a corrupted stored value must degrade to ------
+// "nothing moored", never throw and brick the whole shell module import) ---
+
+test('loadMoored: valid JSON array -> a Set of those ids', () => {
+  const store = fakeStore({ 'surf.moored': '["feed","wiki"]' });
+  assert.deepEqual([...loadMoored(store, 'surf.moored')].sort(), ['feed', 'wiki']);
+});
+
+test('loadMoored: missing key -> empty Set (unchanged first-boot behavior)', () => {
+  const store = fakeStore({});
+  assert.deepEqual([...loadMoored(store, 'surf.moored')], []);
+});
+
+test('loadMoored: garbage (non-JSON) stored value -> empty Set, does NOT throw', () => {
+  const store = fakeStore({ 'surf.moored': 'not json at all {{{' });
+  assert.doesNotThrow(() => loadMoored(store, 'surf.moored'));
+  assert.deepEqual([...loadMoored(store, 'surf.moored')], []);
+});
+
+test('loadMoored: valid JSON but wrong shape (a bare number/string, not an array) -> empty Set', () => {
+  assert.deepEqual([...loadMoored(fakeStore({ 'surf.moored': '7' }), 'surf.moored')], []);
+  assert.deepEqual([...loadMoored(fakeStore({ 'surf.moored': '"feed"' }), 'surf.moored')], []);
+  assert.deepEqual([...loadMoored(fakeStore({ 'surf.moored': '{"feed":true}' }), 'surf.moored')], []);
 });

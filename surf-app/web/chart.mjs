@@ -71,6 +71,26 @@ export function chartRows(channels, healthByChannel, warmSet, moored, now) {
     });
 }
 
+// Load the persisted moored set. Pure w.r.t. DOM (takes a store — anything
+// with .getItem(key), e.g. localStorage or a test fake — matching dwell.mjs's
+// ledgerHas/ledgerMark convention so this is unit-testable without any
+// DOM/localStorage mocking). Review finding: the shell's original inline
+// `new Set(JSON.parse(localStorage.getItem(MOORED_KEY) ?? '[]'))` ran at
+// module top level with no guard — a corrupted or hand-edited storage value
+// (bad JSON, or valid JSON of the wrong shape, e.g. a bare number/string)
+// would throw DURING shell.mjs's module evaluation and brick the entire
+// app (no channels mount, no power-on, nothing). Never let a bad `moored`
+// value be worse than "nothing moored": any parse failure OR a non-array
+// result degrades to an empty Set instead of propagating.
+export function loadMoored(store, key) {
+  try {
+    const parsed = JSON.parse(store.getItem(key) ?? '[]');
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
 // Toggle a channel's moored state. Pure: never mutates the input Set.
 // - Already moored -> returns a NEW Set with it removed.
 // - Not moored, under cap -> returns a NEW Set with it added.
