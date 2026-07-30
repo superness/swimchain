@@ -35,6 +35,7 @@
  */
 import { MAX_BATCH } from './chipsConst';
 import type { ChipEntry } from './chipsEngine';
+import { journalQueued, journalSent } from './moveJournal';
 
 /** `T extends any ? ... : never` forces distribution over a union when `T`
  *  is a naked type parameter — plain `Omit<A | B, K>` does NOT distribute:
@@ -94,7 +95,13 @@ export type NewMove = DistributiveOmit<QueuedMove, 'id' | 'sentAt'>;
 const STORE_KEY = 'chips.queue.v1';
 
 export function enqueue(q: QueuedMove[], move: NewMove, nextId: number): QueuedMove[] {
-  return [...q, { ...move, id: nextId } as QueuedMove];
+  const made = { ...move, id: nextId } as QueuedMove;
+  // EVERY move is born here, which is the only reason journalling is reliable:
+  // instrumenting the eight call sites would have meant the ninth was missed.
+  // See moveJournal.ts — the client's side of a discrepancy has to be a list of
+  // events, and this is the first event.
+  journalQueued(made);
+  return [...q, made];
 }
 
 /**
@@ -177,6 +184,7 @@ export function markSent(q: QueuedMove[], taken: QueuedMove[], at: number): Queu
   const out = q.map((m) => {
     if (!landed.has(m.id) || m.sentAt !== undefined) return m;
     changed = true;
+    journalSent(m, at);
     return { ...m, sentAt: at };
   });
   return changed ? out : q;
