@@ -3152,3 +3152,21 @@ h1, h2, h3, p { margin: 0; }
   width: 42px; height: 42px; opacity: .35; pointer-events: none;
 }
 .bottom-scoop svg { width: 100%; height: 100%; }
+
+/* The stratum, under the boss's name — where you are, quieter than what you
+   are hitting. */
+.deep-where {
+  display: block; margin: -10px 0 12px;
+  font-family: var(--chalk); font-size: 10.5px; letter-spacing: .08em; color: #8d6a52;
+}
+/* The arrival line. Shown only on an untouched boss: once you have hit it, the
+   healthbar is the thing you came back for and the poetry is in the way. */
+.deep-arrive {
+  margin: 0 0 14px; font-family: var(--chalk); font-size: 12px;
+  line-height: 1.5; color: #c3a487;
+}
+/* The one line he saves for the lava. */
+.deep-scoop-said {
+  display: block; margin-top: 14px; font-family: var(--chalk);
+  font-size: 12.5px; line-height: 1.5; color: #ffc27a;
+}
