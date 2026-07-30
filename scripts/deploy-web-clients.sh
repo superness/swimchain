@@ -41,7 +41,27 @@ for client in "${CLIENTS[@]}"; do
   [ -f "$dir/.env.production" ] || {
     echo "FATAL: $dir/.env.production missing — production values would not be baked"; exit 1; }
 
-  echo "== building $client =="
+  # WHAT GOES ON THE WEB MUST BE REPRODUCIBLE FROM GIT.
+  #
+  # On 2026-07-29 a download page was edited, uploaded to both hosts, verified
+  # live — and never committed. The live site and the repo disagreed for hours,
+  # which is the state where somebody later "fixes" the page by reverting to the
+  # last committed version and quietly reships the old APK link. Nothing in this
+  # script could have caught it, because nothing checked.
+  #
+  # Deliberately FATAL rather than a warning: a warning in a script whose output
+  # is 30 lines of green ticks is a warning nobody reads.
+  dirty=$(git -C "$ROOT" status --porcelain -- "$dir" 2>/dev/null | grep -v '/dist/' | head -20)
+  if [ -n "$dirty" ]; then
+    echo "FATAL: $client has uncommitted source changes — deploying would put code"
+    echo "       on the web that does not exist in git:"
+    echo "$dirty" | sed 's/^/         /'
+    echo "       commit them first, or ALLOW_DIRTY=1 to override (and then commit)."
+    [ "${ALLOW_DIRTY:-}" = "1" ] || exit 1
+    echo "       ALLOW_DIRTY=1 set — proceeding. COMMIT THIS."
+  fi
+
+  echo "== building $client (git $(git -C "$ROOT" rev-parse --short HEAD)) =="
   (cd "$dir" && npm run build >/dev/null)
 
   bundle=$(ls "$dir"/dist/assets/index-*.js | head -1)
