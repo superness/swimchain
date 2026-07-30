@@ -32,6 +32,46 @@ function formatRelative(createdAtMs: number): string {
   return `${Math.floor(seconds / 86400)}d ago`;
 }
 
+/**
+ * One coherent guard against the poll/optimistic-write race, used
+ * identically by both lists this file polls (the post list in `Wall()`,
+ * the reply list in `PostReplies`):
+ *
+ * A poll can be in flight when a submit's optimistic write lands (mining
+ * takes real time — seconds on testnet/mainnet). If that poll's RESULT
+ * predates the submit (it queried the server before the new post/reply
+ * existed there) but doesn't RESOLVE until after the optimistic write,
+ * applying it wholesale overwrites/erases the just-written entry until the
+ * next poll — invisible in regtest, where mining is near-instant, but real
+ * on testnet/mainnet.
+ *
+ * A boolean "submission in flight" flag (the previous approach here) only
+ * catches the case where the stale poll resolves WHILE the flag is still
+ * true. It misses the case where the poll started before the submission,
+ * the whole submission finishes (mining + submit + optimistic write) faster
+ * than that poll's own round trip, and the poll resolves afterward with the
+ * flag already back to false — the flag alone can't tell "this fetch is
+ * older than the write that just landed."
+ *
+ * A monotonic epoch closes that gap: every fetch stamps itself with the
+ * CURRENT epoch when it starts; a submission bumps the epoch exactly once,
+ * right after its own optimistic write (in `finally`, same synchronous tick
+ * as the write — nothing else can run in between, so the write and the bump
+ * are effectively atomic). A fetch whose stamp no longer matches the epoch
+ * by the time it resolves is unconditionally stale — dropped — regardless
+ * of how the timing lined up. A fetch that resolves before any bump is
+ * always safe to apply: nothing has been written yet for it to clobber.
+ */
+function useEpochGuard() {
+  const epochRef = useRef(0);
+  const stamp = useCallback(() => epochRef.current, []);
+  const isCurrent = useCallback((mark: number) => epochRef.current === mark, []);
+  const bump = useCallback(() => {
+    epochRef.current += 1;
+  }, []);
+  return { stamp, isCurrent, bump };
+}
+
 /** Progress readout shown while a post/reply mines — same three numbers for
  *  both composers, kept as one component so the copy can't drift between them. */
 function MiningStatus({ attempts, elapsedMs }: { attempts: number; elapsedMs: number }) {
@@ -71,19 +111,27 @@ function PostReplies({
   const [progress, setProgress] = useState<{ attempts: number; elapsedMs: number } | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
+  const repliesEpoch = useEpochGuard();
+
   const load = useCallback(async () => {
     if (!rpc || !connected) return;
+    const mark = repliesEpoch.stamp();
     setLoading(true);
     try {
       const result = await rpc.getReplies(post.id, { limit: REPLY_LIMIT });
+      // A reply submit finished (and wrote its own optimistic entry) while
+      // this fetch was in flight — its result may predate that entry. Drop
+      // it rather than overwrite.
+      if (!repliesEpoch.isCurrent(mark)) return;
       setReplies(result.replies.map(toWallReply).sort((a, b) => a.createdAtMs - b.createdAtMs));
       setLoadError(null);
     } catch (err) {
+      if (!repliesEpoch.isCurrent(mark)) return;
       setLoadError(err instanceof Error ? err.message : 'Failed to load replies');
     } finally {
-      setLoading(false);
+      if (repliesEpoch.isCurrent(mark)) setLoading(false);
     }
-  }, [rpc, connected, post.id]);
+  }, [rpc, connected, post.id, repliesEpoch.stamp, repliesEpoch.isCurrent]);
 
   // Load on first expand, and keep an OPEN panel fresh on the same 10s beat
   // as the post list — otherwise a second browser's reply only ever shows up
@@ -122,6 +170,10 @@ function PostReplies({
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : 'Failed to post reply');
     } finally {
+      // Bump immediately after the optimistic write above (same synchronous
+      // tick — see useEpochGuard's doc comment) so any reply-list fetch
+      // already in flight, whenever it resolves, is recognized as stale.
+      repliesEpoch.bump();
       setSubmitting(false);
       setProgress(null);
     }
@@ -223,20 +275,24 @@ export function Wall() {
   const [postProgress, setPostProgress] = useState<{ attempts: number; elapsedMs: number } | null>(null);
   const [postError, setPostError] = useState<string | null>(null);
 
-  // Guards the optimistic prepend against being immediately clobbered by a
-  // poll tick that started before the submit resolved.
-  const submittingRef = useRef(false);
+  const postsEpoch = useEpochGuard();
 
   const fetchPosts = useCallback(async () => {
-    if (!rpc || !connected || submittingRef.current) return;
+    if (!rpc || !connected) return;
+    const mark = postsEpoch.stamp();
     try {
       const result = await rpc.listSpacePosts(DEFCON_SPACE, { limit: POST_LIMIT });
+      // A post submit finished (and wrote its own optimistic entry) while
+      // this fetch was in flight — its result may predate that entry. Drop
+      // it rather than overwrite (see useEpochGuard's doc comment).
+      if (!postsEpoch.isCurrent(mark)) return;
       setPosts(result.items.map(toWallPost));
       setListError(null);
     } catch (err) {
+      if (!postsEpoch.isCurrent(mark)) return;
       setListError(err instanceof Error ? err.message : 'Could not reach the wall.');
     }
-  }, [rpc, connected]);
+  }, [rpc, connected, postsEpoch.stamp, postsEpoch.isCurrent]);
 
   useEffect(() => {
     fetchPosts();
@@ -250,7 +306,6 @@ export function Wall() {
     const body = composerBody.trim();
     if (!body) return;
 
-    submittingRef.current = true;
     setPosting(true);
     setPostError(null);
     setPostProgress({ attempts: 0, elapsedMs: 0 });
@@ -273,7 +328,10 @@ export function Wall() {
     } catch (err) {
       setPostError(err instanceof Error ? err.message : 'Failed to post');
     } finally {
-      submittingRef.current = false;
+      // Bump immediately after the optimistic write above (same synchronous
+      // tick — see useEpochGuard's doc comment) so any post-list fetch
+      // already in flight, whenever it resolves, is recognized as stale.
+      postsEpoch.bump();
       setPosting(false);
       setPostProgress(null);
     }
