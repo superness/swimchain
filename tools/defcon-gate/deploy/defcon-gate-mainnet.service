@@ -1,0 +1,72 @@
+# DEF CON 34 gate keeper (mainnet) — runs on a dedicated, sacrificial "gate"
+# droplet (nothing else runs there; see Task 10's ops runbook for provisioning)
+# next to its own mainnet node.
+#
+# Two-tier DEF CON 34 (Aug 6-9, 2026) onboarding: full-node attendees claim a
+# GLOBAL sponsorship via `sw sponsor claim --application "<CODE>"`; browser
+# attendees get a space-scoped grant to @defcon34 through the /defcon page.
+# Both are auto-approved by this keeper checking a shared code word against
+# every pending claim — see defcon-gate.mjs's header for the full decision
+# logic (caps, END_AT hard stop, offer upkeep on both tiers).
+#
+# This is deliberately its own droplet and its own unit, not folded into
+# game-offer-keeper-mainnet (reef/chess/trench/chips): that keeper mints
+# auto_approve, no-application offers for permanent games; this one mints
+# application-required, probationary offers gated by a one-time code that
+# gets burned after the con via subtree revocation (see the ops runbook,
+# Task 10, kill-switch section).
+#
+# Deploy (IP filled in once Task 10 provisions the gate droplet):
+#   scp tools/defcon-gate/gate-logic.mjs tools/defcon-gate/defcon-gate.mjs \
+#       root@<gate-droplet-ip>:/opt/defcon-gate/
+#   scp tools/defcon-gate/deploy/defcon-gate-mainnet.service \
+#       root@<gate-droplet-ip>:/etc/systemd/system/
+#   ssh root@<gate-droplet-ip> 'systemctl daemon-reload && systemctl enable --now defcon-gate-mainnet'
+#
+# Dry run before enabling (also the smoke test in Task 4's report):
+#   ssh root@<gate-droplet-ip> 'cd /opt/defcon-gate && ONCE=1 DRY_RUN=1 node defcon-gate.mjs'
+#
+# Before go-live (Task 10 step 4): replace GATE_CODE and DEFCON_SPACE_HEX
+# below with the real values (gate code format WORD-####, never committed;
+# DEFCON_SPACE_HEX from tools/defcon-gate/mint-space.mjs's output, Task 5).
+
+[Unit]
+Description=Swimchain DEF CON 34 gate keeper (mainnet) — code-word onboarding, both tiers
+After=network.target swimchain-mainnet.service
+Wants=swimchain-mainnet.service
+# Restart with the node so a rotated cookie is always re-read (belt-and-braces
+# with the keeper's own per-call cookie re-read).
+PartOf=swimchain-mainnet.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/defcon-gate
+Environment=RPC_URL=http://127.0.0.1:9736
+Environment=COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
+# SET AT GO-LIVE: pick with `pwgen`/similar, format WORD-####, never commit
+# the real value anywhere. This placeholder fails codeMatches for everyone,
+# so the keeper is safe (rejects only, never approves) until it's replaced.
+Environment=GATE_CODE=SET-AT-GO-LIVE
+# Midnight Pacific after the con's last day (docs/superpowers/plans/2026-07-29-defcon34-onboarding.md).
+# Offers themselves use expires_days=1 as a coarse backstop; this is the
+# fine-grained deadline — after it, the keeper signs nothing at all.
+Environment=END_AT=2026-08-10T07:00:00Z
+# SET AFTER TASK 5: paste the hex id `mint-space.mjs` prints for @defcon34.
+Environment=DEFCON_SPACE_HEX=SET-AFTER-TASK-5-MINT-SPACE
+Environment=TOTAL_CAP=500
+Environment=HOURLY_CAP=60
+Environment=OFFER_SLOTS=10
+Environment=OFFER_EXPIRES_DAYS=1
+Environment=MIN_POW=8
+Environment=POLL_MS=5000
+Environment=STATE_FILE=/opt/defcon-gate/defcon-gate-state.json
+ExecStart=/usr/bin/node /opt/defcon-gate/defcon-gate.mjs
+Restart=always
+RestartSec=5
+MemoryMax=200M
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
