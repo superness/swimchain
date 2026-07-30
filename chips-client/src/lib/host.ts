@@ -26,6 +26,7 @@ import {
 import { initWasm, decodeAddress } from '@swimchain/core';
 import { bankBody, buyBody, bankBatchBody, dipBody } from './chipsBody';
 import type { ChipsReply } from './chipsEngine';
+import { chunkReport } from './reportChunk';
 
 /**
  * The local player. Mirrors reef-client's local `Identity` (reefEngine.ts:165)
@@ -132,12 +133,19 @@ export const HAS_THE_BOTTOM = BOTTOM_SPACE !== '';
 export const CAN_FILE_REPORTS = DEBUG_SPACE !== '';
 
 /**
- * A post body has to survive the node's size limits and stay readable in a
- * feed. Reports are usually ~2-4 KB; a pathological one (a long error ring on
- * a device with a huge queue) can run much longer, and a submission that fails
- * on size is a report that does not exist.
+ * How much report goes in ONE post.
+ *
+ * This used to be a TRUNCATION limit, and that was the wrong call. On
+ * 2026-07-29 a report arrived clipped at exactly this many bytes, mid-journal,
+ * and the surviving head was useful only by luck — `regressions` happens to be
+ * emitted near the top. The journal and the dip ring, the two parts that say
+ * what the client actually DID, were the parts thrown away. Operator: "we want
+ * the whole report for sure."
+ *
+ * So a long report is now SPLIT across as many posts as it needs. Diagnostics
+ * you have to be lucky to read are not diagnostics.
  */
-const REPORT_MAX = 12_000;
+const REPORT_CHUNK = 12_000;
 
 // Re-exported for callers that only import the seam; the implementations
 // themselves live in chipsBody.ts, dependency-free (no RPC/PoW/WASM), so
@@ -420,39 +428,54 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
     async reportBug(id, text, onProgress) {
       if (!DEBUG_SPACE) return null;   // clipboard-only deployment; not an error
 
-      // Truncate rather than fail. A clipped report still names the build, the
-      // table and the queue — everything the first ten minutes of a diagnosis
-      // needs — whereas a rejected submission leaves nothing at all.
-      const clipped = text.length > REPORT_MAX
-        ? `${text.slice(0, REPORT_MAX)}\n\n[clipped ${text.length - REPORT_MAX} chars]`
-        : text;
+      /** One post. Mines its own PoW — a report is per-part, not per-report. */
+      const postOne = async (title: string, body: string): Promise<string> => {
+        // Same preimage contract as createTable: the node reconstructs
+        // `${title}\n\n${body}` to verify PoW, so hashing anything else fails
+        // verification. See the long note in createTable.
+        const content = `${title}\n\n${body}`;
+        const challenge = await createChallenge(
+          ActionType.Post,
+          new TextEncoder().encode(content),
+          hexToBytes(id.publicKeyHex),
+          getDifficulty(ActionType.Post, POW_TESTNET_PARAMS)
+        );
+        const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
+        const p = solutionToRpcParams(solution);
+        const contentHash = await contentHashForPost(title, body);
+        const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
+        const res = await rpc.submitPost({
+          spaceId: DEBUG_SPACE, title, body, authorId: id.publicKeyHex,
+          powNonce: Number(p.pow_nonce), powDifficulty: p.pow_difficulty,
+          powNonceSpace: p.pow_nonce_space, powHash: p.pow_hash,
+          signature, timestamp: p.timestamp,
+        });
+        return res.content_id;
+      };
+
+      // THE WHOLE REPORT, however many posts that takes.
+      const parts = chunkReport(text, REPORT_CHUNK);
 
       // The title carries the author prefix so reports are greppable in a feed
       // without opening each one. No newlines: the node splits title from body
       // on the FIRST blank line, so a newline here would corrupt both.
-      const title = `chips report — ${id.publicKeyHex.slice(0, 8)}`;
-      const body = clipped;
-      // Same preimage contract as createTable: the node reconstructs
-      // `${title}\n\n${body}` to verify PoW, so hashing anything else fails
-      // verification. See the long note in createTable.
-      const content = `${title}\n\n${body}`;
-      const challenge = await createChallenge(
-        ActionType.Post,
-        new TextEncoder().encode(content),
-        hexToBytes(id.publicKeyHex),
-        getDifficulty(ActionType.Post, POW_TESTNET_PARAMS)
-      );
-      const solution = await minePow(challenge, getConfig(POW_TESTNET_PARAMS), onProgress);
-      const p = solutionToRpcParams(solution);
-      const contentHash = await contentHashForPost(title, body);
-      const signature = await signAction(id.sign, { contentHash, timestamp: p.timestamp });
-      const res = await rpc.submitPost({
-        spaceId: DEBUG_SPACE, title, body, authorId: id.publicKeyHex,
-        powNonce: Number(p.pow_nonce), powDifficulty: p.pow_difficulty,
-        powNonceSpace: p.pow_nonce_space, powHash: p.pow_hash,
-        signature, timestamp: p.timestamp,
-      });
-      return res.content_id;
+      const who = id.publicKeyHex.slice(0, 8);
+      if (parts.length === 1) return postOne(`chips report — ${who}`, parts[0]);
+
+      // A multi-part report needs its parts identifiable as ONE report in a
+      // feed that may hold several. `text.length` is a cheap discriminator: two
+      // reports from the same player differing in nothing else would have to be
+      // byte-identical in length to collide, and then they are interchangeable.
+      const stamp = `${who}-${text.length}`;
+      let first: string | null = null;
+      for (let n = 0; n < parts.length; n++) {
+        // Sequential, not parallel: each part mines a real PoW, and firing
+        // several miners at once on a phone is how you get a browser to kill
+        // the tab holding the report you are trying to file.
+        const cid = await postOne(`chips report — ${stamp} (${n + 1}/${parts.length})`, parts[n]);
+        if (first === null) first = cid;
+      }
+      return first;
     },
 
     async loadTable(tableId) {

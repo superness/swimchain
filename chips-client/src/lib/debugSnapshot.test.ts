@@ -57,6 +57,9 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
     { at: 1785277630500, field: 'owned', what: 'upgrade "fryer3" was owned and now is not',
       from: 'fryer3', to: '(gone)', movesFrom: 31, movesTo: 31 },
   ],
+  // Non-zero: polls DID omit replies the base already held, and the monotonic
+  // base is the only reason the player saw nothing.
+  pollGaps: 3,
   ceiling: 6, seasoning: 3, crackleHaste: 1,
   errors: [{ at: 1785277990000, kind: 'error', text: 'boom' }],
   build: { rpc: 'https://swimchain.io/rpc', space: 'sp1...', mode: 'production' },
@@ -107,7 +110,7 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
   let threw = false;
   let out = '';
   try {
-    out = snapshotText(input({ state: null, queue: [], chips: [], dips: [], journal: [], regressions: [], errors: [] }));
+    out = snapshotText(input({ state: null, queue: [], chips: [], dips: [], journal: [], regressions: [], pollGaps: 0, errors: [] }));
   } catch { threw = true; }
   check('a null fold does not throw', !threw);
   check('and still produces JSON', out.length > 0 && JSON.parse(out).v === SNAPSHOT_V);
@@ -230,6 +233,15 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
     String(s.regressions[0].what).includes('fryer3'), s.regressions[0]);
   check('and carry the move counts either side',
     s.regressions[0].movesFrom === 31 && s.regressions[0].movesTo === 31, s.regressions[0]);
+}
+
+// 6g) THE POLL GAPS. Proof that the endpoint really does omit replies it already
+//     served — the measured cause of 2026-07-29's regressions. Non-zero means
+//     the monotonic base is the only reason nothing showed; zero over a long
+//     session means the cause is elsewhere and this theory was wrong.
+{
+  const s = buildSnapshot(input()) as { pollGaps: number };
+  check('poll gaps are reported', s.pollGaps === 3, s.pollGaps);
 }
 
 /* ── the ring itself ──────────────────────────────────────────────────── */

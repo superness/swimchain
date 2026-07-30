@@ -43,6 +43,9 @@ export interface SnapshotInput {
   journal: readonly MoveEvent[];
   /** Invariants that went BACKWARDS. See foldWatch.ts. */
   regressions: readonly FoldRegression[];
+  /** Replies a poll omitted that the base already held — each one WOULD have
+   *  been a visible regression before confirmedBase.ts held the line. */
+  pollGaps: number;
   /** THE DIPS, as the client computed them. The rack and the fold are both
    *  states AFTER the fact; a dip is destructive, so without this the pot that
    *  was actually dipped is unrecoverable. See dipRing.ts. */
@@ -86,6 +89,10 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // never saw land, and then deleted — taking with it credit the player had
     // already been shown. That is a lost upgrade, in writing.
     lostMoves: i.journal.filter((e) => e.phase === 'expired').length,
+    // Non-zero means the endpoint really does omit replies it already served,
+    // and the monotonic base is the only reason it did not show. Zero over a
+    // long session means that theory is wrong and the cause is elsewhere.
+    pollGaps: i.pollGaps,
     regressions: i.regressions,
     journal: i.journal,
 
