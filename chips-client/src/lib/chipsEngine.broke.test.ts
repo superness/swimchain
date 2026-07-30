@@ -155,7 +155,6 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
 
 /* ── ONCE PER BAND, EVER — the property that fixes the supply ─────────── */
 {
-  const rich = lifetimeOf(deepBandFloor(DEEP_BAND_COUNT - 1));
   const firstDescent = [...richFor(LIFE_ALL), ...killAll(LIFE_ALL)];
   // Second descent: earn the lifetime again and re-walk every band.
   const second = fold([...firstDescent, ...lifetimeOf(deepBandFloor(DEEP_BAND_COUNT - 1)),
@@ -182,7 +181,6 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
 
 /* ── only the owner ───────────────────────────────────────────────────── */
 {
-  const rich = lifetimeOf(deepBandFloor(0));
   const stranger: ChipsReply = { ...reply('broke'), author_id: 'b'.repeat(64) };
   const st = fold([...richFor(LIFE_ALL), stranger]);
   check('a stranger cannot break a band on your table', st.broken === 0 && st.char === 0,

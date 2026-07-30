@@ -40,6 +40,8 @@ import { CrewRow, FeedBanner, DipTicker, CritterArt, type CrewBubble } from './C
 import { BowlReveal, TipCeremony, BowlTicket, BOWL_LINES, WELCOME_BACK } from './Bowl';
 import { PorcelainFight } from './Porcelain';
 import { ScoopShop } from './Scoop';
+import { DeepFightScreen } from './DeepFight';
+import { fightAt, ready as deepReady, bestBlow } from './lib/deepBoss';
 import { freshPolish, polishMult, advance as advancePolish, polishLook, type Polish } from './lib/polish';
 import { porcelainInReach, readiness, cracks } from './lib/porcelain';
 import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
@@ -191,6 +193,10 @@ export function App() {
   /** The porcelain takeover is open. Client-only: you choose when it starts. */
   const [porcOpen, setPorcOpen] = useState(false);
   const [scoopOpen, setScoopOpen] = useState(false);
+  const [deepOpen, setDeepOpen] = useState(false);
+  /** Set for the beat after a band gives, so the screen can say so before it
+   *  closes — the same courtesy the porcelain's breakthrough gets. */
+  const [deepBroke, setDeepBroke] = useState(false);
   /** THE GRAIN's streak. State so the basket's shine re-renders; a ref too
    *  because onDip reads it synchronously in the same tick it updates it. */
   const [polish, setPolish] = useState<Polish>(freshPolish);
@@ -792,6 +798,8 @@ export function App() {
   fryersRef.current = fryerCount;
   /* ── THE PORCELAIN ──────────────────────────────────────────────────── */
   const porcReach = state ? porcelainInReach(state.lifetimeChips, state.broken) : false;
+  /** The deep boss in front of you, if any — bands 1-5, health-based. */
+  const deepFight = state ? fightAt(state.broken, state.lifetimeChips, state.bossDamage) : null;
   const porcReady = readiness(chips, state?.lifetimeChips ?? 0);
 
   /** The Long Fry: one more crackle past golden. Ownership only — the fold
@@ -1217,6 +1225,38 @@ export function App() {
       forfeits: forfeitsOnRefuse(jarKey, state.owned),
       onRefuse: () => { setFeeding(null); setBubble(null); onDecline(jarKey); },
     };
+  }
+
+  /**
+   * CHIP AT A DEEP BOSS. One blow: feed a basket, it does its worth in damage.
+   *
+   * The chip is FED, not dipped (`take`, the vendor primitive) — the fold spends
+   * it rather than banking it, which is what lets a fight span sessions without
+   * the value being collected twice. A blow that does not finish is progress,
+   * and the fold reports it as `chipped`.
+   */
+  function onDeepHit(index: number): void {
+    if (!host || !me || !tableId || !state) return;
+    const fight = fightAt(state.broken, state.lifetimeChips, state.bossDamage);
+    if (!fight) return;
+    const chip = chips[index];
+    if (!chip || chip.pot <= 0) return;
+
+    const paid = worthOf(chip);
+    const willFinish = fight.done + paid >= fight.hp;
+    take(index);
+    if (willFinish) {
+      setDeepBroke(true);
+      sfx.breakthrough();
+      window.setTimeout(() => { setDeepOpen(false); setDeepBroke(false); }, 5200);
+    } else {
+      sfx.pop();
+      setNotice(`${compact(paid)} off ${fight.label}. it remembers.`);
+    }
+    setQueue((q) => enqueue(
+      q, { tableId, author: me.publicKeyHex, kind: 'broke', paid, ms: allocMs() },
+      nextId.current++
+    ));
   }
 
   /**
@@ -2114,6 +2154,32 @@ export function App() {
           broken={state.deepest}
           onBuy={(a) => { onSpendChar(a); setScoopOpen(false); }}
           onClose={() => setScoopOpen(false)}
+        />
+      )}
+      {/* A DEEP BOSS IS IN FRONT OF YOU. Unlike the porcelain this one keeps
+          what you have already done to it, so the call says so — a player who
+          left mid-fight needs to know the damage is still there. */}
+      {deepFight && !deepOpen && !porcOpen && !scoopOpen && (
+        <div className="deep-call" role="status">
+          <span className="vote-text">
+            <strong>{deepFight.label} is in the way.</strong>{' '}
+            {deepFight.done > 0
+              ? `you have taken ${Math.round(deepFight.frac * 100)}% of it.`
+              : 'it is not going to move on its own.'}
+          </span>
+          <button type="button" className="deep-go" onClick={() => setDeepOpen(true)}>
+            {deepFight.done > 0 ? 'back to it' : 'have a go'}
+          </button>
+        </div>
+      )}
+      {deepOpen && deepFight && (
+        <DeepFightScreen
+          fight={deepFight}
+          best={bestBlow(chips)}
+          ready={deepReady(chips)}
+          onHit={onDeepHit}
+          onLeave={() => setDeepOpen(false)}
+          broke={deepBroke}
         />
       )}
       {hermitNow.phase === 'holding' && (
