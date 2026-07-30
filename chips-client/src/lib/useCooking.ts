@@ -137,7 +137,9 @@ export function useCooking(
    * immediately. Returns null for an empty pot — dipping nothing is a no-op,
    * not an error.
    */
-  function dip(index: number, doubleDipMod: number): (DipResult & { ms: number; pot: number }) | null {
+  function dip(
+    index: number, doubleDipMod: number,
+  ): (DipResult & { ms: number; pot: number; cookedMs: number }) | null {
     const chip = latest.current[index];
     if (!chip || chip.pot <= 0) return null;
     const res = dipChip(chip, doubleDipMod, Math.random);
@@ -145,7 +147,10 @@ export function useCooking(
     next[index] = freshChip(allocRef.current!());
     latest.current = next;
     setChips(next);
-    return { ...res, ms: chip.ms, pot: chip.pot };
+    // pot and cookedMs come along because this is the LAST MOMENT they exist:
+    // the line above already replaced the basket, so nothing downstream can
+    // ask what was actually dipped. See lib/dipRing.ts.
+    return { ...res, ms: chip.ms, pot: chip.pot, cookedMs: chip.cookedMs };
   }
 
   /**
