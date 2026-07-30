@@ -60,6 +60,7 @@ import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
 import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
+import { noteDip, noteTapAway, dipEntries } from './lib/dipRing';
 
 const NAME_KEY = 'chips.cookname.v1';
 /** Whether the Sous Chef is on duty. A client-side PREFERENCE, never a fold
@@ -871,6 +872,10 @@ export function App() {
     // dip; the basket restarts a fresh chip immediately.
     const res = dip(index, state?.doubleDipMod ?? 0);
     if (!res) return;
+    // Before the multipliers below rewrite res.amount in place. "the chip was
+    // worth less than it looked" and "the multipliers didn't apply" are
+    // different bugs and only the pair can tell them apart.
+    const rawAmount = res.amount;
     // The wing sits where it hurts and the strings do not lie: a basket one
     // of them is watching pays more, and both at once STACK.
     const watchBonus = dipBonusFor(index, wingNowRef.current, oracleNowRef.current);
@@ -928,11 +933,25 @@ export function App() {
       window.setTimeout(() => setGains((g) => g.filter((f) => f.key !== res.ms)), 2400);
       if (credited > 0) sfx.gain(born.golden, 0.95);
     }
+    // WHAT THIS DIP THOUGHT IT PAID, on the record. A dip is destructive —
+    // the basket restarted a fresh chip above — so this is the only surviving
+    // copy of the pot that was actually dipped. Recorded BEFORE the enqueue so
+    // a dip that dies on the way to the queue is still described. See
+    // dipRing.ts for the four different bugs this separates.
+    const dipId = nextId.current++;
+    noteDip({
+      at: Date.now(), route: 'dip', index, ms: res.ms, cookedMs: res.cookedMs,
+      pot: res.pot, crackles,
+      raw: rawAmount, amount: res.amount, doubled: res.doubled,
+      bowlCap: state?.bowlCap ?? 0, crumbsBefore: crumbsNow,
+      room, credited, spilled,
+      queuedId: dipId,
+    });
     // Every queued entry carries the table/identity it was made for — see
     // chipsQueue.ts's file header on provenance.
     setQueue((q) => enqueue(
       q, { tableId, author: me.publicKeyHex, kind: 'dip', amount: res.amount, ms: res.ms },
-      nextId.current++
+      dipId
     ));
     // The dog watched that chip go into the dip instead of into him. He has
     // notes. Occasional, and never over someone else's bubble.
@@ -1018,6 +1037,10 @@ export function App() {
       const worth = chip.pot * (2 ** chip.crackles);
       const takenChip = take(index);
       if (!takenChip) return;
+      // THE ROUTE THAT LEAVES NO TRACE. No queue entry, no chain move, no
+      // crumbs — so unless it is recorded HERE it is indistinguishable from a
+      // dip that was lost, which is exactly how it read twice on 2026-07-29.
+      noteTapAway('hermit', Date.now(), index, chip);
       setHermit((h) => giveHermit(h, worth));
       launchFeed(index, takenChip, 'hermit');
       say('hermit', 'i take it down. i bring it back bigger. that’s the whole arrangement. no receipt.', 8000);
@@ -1035,6 +1058,7 @@ export function App() {
     }
     const taken = take(index);
     if (!taken) return;
+    noteTapAway('jar', Date.now(), index, chip);
     launchFeed(index, taken, f.vendor.id);
     say(f.vendor.id, pickLine(f.vendor.id, f.vendor.munchLines), 8000);
     onBuy(f.jarKey);
@@ -1124,6 +1148,7 @@ export function App() {
         at: Date.now(),
         tableId, tableName: cookName || null, author: me?.publicKeyHex ?? null,
         state: state ?? null, queue, chips,
+        dips: dipEntries(),
         ceiling, seasoning, crackleHaste,
         errors: ringEntries(),
         build: {
@@ -1202,6 +1227,7 @@ export function App() {
     // rack without paying — the same primitive a vendor feed uses — so the
     // chip buys the band and nothing else. Dipping it here as well is what
     // sent one player past five unfought bands in a single move.
+    noteTapAway('porcelain', Date.now(), index, chip);
     take(index);
     setPorcBroke(true);
     sfx.breakthrough();
@@ -1301,6 +1327,10 @@ export function App() {
 
     const paid = worthOf(chip);
     const willFinish = fight.done + paid >= fight.hp;
+    // The `broke` move below carries a FRESH allocMs(), not this chip's ms, so
+    // the chain cannot be joined back to the basket that paid for it. This note
+    // is the only place the two are ever written down together.
+    noteTapAway('boss', Date.now(), index, chip);
     take(index);
     if (willFinish) {
       setDeepBroke(true);

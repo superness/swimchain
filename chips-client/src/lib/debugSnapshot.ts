@@ -21,8 +21,9 @@ import type { ChipsState } from './chipsEngine';
 import type { QueuedMove } from './chipsQueue';
 import type { CookingChip } from './cooking';
 import type { RingEntry } from './errorRing';
+import type { DipNote } from './dipRing';
 
-export const SNAPSHOT_V = 1;
+export const SNAPSHOT_V = 2;
 
 export interface SnapshotInput {
   at: number;
@@ -34,6 +35,10 @@ export interface SnapshotInput {
    *  a move that never left the client shows up nowhere else at all. */
   queue: readonly QueuedMove[];
   chips: readonly CookingChip[];
+  /** THE DIPS, as the client computed them. The rack and the fold are both
+   *  states AFTER the fact; a dip is destructive, so without this the pot that
+   *  was actually dipped is unrecoverable. See dipRing.ts. */
+  dips: readonly DipNote[];
   ceiling: number;
   seasoning: number;
   crackleHaste: number;
@@ -74,6 +79,14 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       fryers: s.fryers,
       seasoning: `${s.seasoningNum}/${s.seasoningDen}`,
       owned: [...s.owned].sort(),
+      // THE DESCENT. Omitted until 2026-07-29, which is why a report could not
+      // rule out "you were in a boss fight, where a chip pays nothing on
+      // purpose" — the single most likely innocent explanation for the
+      // complaint the report exists to answer.
+      broken: s.broken,
+      bossDamage: s.bossDamage,
+      paidToBosses: s.paidToBosses,
+      charOwned: [...(s.charOwned ?? [])].sort(),
       moves: s.moves.length,
       // Only the tail: the whole history can be thousands of entries and the
       // last handful is what a just-now bug is about.
@@ -91,6 +104,28 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       index, ms: c.ms, pot: c.pot, crackles: c.crackles,
       worth: c.pot * 2 ** c.crackles,
       cookedMs: c.cookedMs,
+    })),
+
+    // WHAT EACH DIP THOUGHT IT PAID. The whole point of the report is to get
+    // what the client thinks, and until now it could show every state around a
+    // dip but not the dip. Ordered oldest-first; the last one is the one the
+    // player is complaining about.
+    dips: i.dips.map((d) => ({
+      // FIRST, because it is the answer. Anything but 'dip' means the tap was
+      // routed away and paid nothing on purpose.
+      route: d.route,
+      // `at` is the tap; `ms` is the chip's BIRTH. They differ by the cook, and
+      // reading ms as the tap time is what derailed 2026-07-29 — so the gap is
+      // spelled out here rather than left to be re-derived.
+      at: d.at, ms: d.ms, cookedForMs: d.at - d.ms, cookedMs: d.cookedMs,
+      index: d.index,
+      pot: d.pot, crackles: d.crackles,
+      raw: d.raw, amount: d.amount, doubled: d.doubled,
+      // A huge `amount` with `credited: 0` is a full bowl, not a lost dip —
+      // the distinction that cost an hour on 2026-07-29.
+      bowlCap: d.bowlCap, crumbsBefore: d.crumbsBefore, room: d.room,
+      credited: d.credited, spilled: d.spilled,
+      queuedId: d.queuedId,
     })),
 
     tuning: { ceiling: i.ceiling, seasoning: i.seasoning, crackleHaste: i.crackleHaste },
