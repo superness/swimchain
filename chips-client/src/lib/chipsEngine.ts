@@ -298,6 +298,40 @@ export function parseMove(body: string): ParsedMove | null {
  * table owner BEFORE calling this, so N is the owner's own move count and a
  * stranger cannot inflate it (see `foldChips`).
  */
+/**
+ * THE SAME CONTENT OBJECT IS NEVER TWO MOVES.
+ *
+ * MEASURED on the live mainnet table, 2026-07-30: `get_replies` returned one
+ * reply — `dip 54750#1785375989160~`, content id sha256:2d4606d6a3ce9, height
+ * 1264 — TWICE, as two entries with the SAME content id. Content is content-
+ * addressed, so those are not two moves; they are one move listed twice by the
+ * node's reply index.
+ *
+ * That made it a PERMANENT overcount rather than a settling-window one: every
+ * fold, including a confirmed-only fold with no optimistic copy anywhere, paid
+ * that dip twice, for as long as the table exists.
+ *
+ * This guard is strictly better than the `<verb>:<ms>` one for this case and
+ * carries no risk: two entries sharing a content id are the same signed bytes
+ * by construction, so dropping one can never eat a real move. The `ms` guard
+ * still earns its place for the settling window, where the two copies have
+ * DIFFERENT content ids (one confirmed, one synthetic) and only `ms` relates
+ * them.
+ *
+ * Done before `orderReplies` so the sort never sees the duplicate and the
+ * `content_id` tiebreak stays meaningful.
+ */
+function dedupeByContentId(replies: ChipsReply[]): ChipsReply[] {
+  const seen = new Set<string>();
+  const out: ChipsReply[] = [];
+  for (const r of replies) {
+    if (seen.has(r.content_id)) continue;
+    seen.add(r.content_id);
+    out.push(r);
+  }
+  return out;
+}
+
 function orderReplies(replies: ChipsReply[]): ChipsReply[] {
   // Fall back to 0, never created_at: the node stamps PENDING replies'
   // created_at at query time, so using it here would order unparsed replies
@@ -474,10 +508,21 @@ export function foldChips(
    * floor being the truth. Crumbs fell by exactly one dip's amount each time a
    * copy retired.
    *
-   * `ms` is the right key because it is already each verb's identity on the
-   * wire (chipsSettling's `moveKey` keys dip/tip/broke on exactly this), and
-   * the allocator is strictly increasing (`createMsAllocator`), so two distinct
-   * moves cannot collide within a session.
+   * `ms` is the base of the key because it is already each verb's identity on
+   * the wire (chipsSettling's `moveKey` keys dip/tip/broke on exactly this).
+   *
+   * THE AMOUNT IS IN THE KEY TOO, and that is not belt-and-braces. The
+   * allocator is strictly increasing (`createMsAllocator`) so one session
+   * cannot repeat an ms — but TWO allocators can, and the live table proves it:
+   * `dip 60300#1785381545497~` and `dip 6030#1785381545497~`, two different
+   * dips sharing an ms (chipsQueue's header names two tabs on one origin as a
+   * known gap). Keying on ms alone would reject the second and destroy a real
+   * dip; keying on ms+amount cannot, because a SETTLING copy always carries the
+   * same amount as its confirmed twin — that is what makes it a copy.
+   *
+   * Two distinct dips with the same ms AND the same amount would be
+   * byte-identical bodies, hence one content id, hence already collapsed by
+   * `dedupeByContentId` before this runs.
    */
   const seenMoves = new Set<string>();
   /** Has this exact move already been applied? Marks it if not. */
@@ -509,7 +554,7 @@ export function foldChips(
 
   // Labelled so a nested prefix check can abandon the WHOLE reply rather
   // than just its inner loop — see the `burn` branch.
-  outer: for (const reply of orderReplies(mine)) {
+  outer: for (const reply of orderReplies(dedupeByContentId(mine))) {
     const parsed = parseMove(reply.body);
     if (!parsed) {
       state.moves.push({ content_id: reply.content_id, ms: 0, outcome: 'rejected-parse' });
@@ -689,7 +734,7 @@ export function foldChips(
     if (parsed.kind === 'broke') {
       // A broke ACCUMULATES damage, so folding it twice let one chip hit a boss
       // for double its worth — a band bought at half price.
-      if (!firstTime('broke', parsed.ms)) {
+      if (!firstTime(`broke:${parsed.paid}`, parsed.ms)) {
         state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate' });
         continue;
       }
@@ -790,7 +835,7 @@ export function foldChips(
 
     if (parsed.kind === 'dip') {
       // A dip CREDITS, so folding the settling copy as well paid it twice.
-      if (!firstTime('dip', parsed.ms)) {
+      if (!firstTime(`dip:${parsed.amount}`, parsed.ms)) {
         state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate' });
         continue;
       }
