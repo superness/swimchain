@@ -26,7 +26,11 @@ DOCROOT=/var/www/swimchain.io
 cd "$ROOT"
 
 # WHAT GOES ON THE WEB MUST BE REPRODUCIBLE FROM GIT. Fatal, not a warning.
-dirty=$(git status --porcelain -- website/ | head -20)
+# `|| true` for the same reason as deploy-web-clients.sh: `set -o pipefail` plus
+# a pipeline that legitimately produces nothing is an instant silent exit. This
+# one happened to survive (no `grep` in the pipe, and `head` exits 0 on empty
+# input) but it is one edit away from the same trap.
+dirty=$(git status --porcelain -- website/ | head -20 || true)
 if [ -n "$dirty" ]; then
   echo "FATAL: website/ has uncommitted changes — deploying would put pages on the"
   echo "       web that do not exist in git:"
