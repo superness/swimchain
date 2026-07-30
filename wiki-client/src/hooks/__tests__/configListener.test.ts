@@ -19,6 +19,16 @@
  * useRpc.tsx's messageHandler to drop the isConfigMessageTrusted guard makes
  * the second describe block's "still attached" assertions fail (the hostile
  * messages would trip removeEventListener). Verified, then reverted.
+ *
+ * Narrow mutation check (post-review, see task-2-report.md "fix note"): the
+ * first-ever-message and nodeAddress-spoof cases below exist because
+ * mergeTrustedConfig's own endpoint lock independently refuses any hostile
+ * message that carries a DIFFERENT rpcEndpoint against an already-locked
+ * config — masking a broken trust gate. Reverting ONLY the event.source
+ * check (origin logic intact) fails the first-ever-sibling-source and
+ * nodeAddress-spoof assertions; reverting ONLY origin exact-match to a
+ * prefix check (source check intact) fails the first-ever-lookalike-origin
+ * assertion. Verified individually, then reverted.
  */
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
@@ -40,9 +50,43 @@ describe('useParentRpcConfig listener (real handler)', () => {
   it('stores a first trusted config, merges a same-endpoint fill, refuses a repoint, and rejects sibling/lookalike sources', async () => {
     const { getParentConfig } = await import('../useParentRpcConfig');
 
+    // FIRST-EVER hostile messages, before any config is locked: parentConfig
+    // is still null here, so mergeTrustedConfig(null, incoming) would accept
+    // UNCONDITIONALLY if it were ever called — the trust gate is the ONLY
+    // thing standing between a hostile first message and getting stored. (The
+    // sibling/lookalike cases further below post a DIFFERENT rpcEndpoint
+    // against an ALREADY-locked config, where mergeTrustedConfig's own
+    // endpoint lock would independently refuse the change even if the trust
+    // gate were broken — so those alone don't prove the gate is wired. These
+    // do: reverting just the event.source check, or just the origin
+    // exact-match, makes one of the two assertions below fail.)
+    post({ type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://attacker.test', rpcAuth: 'Basic evil' }, { source: {} });
+    expect(getParentConfig()).toBeNull();
+
+    post(
+      { type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://attacker.test', rpcAuth: 'Basic evil' },
+      { origin: `${SELF}.evil.com` },
+    );
+    expect(getParentConfig()).toBeNull();
+
     // (a) a first trusted same-origin config is stored
     post({ type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://127.0.0.1:19736', rpcAuth: 'Basic first' });
     expect(getParentConfig()).toEqual({ rpcEndpoint: 'http://127.0.0.1:19736', rpcAuth: 'Basic first' });
+
+    // nodeAddress-spoof: SAME endpoint as the lock (so mergeTrustedConfig's
+    // endpoint lock can't be what blocks this — mergeTrustedConfig WOULD
+    // accept a same-endpoint nodeAddress fill), hostile source. Only the
+    // trust gate can reject this one.
+    post(
+      {
+        type: 'SWIMCHAIN_RPC_CONFIG',
+        rpcEndpoint: 'http://127.0.0.1:19736',
+        rpcAuth: 'Basic first',
+        nodeAddress: 'cs1spoofed',
+      },
+      { source: {} },
+    );
+    expect(getParentConfig()?.nodeAddress).toBeUndefined();
 
     // (b) a second trusted, same-endpoint config that only fills nodeAddress is applied
     post({
@@ -63,11 +107,15 @@ describe('useParentRpcConfig listener (real handler)', () => {
     post({ type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://attacker.test', rpcAuth: 'Basic evil' });
     expect(getParentConfig()?.rpcEndpoint).toBe('http://127.0.0.1:19736');
 
-    // (c) a sibling-source message (event.source !== window.parent) is rejected outright
+    // (c) a sibling-source message (event.source !== window.parent) is rejected outright.
+    // (post-lock, different endpoint — mergeTrustedConfig's own lock would also refuse
+    // this even with a broken trust gate; kept for end-to-end coverage, see the
+    // first-ever/nodeAddress-spoof cases above for assertions the merge can't mask.)
     post({ type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://attacker.test', rpcAuth: 'Basic evil' }, { source: {} });
     expect(getParentConfig()?.rpcEndpoint).toBe('http://127.0.0.1:19736');
 
-    // (c) a prefix-lookalike origin (starts with, but is not, the trusted origin) is rejected
+    // (c) a prefix-lookalike origin (starts with, but is not, the trusted origin) is
+    // rejected (post-lock; same caveat as above).
     post(
       { type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint: 'http://attacker.test', rpcAuth: 'Basic evil' },
       { origin: `${SELF}.evil.com` },
