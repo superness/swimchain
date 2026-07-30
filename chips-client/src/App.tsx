@@ -63,6 +63,7 @@ import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib
 import { noteDip, noteTapAway, dipEntries } from './lib/dipRing';
 import { moveEvents } from './lib/moveJournal';
 import { watchFold, foldRegressions, type FoldFacts } from './lib/foldWatch';
+import { mergeConfirmed, droppedByPoll, EMPTY_BASE } from './lib/confirmedBase';
 
 const NAME_KEY = 'chips.cookname.v1';
 /** Whether the Sous Chef is on duty. A client-side PREFERENCE, never a fold
@@ -399,12 +400,16 @@ export function App() {
    * network path and the instant-local path are the same fold call over
    * different inputs, never two different code paths computing state.
    */
-  const confirmedRef = useRef<{ replies: ChipsReply[]; verified: Map<string, number> }>({ replies: [], verified: new Map() });
+  const confirmedRef = useRef<{ replies: ChipsReply[]; verified: Map<string, number> }>(EMPTY_BASE);
 
   /** Bumped by `refresh` whenever `confirmedRef` is replaced, so anything that
    *  must read the CHAIN rather than the optimistic fold has a dependency it
    *  can actually observe (a ref write is invisible to React). */
   const [confirmedTick, setConfirmedTick] = useState(0);
+
+  /** How many replies polls have omitted that the base already held. Every one
+   *  of these used to be a visible fold regression; see confirmedBase.ts. */
+  const [pollGaps, setPollGaps] = useState(0);
 
   /**
    * The queue-entry ids the LAST COMPLETED fold actually consumed (i.e. the
@@ -562,7 +567,18 @@ export function App() {
       tableId, me.publicKeyHex, confirmed,
       (done, total) => setCounting(total > 0 && done < total ? { done, total } : null)
     );
-    confirmedRef.current = { replies: confirmed, verified };
+    // THE BASE ONLY GROWS. Replacing it wholesale here is what let a single
+    // poll that arrived one reply short un-credit a dip — measured 8 times in
+    // 3 minutes on 2026-07-29, always movesFrom-1, always recovering on the
+    // next poll. A verified reply stays verified; see confirmedBase.ts.
+    const missed = droppedByPoll(confirmedRef.current, confirmed);
+    if (missed > 0) {
+      // Loud, because before this module existed each one of these WAS a
+      // visible regression. If this line never appears, the theory was wrong.
+      ringNote('note', `poll omitted ${missed} reply(s) the base already had — held`);
+      setPollGaps((n) => n + missed);
+    }
+    confirmedRef.current = mergeConfirmed(confirmedRef.current, confirmed, verified);
     // The reveal gate reads this ref, and a ref write does not re-render —
     // this is what tells it the chain moved (see `chainReady` below).
     setConfirmedTick((n) => n + 1);
@@ -1179,7 +1195,7 @@ export function App() {
         tableId, tableName: cookName || null, author: me?.publicKeyHex ?? null,
         state: state ?? null, queue, chips,
         dips: dipEntries(),
-        journal: moveEvents(), regressions: foldRegressions(),
+        journal: moveEvents(), regressions: foldRegressions(), pollGaps,
         ceiling, seasoning, crackleHaste,
         errors: ringEntries(),
         build: {
