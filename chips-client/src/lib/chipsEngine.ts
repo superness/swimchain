@@ -442,6 +442,51 @@ export function foldChips(
 ): ChipsState {
   const state = initialState();
   const seenProofs = new Set<string>();
+  /**
+   * ACCUMULATING MOVES ALREADY APPLIED, keyed `<verb>:<ms>`.
+   *
+   * A settling move is folded TWICE on purpose: the confirmed reply and the
+   * optimistic copy are both in the input until `retireSettled` drops the copy
+   * (see chipsSettling.ts, which is where the timing is explained). That is
+   * only safe if a second application is a no-op, and chipsSettling's header
+   * argues exactly that — for banks (keyed by `proofKey` in `seenProofs`) and
+   * for buys (keyed by `state.owned`).
+   *
+   * IT NEVER COVERED dip OR broke. Both were added later, both ACCUMULATE, and
+   * neither self-guards, so each was applied twice for the whole settling
+   * window:
+   *   - dip   credited its crumbs twice
+   *   - broke did double damage to a boss for one chip, and double
+   *           `paidToBosses` — a band at half price
+   *
+   * `tip` is ALSO guarded here, but it turned out to be safe already and the
+   * honest reason is luck: tipping zeroes `lifetimeChips`, and tip's own
+   * precondition tests `lifetimeChips`, so a second application folds
+   * `rejected-shallow`. Verified by removing this guard — the second tip is
+   * rejected and `tips` stays 1. It is kept as defence in depth precisely
+   * because that safety is INCIDENTAL: change the shallow threshold to
+   * anything the reset does not zero and tip starts double-counting prestige
+   * silently. Do not read the tip guard as evidence tip was broken.
+   *
+   * Measured 2026-07-29: eight regressions in three minutes, `pollGaps: 0` and
+   * `lostMoves: 0` (so nothing was lost and no poll came back short) with a
+   * STABLE floor and varying peaks — the peak being the inflated number and the
+   * floor being the truth. Crumbs fell by exactly one dip's amount each time a
+   * copy retired.
+   *
+   * `ms` is the right key because it is already each verb's identity on the
+   * wire (chipsSettling's `moveKey` keys dip/tip/broke on exactly this), and
+   * the allocator is strictly increasing (`createMsAllocator`), so two distinct
+   * moves cannot collide within a session.
+   */
+  const seenMoves = new Set<string>();
+  /** Has this exact move already been applied? Marks it if not. */
+  const firstTime = (verb: string, ms: number): boolean => {
+    const k = `${verb}:${ms}`;
+    if (seenMoves.has(k)) return false;
+    seenMoves.add(k);
+    return true;
+  };
 
   // OWNER ENFORCEMENT, and it runs BEFORE the sort for two separate reasons.
   //
@@ -528,6 +573,11 @@ export function foldChips(
     }
 
     if (parsed.kind === 'tip') {
+      // A tip INCREMENTS `tips`, so folding it twice counted one prestige as two.
+      if (!firstTime('tip', parsed.ms)) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate' });
+        continue;
+      }
       // THE BOTTOM OF THE BOWL. Everything the run accumulated goes back in;
       // OLD SALT is what stuck to you. Salt is derived here, from the fold's
       // own lifetime — sqrt-shaped so a deep run is worth more but never
@@ -637,6 +687,12 @@ export function foldChips(
     }
 
     if (parsed.kind === 'broke') {
+      // A broke ACCUMULATES damage, so folding it twice let one chip hit a boss
+      // for double its worth — a band bought at half price.
+      if (!firstTime('broke', parsed.ms)) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate' });
+        continue;
+      }
       /* ── ONE BAND OF THE DESCENT ────────────────────────────────────────
          The band is `state.broken` — whichever comes next — never anything
          the body said. Three refusals, in the order that makes the reason
@@ -733,6 +789,11 @@ export function foldChips(
     }
 
     if (parsed.kind === 'dip') {
+      // A dip CREDITS, so folding the settling copy as well paid it twice.
+      if (!firstTime('dip', parsed.ms)) {
+        state.moves.push({ content_id: reply.content_id, ms: parsed.ms, outcome: 'rejected-duplicate' });
+        continue;
+      }
       // Pot x multi, already computed and declared by the client. Bowl cap
       // still clamps storage; lifetime advances by the dip's chip-equivalents
       // so the tier ladder keeps pacing on total play.
