@@ -9600,6 +9600,29 @@ impl RpcMethods {
         // (reply_hash, parent_hash, depth)
         let mut all_replies: Vec<ReplyInfo> = Vec::new();
         let mut to_process: Vec<([u8; 32], [u8; 32], u32)> = Vec::new();
+        // ONE CONTENT OBJECT, AT MOST ONE ENTRY.
+        //
+        // This walk had no visited set, so a reply reachable by two paths within
+        // `depth_limit` was emitted twice. Content is content-addressed, so two
+        // entries sharing a content id are the same signed bytes — one object
+        // listed twice, never two replies.
+        //
+        // MEASURED on the live mainnet chips table, 2026-07-30: the reply
+        // `dip 54750#1785375989160~` (sha256:2d4606d6a3ce9) came back twice in
+        // one response — same content id, same height 1264. Any client whose
+        // fold ACCUMULATES per reply then double-counts it PERMANENTLY: in that
+        // game it inflated a player's score in every fold for the life of the
+        // table, with nothing on the client side at fault.
+        //
+        // Guarded here rather than by chasing why the duplicate arose (an index
+        // listing one reply under two parents is the leading suspect, and would
+        // be the same class of defect as the posts-index collision fixed in
+        // #108) because the invariant holds regardless of cause: emitting one
+        // object twice is never correct.
+        //
+        // It also bounds the walk — a cycle in the reply graph previously
+        // expanded exponentially up to `depth_limit`, and now terminates.
+        let mut emitted: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
 
         // Start with direct replies to the root content (depth 0)
         match chain_store.get_replies_for_content(&content_bytes, limit, offset) {
@@ -9619,6 +9642,11 @@ impl RpcMethods {
 
         // Process replies breadth-first with depth limit
         while let Some((reply_hash, parent_hash, depth)) = to_process.pop() {
+            // Already emitted by another path — see `emitted`'s note above.
+            // Checked before any store read, so a duplicate costs nothing.
+            if !emitted.insert(reply_hash) {
+                continue;
+            }
             // Get metadata for this reply
             let metadata = match chain_store.get_content_metadata(&reply_hash) {
                 Ok(Some(m)) => m,
