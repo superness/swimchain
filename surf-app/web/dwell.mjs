@@ -118,5 +118,16 @@ export function createDwell({
     isReceiveOnly(channelId) {
       return receiveOnly.has(channelId);
     },
+    // Review fix (M-7): a caller OUTSIDE dwell's own fire() loop — Task 4's
+    // flare button, which shares the exact same "one try then silent" §2.5
+    // rule but mines/submits through its own call site, not through fire()
+    // — can latch a channel receive-only too. Sets the SAME internal Set
+    // isReceiveOnly() reads and fire() checks, so a rejection discovered by
+    // EITHER path (dwell's 45s cycle or a flare press) silences BOTH for the
+    // rest of the session on that channel, closing the flare->dwell (and
+    // dwell->flare) gap a two-Set design would leave open.
+    markReceiveOnly(channelId) {
+      receiveOnly.add(channelId);
+    },
   };
 }

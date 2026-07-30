@@ -177,6 +177,36 @@ test('5. receive-only latch persists across a SECOND tuned->fire cycle (session 
   assert.equal(engageOne.calls.length, 1, 'zero ADDITIONAL engageOne calls on the re-armed cycle');
 });
 
+test('markReceiveOnly: a caller OUTSIDE fire() (Task 4\'s flare) can latch a channel, and fire() honors it', () => {
+  const store = fakeStore();
+  const timers = fakeTimers();
+  const items = [item('sha256:a', 'A', 1)];
+  const rpc = async () => ({ items });
+  // If the latch were ignored, this would resolve {ok:true} and prove nothing
+  // — the point is that fire() must never even CALL engageOne here.
+  const engageOne = fakeEngageOne([{ ok: true }]);
+  const dwell = createDwell({ rpc, engageOne, store, now: () => 10_000_000, setTimer: timers.setTimer, clearTimer: timers.clearTimer });
+
+  assert.equal(dwell.isReceiveOnly('feed'), false, 'unlatched before markReceiveOnly');
+  dwell.markReceiveOnly('feed'); // simulates the flare button's own -32015 rejection
+  assert.equal(dwell.isReceiveOnly('feed'), true, 'isReceiveOnly reads the SAME state markReceiveOnly writes');
+});
+
+test('markReceiveOnly: a tuned->fire cycle AFTER an external markReceiveOnly makes zero engageOne calls', async () => {
+  const store = fakeStore();
+  const timers = fakeTimers();
+  const items = [item('sha256:a', 'A', 3), item('sha256:b', 'B', 2)];
+  const rpc = async () => ({ items });
+  const engageOne = fakeEngageOne([{ ok: true }]);
+  const dwell = createDwell({ rpc, engageOne, store, now: () => 10_000_000, setTimer: timers.setTimer, clearTimer: timers.clearTimer });
+
+  dwell.markReceiveOnly('feed'); // e.g. the flare button hit -32015 BEFORE dwell's own timer ever fired
+  await dwell.tuned('feed', ['s1']);
+  await timers.fire(timers.lastId());
+
+  assert.equal(engageOne.calls.length, 0, 'fire() checked the latch markReceiveOnly set and skipped entirely');
+});
+
 test('6. K cap: 5 rendered items -> at most 3 attempts, newest first', async () => {
   const store = fakeStore();
   const timers = fakeTimers();

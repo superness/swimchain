@@ -68,15 +68,16 @@ const dwell = createDwell({
 // you flip through them and hit a bleached SMPTE test card over the
 // still-playing channel; a FLARE revives it by fetching + engaging its
 // newest surviving item. deadAirState tracks the card currently on screen
-// (or null); flareLatched mirrors dwell's per-channel receive-only Set
-// specifically for the flare button — dwell.mjs exposes only
-// isReceiveOnly() (a getter, no setter) and Task 4's file list doesn't
-// include dwell.mjs, so a flare's OWN rejection is tracked here rather than
-// reaching into dwell's private internals. Checked (OR'd with
-// dwell.isReceiveOnly) before every flare attempt, giving "one try then
-// silent" per §2.5 even for a channel dwell itself never got to latch.
+// (or null). The flare shares dwell's SAME receive-only latch (Set, keyed by
+// channelId, private inside createDwell) via dwell.markReceiveOnly() — a
+// review fix (M-7): an earlier version kept a second, flare-local Set here,
+// which left a real gap — a flare-first sponsorship rejection latched only
+// the flare, so the SAME channel's dwell timer (already running underneath
+// the card, since the channel keeps playing) could still fire 45s later and
+// re-mine a doomed PoW, violating §2.5 "one try then silent" across the
+// flare<->dwell boundary. One Set, written and read from both call sites,
+// closes that gap in both directions.
 let deadAirState = null; // { channelId, lastEngagementTs } while a card is up
-const flareLatched = new Set();
 
 function hideDeadAirCard() {
   document.getElementById('dead-air').hidden = true;
@@ -135,8 +136,10 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
   // Guard the flare behind the same licensed/receive-only check as dwell —
   // an unsponsored identity must not re-mine a doomed PoW on every FLARE
   // press. One try then silent (§2.5): no error surface, the button just
-  // does nothing on a latched channel.
-  if (dwell.isReceiveOnly(channelId) || flareLatched.has(channelId)) return;
+  // does nothing on a latched channel. Same Set dwell's own fire() checks
+  // (dwell.mjs's markReceiveOnly/isReceiveOnly pair) — see the comment above
+  // deadAirState for why this must NOT be a separate flare-local latch.
+  if (dwell.isReceiveOnly(channelId)) return;
   const btn = document.getElementById('flare-btn');
   btn.disabled = true;
   try {
@@ -177,7 +180,11 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
       if (reclass.state === 'alive') hideDeadAirCard();
       else showDeadAirCard(ch, reclass, deadAirState.lastEngagementTs); // defensive; unreachable given classifyAfterFlare(..., true)'s contract
     } else if (r.receiveOnly) {
-      flareLatched.add(channelId); // one try then silent; card stays up unchanged
+      // Latch dwell's OWN Set (not a flare-local one) — a dwell cycle on
+      // this same channel, already running underneath the still-visible
+      // card, must also stop after this single rejection. Card stays up,
+      // unchanged; no error surface (§2.5).
+      dwell.markReceiveOnly(channelId);
     }
     // non-latching failure (mining/RPC error): leave the card up as-is; a
     // later FLARE press may retry.
