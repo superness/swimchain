@@ -15,6 +15,8 @@
  * `nodeIdentity` directly, without ever touching `resolveAuth`'s browser-only paths.
  */
 
+import { isConfigMessageTrusted } from './configTrust';
+
 /** Where the node is and how to authenticate to it. `authHeader`, when present, is a
  *  ready-to-send `Authorization` header value (e.g. `Basic base64(__cookie__:<hex>)`). */
 export interface RpcAuth {
@@ -74,25 +76,14 @@ export async function rpcCall<T>(auth: RpcAuth, method: string, params: unknown)
  * Resolves `null` (never rejects) if nothing arrives — either we're not embedded, or
  * the shell isn't there. A no-op (resolves `null` immediately) outside a browser.
  */
-// Origins allowed to push a SWIMCHAIN_RPC_CONFIG envelope — same-origin, plus the
-// local-dev and Tauri hosts the app-shell actually runs from. Without this check ANY
-// page that can post a message into this window (a malicious iframe neighbor, a
-// compromised ad, etc.) could redirect every RPC call — including sign_message, which
-// hands back the node's own signature — to an attacker-controlled endpoint. Mirrors
-// feed-client/src/hooks/useParentRpcConfig.ts:31-50 (every sibling client validates
-// origin this way; this was the one spot that hadn't yet).
-const ALLOWED_PARENT_ORIGINS: string[] = [
-  'http://localhost', // Local development
-  'http://127.0.0.1', // Local development (IP)
-  'tauri://localhost', // Tauri desktop app
-  'https://localhost', // Local HTTPS development
-];
-
-function isParentOriginAllowed(origin: string): boolean {
-  // Empty origin ("null"/same-origin in some browsers) or an exact same-origin match.
-  if (!origin || origin === window.location.origin) return true;
-  return ALLOWED_PARENT_ORIGINS.some((allowed) => origin.startsWith(allowed));
-}
+// A message claiming to be the SWIMCHAIN_RPC_CONFIG envelope is trusted only if it
+// came from THIS frame's real parent window (event.source === window.parent) at an
+// exactly-matched origin — no prefix matching, no empty-origin bypass. Without this
+// check ANY page that can post a message into this window (a malicious iframe
+// neighbor, a compromised ad, etc.) could redirect every RPC call — including
+// sign_message, which hands back the node's own signature — to an attacker-controlled
+// endpoint. See configTrust.ts (copied byte-identical from
+// swimchain-frontend/src/hooks/configTrust.ts; mirrored in shoalRpc.ts).
 
 function waitForParentConfig(timeoutMs: number): Promise<RpcAuth | null> {
   if (typeof window === 'undefined') return Promise.resolve(null);
@@ -107,7 +98,10 @@ function waitForParentConfig(timeoutMs: number): Promise<RpcAuth | null> {
       resolve(result);
     };
     const onMessage = (event: MessageEvent) => {
-      if (!isParentOriginAllowed(event.origin)) return;
+      if (!isConfigMessageTrusted(
+        { origin: event.origin, source: event.source },
+        { selfOrigin: window.location.origin, parentWindow: window.parent },
+      )) return;
       const d = event.data as
         | { type?: string; rpcEndpoint?: string; rpcAuth?: string | null }
         | null
