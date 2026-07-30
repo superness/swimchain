@@ -25,9 +25,12 @@
  * failing to look.
  */
 import { rpcCall, type RpcAuth } from '../lib/shoalRpc';
-import { classifySendFailure, type SendFailure } from '../lib/shoalSend';
+import {
+  classifySendFailure, submitToRoom, type PowProfile, type SendCtx, type SendFailure,
+} from '../lib/shoalSend';
 import {
   afterWrite, AT_THE_EDGE, CROSSING, CROSSING_MS, EDGE_BODY, EDGE_TITLE, OPEN_WATER, settled,
+  type Standing,
 } from './wayIn';
 
 let failures = 0;
@@ -65,6 +68,49 @@ async function realFailure(fetchFn: typeof fetch): Promise<SendFailure> {
   });
   if (!caught.threw) throw new Error('the fake fetch was supposed to make rpcCall reject, and it resolved');
   return classifySendFailure(caught.e);
+}
+
+/** The node's own regtest PoW profile, handed over explicitly so a real write
+ *  mines in a handful of attempts and needs no `get_info` round trip. */
+const REGTEST: PowProfile = {
+  network: 'regtest',
+  config: { memoryKib: 1024, iterations: 1, parallelism: 1 },
+};
+
+/** A real write context — real space id (bech32m wire form), real hashing, real
+ *  mining, real request. Only the signer is a stand-in. */
+const WRITE_CTX: SendCtx = {
+  auth: AUTH,
+  spaceId: `sp1${'q'.repeat(34)}`,
+  roomContentId: `sha256:${'12'.repeat(32)}`,
+  authorIdHex: 'cd'.repeat(32),
+  sign: async () => new Uint8Array(64),
+  powProfile: REGTEST,
+};
+
+/**
+ * Drive a WHOLE WRITE — `submitToRoom`, not `rpcCall` — against a fake node and
+ * classify whatever the caller ends up with. `realFailure` above stops at the
+ * RPC layer, which cannot see the failure this exists for: a 200 whose `result`
+ * carries no `content_id` is not an RPC error at all, so `rpcCall` resolves and
+ * only the write path can tell that nothing landed.
+ */
+async function realWriteFailure(fetchFn: typeof fetch): Promise<SendFailure | null> {
+  return withFakeFetch(fetchFn, async () => {
+    try {
+      await submitToRoom(WRITE_CTX, 'a body', 1_700_000_000_000);
+      return null; // the caller was told the water took it
+    } catch (e) {
+      return classifySendFailure(e);
+    }
+  });
+}
+
+function jsonRpcOk(result: unknown): typeof fetch {
+  return (async () => new Response(
+    JSON.stringify({ jsonrpc: '2.0', result, id: 1 }),
+    { status: 200, statusText: 'OK' },
+  )) as typeof fetch;
 }
 
 function jsonRpcError(code: number, message: string): typeof fetch {
@@ -173,6 +219,40 @@ async function anUnrelatedFailureDoesNotRaiseTheEdge(): Promise<void> {
   // holding this in React state does not even re-render on a flapping node.
   check('...and every one of them leaves the standing untouched, object and all',
     [offline, pow, gateway, params].every((f) => afterWrite(AT_THE_EDGE, f) === AT_THE_EDGE));
+
+  // (e) THE ANSWER THAT IS NOT AN ERROR AT ALL, and the one that got through.
+  //
+  // Every case above is a rejection. This one is a JSON-RPC SUCCESS — HTTP 200,
+  // `jsonrpc: "2.0"`, a `result` object, no `error` field anywhere — that
+  // carries no `content_id`, so nothing landed. `rpcCall` has no way to notice:
+  // there is no error to classify, and it resolves. The review drove exactly
+  // this answer through the real stack and it LIFTED THE EDGE, dropping the
+  // player into water that still would not carry them with the boundary that
+  // said so now gone (plan 4c task 2 review, M-1).
+  //
+  // It is now caught one layer lower, in `submitToRoom`, which is why this row
+  // drives a whole write rather than an `rpcCall`. Unreachable from a
+  // conforming node — a real `submit_reply` answers a `content_id` or an error
+  // — and checked anyway, because the cost of being wrong here is the exact
+  // failure this whole surface exists to prevent.
+  const empty = await realWriteFailure(jsonRpcOk({}));
+  check('a 200 success envelope with nothing in it is not an accepted write',
+    empty !== null, empty);
+  check('NON-DEGENERACY: it classifies as unknown — the node answered, and we cannot tell what it did',
+    empty !== null && empty.kind === 'unknown', empty);
+  check('...so it is not the water taking you in',
+    empty !== null && afterWrite(AT_THE_EDGE, empty).crossing === false,
+    empty !== null ? afterWrite(AT_THE_EDGE, empty) : empty);
+  check('...and it leaves the player exactly at the edge, object and all',
+    empty !== null && afterWrite(AT_THE_EDGE, empty) === AT_THE_EDGE);
+  // AND THE CONTROL, or the four rows above pass for a write path that has
+  // simply stopped succeeding: the same harness, the same real mining and
+  // signing, with the one field a real node always sends.
+  const landed = await realWriteFailure(jsonRpcOk({ content_id: `sha256:${'ab'.repeat(32)}` }));
+  check('CONTROL: the same write with a real content_id IS accepted',
+    landed === null, landed);
+  check('...and that is what lifts the edge', afterWrite(AT_THE_EDGE, landed).crossing === true,
+    afterWrite(AT_THE_EDGE, landed));
 }
 
 // ---------------------------------------------------------------------------
@@ -189,16 +269,33 @@ function anAcceptedWriteLiftsTheEdge(): void {
   check('...and a player already in the water stays in it, unchanged',
     afterWrite(OPEN_WATER, null) === OPEN_WATER, afterWrite(OPEN_WATER, null));
 
-  // ONCE. The keep-alive puts a write on the wire every few seconds forever,
-  // and every one of them after this is also accepted; if any of them could
-  // re-enter the crossing the welcome would replay for as long as the player
-  // kept playing. It cannot, and the reason is structural rather than a guard:
-  // only a standing with the edge UP can enter it, and entering puts the edge
-  // down.
-  check('the next accepted write does not play the moment again — it changes nothing at all',
-    afterWrite(letIn, null) === letIn, afterWrite(letIn, null));
-  check('...nor does the one after that, or any of the next hundred',
-    Array.from({ length: 100 }).reduce<typeof letIn>((s) => afterWrite(s, null), letIn) === letIn);
+  // ONCE PER WAIT. The keep-alive puts a write on the wire every few seconds
+  // forever, and every one of them after this is also accepted; if any of them
+  // could re-enter the crossing the welcome would replay for as long as the
+  // player kept playing. It cannot, and the reason is structural rather than a
+  // guard: only a standing with the edge UP can enter the moment, and entering
+  // puts the edge down.
+  //
+  // COUNTED, NOT COMPARED, AND THAT IS THE WHOLE POINT OF THE SHAPE BELOW.
+  // These two rows used to read `afterWrite(letIn, null) === letIn` — and they
+  // PASSED under the exact replay bug they named, because `CROSSING` is a
+  // module-level singleton: a fold that re-entered the moment on every accepted
+  // write returns `CROSSING`, and so does the correct one, so identity cannot
+  // tell them apart (plan 4c task 2 review, M-2). What distinguishes them is
+  // the session a player actually has — the moment is entered, the timer ends
+  // it, and the writes keep coming — so the sequence is run and the ENTRIES are
+  // counted. A fold that replayed reads 100 here.
+  let entries = 0;
+  let session: Standing = AT_THE_EDGE;
+  for (let i = 0; i < 100; i++) {
+    const next = afterWrite(session, null);
+    if (next.crossing && !session.crossing) entries++;
+    session = settled(next); // the moment's own timer, which always eventually fires
+  }
+  check('across a hundred accepted writes the moment is entered exactly ONCE',
+    entries === 1, entries);
+  check('...and the player ends simply in the water, not stuck mid-lift and not back outside',
+    session === OPEN_WATER, session);
 
   // THE THREE STATES ARE EXCLUSIVE. `chooseWater` reads `atTheEdge` and
   // `TheEdge` reads `crossing`, so a standing with both raised would put a

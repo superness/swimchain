@@ -618,6 +618,22 @@ async function main(): Promise<void> {
     // against Argon2id's mood. The settle is long enough for four gaps, so a
     // back-off would have to be visible as growth rather than inferred from one
     // interval.
+    //
+    // THE BOUNDS ARE A TOLERANCE ON THE KEEP-ALIVE, NOT A CORRIDOR BETWEEN THE
+    // TWO CONSTANTS. They used to be `MAX + MIN` (11 s) as a ceiling and `MIN`
+    // (3 s) as a floor, against a real cadence of 8 s — honest, but loose enough
+    // that a 1.25x back-off (10 s, a whole extra keep-alive of a player who has
+    // already been vouched for sitting outside) passed both untouched, which is
+    // the regression this section exists to catch (plan 4c task 2 review, M-3).
+    // The claim is an EQUALITY with the keep-alive, so the check is one too.
+    //
+    // A tenth of the keep-alive is 800 ms against a measured jitter of a few ms
+    // — the gaps come off `vec.t`, stamped when the emit is DECIDED rather than
+    // when the write lands, so mining and network time are not in them — which
+    // is ~100x the noise and still fails a 10 s cadence by 1.2 s.
+    const CADENCE_TOLERANCE_MS = MAX_EMIT_GAP_MS / 10;
+    const mean = (xs: readonly number[]) => xs.reduce((a, b) => a + b, 0) / xs.length;
+
     const long = await observe({ writesRefused: true, awaitWrite: true, settleMs: 34_000 });
     const ts = vectorsOf(long).map((v) => v.t);
     const gaps = ts.slice(1).map((t, i) => t - ts[i]);
@@ -625,21 +641,40 @@ async function main(): Promise<void> {
       gaps.length >= 4, { writes: ts.length, gaps });
     check('IT DOES NOT SLEEP: refused every time, it still never goes quiet for '
       + 'longer than the keep-alive',
-      gaps.length > 0 && Math.max(...gaps) <= MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS,
-      { gaps, MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS });
+      gaps.length > 0 && Math.max(...gaps) <= MAX_EMIT_GAP_MS + CADENCE_TOLERANCE_MS,
+      { gaps, MAX_EMIT_GAP_MS, CADENCE_TOLERANCE_MS });
     check('IT DOES NOT SPIN: nor does it write faster than the floor every other '
       + 'swimmer is held to',
       gaps.length > 0 && Math.min(...gaps) >= MIN_EMIT_GAP_MS, { gaps, MIN_EMIT_GAP_MS });
-    // AND IT IS THE SAME CADENCE AN ACCEPTED PLAYER KEEPS. The two claims above
-    // are bounds; this is the equality, and it is what says the knock costs the
-    // network and the player's machine exactly what playing costs. Compared
-    // against the accepted window from section 6 rather than against a number.
+    // AND THE CADENCE IS THE KEEP-ALIVE ITSELF, which is the claim the two
+    // bounds only fence in. Averaged over the whole run, so a single delayed
+    // tick cannot fail it and a back-off cannot hide inside it: a client that
+    // stretched every other gap would read halfway between 8 s and its new
+    // cadence here, and every stretch big enough to matter is bigger than
+    // 800 ms.
+    check('...and the cadence it keeps IS the keep-alive, not merely inside the bounds',
+      Math.abs(mean(gaps) - MAX_EMIT_GAP_MS) <= CADENCE_TOLERANCE_MS,
+      { mean: mean(gaps), MAX_EMIT_GAP_MS, CADENCE_TOLERANCE_MS, gaps });
+    // AND IT IS THE SAME CADENCE AN ACCEPTED PLAYER KEEPS. The claims above are
+    // about one window against a constant; this is one window against another,
+    // and it is what says the knock costs the network and the player's machine
+    // exactly what playing costs.
+    //
+    // TWO MEASUREMENTS OF THE SAME EMITTER CAN BE HELD FAR TIGHTER THAN EITHER
+    // CAN BE HELD TO A NUMBER: both windows run the same keep-alive on the same
+    // machine in the same minute, so they agree to milliseconds. A quarter of a
+    // second is generous for that and still catches a 3% divergence — a
+    // back-off applied only to the refused window has nowhere to hide.
+    const SAME_CADENCE_MS = 250;
     const accepted = await observe({ awaitWrite: true, settleMs: 34_000 });
     const acceptedTs = vectorsOf(accepted).map((v) => v.t);
     const acceptedGaps = acceptedTs.slice(1).map((t, i) => t - acceptedTs[i]);
     check('...and it is the cadence a player the water accepted keeps, write for write',
       Math.abs(acceptedTs.length - ts.length) <= 1,
       { refused: ts.length, accepted: acceptedTs.length, refusedGaps: gaps, acceptedGaps });
+    check('...gap for gap, and not merely write for write',
+      acceptedGaps.length > 0 && Math.abs(mean(gaps) - mean(acceptedGaps)) <= SAME_CADENCE_MS,
+      { refusedMean: mean(gaps), acceptedMean: mean(acceptedGaps), SAME_CADENCE_MS });
 
     // (b) A SLOW YES SURVIVES THE APP BEING CLOSED.
     //

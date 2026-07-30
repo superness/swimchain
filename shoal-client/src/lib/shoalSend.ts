@@ -614,7 +614,40 @@ export async function submitToRoom(ctx: SendCtx, body: string, ms: number): Prom
     author_id: ctx.authorIdHex,
     ...mined,
   });
-  return result.content_id;
+
+  // A SUCCESS ENVELOPE IS NOT AN ACCEPTED WRITE, and the difference is not
+  // pedantry — a caller reads this promise RESOLVING as "the node took it".
+  //
+  // `rpcCall` rejects on a transport failure, a non-2xx status, an unparsable
+  // body and any JSON-RPC `error`, so reaching this line means one thing only:
+  // the node answered 200 with a `result` field. It does not mean anything
+  // landed. A conforming `submit_reply` always answers `{ content_id: … }`
+  // (src/rpc/methods.rs), so a `result` without one is not this protocol; but
+  // returning `result.content_id` unchecked turned that into `undefined` and
+  // reported it upwards as a successful write.
+  //
+  // WHAT THAT COST, concretely: `chainSea` calls `noteWrite(null)` on a
+  // resolved write, and `wayIn.afterWrite` reads `null` — the one input it
+  // moves on — as "the water has taken this swimmer in". A 200 whose result
+  // was `{}` therefore lifted the edge of the water for a player whose write
+  // never reached a peer, dropping them into water that still would not carry
+  // them with the only thing on screen that said so now gone (plan 4c task 2
+  // review, M-1; found by driving this exact answer through the real stack).
+  //
+  // Throwing is the correct shape rather than a special-cased return: it lands
+  // in `classifySendFailure`'s `'unknown'` bucket (a plain `Error` is neither a
+  // `JsonRpcCallError` with -32015 nor a `NodeUnreachableError`), which is
+  // exactly what this is — the node answered and we cannot tell what it did —
+  // and 'unknown' leaves every standing untouched, raising no edge and lifting
+  // none. `result` is JSON the node just sent, so stringifying it for the
+  // message cannot cycle.
+  const contentId: unknown = (result as SubmitReplyResult | null)?.content_id;
+  if (typeof contentId !== 'string' || contentId.length === 0) {
+    throw new Error(
+      `submit_reply answered a success envelope with no content_id: ${JSON.stringify(result)}`,
+    );
+  }
+  return contentId;
 }
 
 /**

@@ -65,16 +65,27 @@
  * the tree afterwards, and it is deliberately longer than the animation.
  *
  * NOTHING IS BEING WAITED FOR WHILE IT PLAYS. The write was accepted before
- * this prop was ever true; the player is already in the real water, already
- * folding the real sea, already being seen by everyone else in it. This layer
- * has no pointer events and never had, so the lift cannot cost them a frame of
- * play — it is a picture of something that has already happened.
+ * this prop was ever true (`wayIn.afterWrite` enters the crossing on that one
+ * event and nothing else), so by the time this draws, the player is already in
+ * the real water, already folding the real sea, and their presence is already
+ * on its way to everyone else in it — the node took it, and gossip carries it
+ * in its own seconds. This layer has no pointer events and never had, so the
+ * lift cannot cost them a frame of play — it is a picture of something that
+ * has already happened.
  *
- * The whole layer is `pointer-events: none` on purpose. The player can still
- * steer, still dart, still open a line to speak — and now those verbs reach a
- * sea that answers them. Their writes into the REAL water are still refused, so
- * nothing they do reaches another person yet; taking the controls away as well
- * would turn a place into a modal dialog, which is exactly what §2.16 forbids.
+ * The whole layer is `pointer-events: none` on purpose, in BOTH states, and
+ * that is the one thing about it that does not change when `lifting` goes up.
+ * The player can still steer, still dart, still open a line to speak — taking
+ * the controls away would turn a place into a modal dialog, which is exactly
+ * what §2.16 forbids.
+ *
+ * WHERE THOSE VERBS LAND IS WHAT CHANGES, and it is the difference between the
+ * two states rather than a fact about this layer. While the boundary is still
+ * TRUE (`lifting` false) the player is in the shallows and their writes into
+ * the real water are refused, so everything they do moves a fish they can see
+ * and nothing they do reaches another person. Once it is lifting the paragraph
+ * above applies instead: the write has already been accepted, the real sea is
+ * already folding, and the same controls they kept the whole time now carry.
  *
  * ## The words
  *

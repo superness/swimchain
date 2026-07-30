@@ -73,8 +73,17 @@
  * anything other than `'not-sponsored'` would let a flaky node fake a welcome:
  * one lost packet and the boundary would be gone, the player dropped into water
  * that still will not carry them, with nothing left on screen to say so. Only
- * `failure === null` — the node answered, and it answered yes — moves anything.
- * Mutation-verified both ways (plan 4c task 2).
+ * `failure === null` moves anything.
+ *
+ * AND `null` MEANS THE WRITE LANDED, not merely that the node did not send an
+ * `error`. Those came apart once: a JSON-RPC 200 whose `result` carried no
+ * `content_id` resolved the write path with `undefined`, arrived here as a
+ * `null` failure, and lifted the boundary for a player whose write never
+ * reached a peer (plan 4c task 2 review, M-1). `submitToRoom` now rejects that
+ * answer, which classifies as `'unknown'` and therefore changes nothing here.
+ * This module still folds one input and has no idea any of that happened —
+ * which is the point: "accepted" is decided once, at the wire, by the layer
+ * that can see it. Mutation-verified both ways (plan 4c task 2).
  *
  * ## There is no deadline, and there must not be one
  *

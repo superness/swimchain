@@ -1101,10 +1101,16 @@ export function App() {
     // back to a start the new sea agrees with, and the shallows opens on its
     // first second rather than partway through the one lesson it exists for.
     //
-    // It costs one chain-sea teardown and rebuild (a socket, a refetch), and
-    // it happens at most twice in a session: `afterWrite` returns the SAME
-    // object unless the standing actually changed, so the accepted or refused
-    // write every few seconds re-renders nothing and re-runs nothing.
+    // It costs one chain-sea teardown and rebuild (a socket, a refetch) PER
+    // CHANGE OF THE FLAG, which for an ordinary session is none (accepted from
+    // the first write), once (refused and still refused), or twice (refused,
+    // then let in). It is not a bound: a node that refuses this swimmer AGAIN
+    // after the crossing — a vouch withdrawn, a node flapping — raises the flag
+    // again and rebuilds again, correctly, and could do so any number of times.
+    // What IS bounded is that nothing rebuilds without a real change:
+    // `afterWrite` returns the SAME object unless the standing actually moved,
+    // so the accepted or refused write every few seconds re-renders nothing and
+    // re-runs nothing.
   }, [scene, shell, standing.atTheEdge]);
 
   return (
