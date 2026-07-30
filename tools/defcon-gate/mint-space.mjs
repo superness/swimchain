@@ -493,18 +493,29 @@ async function mintSeedPost(spaceId, authorIdHex, profile) {
  * id and asserts `content_id`/`title`/`body` all match, exiting (via a
  * thrown Error, caught in `main`'s `.catch`) non-zero on any mismatch.
  *
- * This is `get_content`, not `list_space_posts` as the brief names first,
- * because of the KNOWN NODE GAP documented in this file's header:
- * `list_space_posts` stops showing a space's own posts once their containing
- * block commits, while `get_content` keeps answering correctly. The brief
- * explicitly allows "list_space_posts / resolve_space_name OR EQUIVALENT" —
- * `get_content` is that equivalent, and is in fact a STRICTER check (asserts
- * the exact title/body content, not just presence in a list).
- * `list_space_posts` is still called below, but only as a best-effort,
- * NON-FATAL cross-check: it's logged so a run against a node without the gap
- * (or before this script's own block has committed) shows it lining up, but
- * a solo regtest node hitting the gap must not turn a correct mint into a
- * false failure.
+ * This is `get_content`, not `list_space_posts`, for two reasons:
+ *
+ *   1. Precedent — the shipping Shoal client's own readiness check,
+ *      `roomReady` (`shoal-client/src/ui/shellConfig.ts:332-344`), verifies a
+ *      just-minted room the exact same way: a plain `get_content` on the
+ *      derived id, not a list scan.
+ *   2. The KNOWN NODE GAP documented in this file's header, live-reproduced
+ *      during this task's own regtest testing: `list_space_posts` stops
+ *      showing a space's own posts once their containing block self-commits
+ *      on a solo (no-peer) regtest node, while `get_content` on that exact
+ *      content id keeps answering correctly, with the right title/body,
+ *      indefinitely afterward.
+ *
+ * `get_content` is also a STRICTER check than a list scan (asserts the exact
+ * title/body content, not just presence in a list). `list_space_posts` is
+ * still called below, but only as a best-effort, NON-FATAL cross-check: it's
+ * logged so a run against a node without the gap (or before this script's
+ * own block has committed) shows it lining up, but a solo regtest node
+ * hitting the gap must not turn a correct mint into a false failure. Task
+ * 6/7 (the Wall) and Task 9 (the E2E rehearsal script) both read
+ * `list_space_posts` directly with no fallback of their own, and will hit
+ * this identical gap once a block commits during their own regtest testing —
+ * see this file's header and Task 5's report for the full writeup.
  */
 async function verifyReadback(spaceId, expectedContentId) {
   const MAX_ATTEMPTS = 5;
