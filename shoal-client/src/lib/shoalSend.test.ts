@@ -15,7 +15,7 @@
  * sponsor" flow on an unrelated rejection (wrong PoW, bad signature, whatever).
  */
 import { rpcCall, type RpcAuth } from './shoalRpc';
-import { classifySendFailure } from './shoalSend';
+import { classifySendFailure, submitToRoom, type PowProfile, type SendCtx } from './shoalSend';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -53,6 +53,41 @@ async function caughtError(fetchFn: typeof fetch, auth: RpcAuth): Promise<unknow
       return null;
     } catch (e) {
       return e;
+    }
+  });
+}
+
+/** The node's own regtest profile (4 bits, 1 MiB), passed explicitly so a write
+ *  needs no `get_info` round trip and mines in a handful of attempts. */
+const REGTEST: PowProfile = {
+  network: 'regtest',
+  config: { memoryKib: 1024, iterations: 1, parallelism: 1 },
+};
+
+/** A write context whose only fake part is the signer — the space id is in the
+ *  bech32m wire form `assertWireSpaceId` demands, and everything downstream of
+ *  it (hashing, mining, the request body) is the real thing. */
+function writeCtx(auth: RpcAuth): SendCtx {
+  return {
+    auth,
+    spaceId: `sp1${'q'.repeat(34)}`,
+    roomContentId: `sha256:${'12'.repeat(32)}`,
+    authorIdHex: 'cd'.repeat(32),
+    sign: async () => new Uint8Array(64),
+    powProfile: REGTEST,
+  };
+}
+
+type WriteOutcome = { threw: true; e: unknown } | { threw: false; contentId: string };
+
+/** Run one real write against a fake node and report what the CALLER sees —
+ *  a resolution (which every caller reads as "the node took it") or a throw. */
+async function caughtWrite(fetchFn: typeof fetch, auth: RpcAuth): Promise<WriteOutcome> {
+  return withFakeFetch(fetchFn, async (): Promise<WriteOutcome> => {
+    try {
+      return { threw: false, contentId: await submitToRoom(writeCtx(auth), 'a body', 1_700_000_000_000) };
+    } catch (e) {
+      return { threw: true, e };
     }
   });
 }
@@ -136,6 +171,71 @@ async function main() {
   {
     const result = classifySendFailure('a plain string, not an Error at all');
     check('classifySendFailure never throws on a non-Error input', result.kind === 'unknown', result);
+  }
+
+  // ==================================================================================
+  // A 200 WHOSE `result` CARRIES NO `content_id` — the one answer that used to
+  // read as an accepted write (plan 4c task 2 review, M-1).
+  // ==================================================================================
+  //
+  // Everything above is about a REJECTION being classified correctly. This is the
+  // other edge of the same knife: `submitToRoom` RESOLVING is what every caller
+  // reads as "the node took it" — `chainSea` turns a resolved write into
+  // `noteWrite(null)` and `wayIn.afterWrite` moves on exactly that — so a
+  // well-formed JSON-RPC success with an empty `result` used to resolve with
+  // `undefined` and announce a write that never landed.
+  //
+  // Driven through the REAL write path (real mining at the node's own regtest
+  // difficulty, real signing, real `rpcCall`) rather than by calling the check
+  // directly, because the claim is about what a caller of `submitToRoom` sees.
+  {
+    const write = await withFakeFetch(fakeFetch(() => okResponse({
+      jsonrpc: '2.0', result: { content_id: `sha256:${'ab'.repeat(32)}` }, id: 8,
+    })), async () => submitToRoom(writeCtx(auth), 'a body', 1_700_000_000_000));
+    check('NON-DEGENERACY: a node that answers with a content_id is an accepted write',
+      write === `sha256:${'ab'.repeat(32)}`, write);
+
+    // NON-DEGENERACY, THE OTHER WAY. Tightening this check is the dangerous
+    // direction — a client that refused a well-formed id it did not recognise
+    // would classify a real acceptance as `'unknown'`, which lifts no edge, and
+    // a player who had been let in would wait at the boundary forever while the
+    // node said yes on every write. So an id that is not this node's format but
+    // is plainly an identifier must still be accepted.
+    const oddButReal = await withFakeFetch(fakeFetch(() => okResponse({
+      jsonrpc: '2.0', result: { content_id: 'blake3-7f3a91' }, id: 8,
+    })), async () => submitToRoom(writeCtx(auth), 'a body', 1_700_000_000_000));
+    check('...and an identifier this client does not recognise is STILL an accepted write',
+      oddButReal === 'blake3-7f3a91', oddButReal);
+
+    // Four shapes of "answered 200, landed nothing". None of them may resolve,
+    // and each must land in `unknown` — the honest bucket — so that a caller
+    // folding the classification changes no standing at all.
+    const answers: ReadonlyArray<readonly [string, unknown]> = [
+      ['an empty success envelope', {}],
+      ['a null result', null],
+      ['an empty content_id', { content_id: '' }],
+      ['a content_id that is not a string', { content_id: 42 }],
+      // THE ONE THAT GOT THROUGH. `length === 0` is not "empty" — a single
+      // space has length 1, resolved, and a resolved write lifts the edge of
+      // the water for a swimmer nobody has let in. Every whitespace shape is
+      // here rather than the one that was reported, because a check that
+      // named ' ' alone would be a patch with a test around it.
+      ['a content_id that is one space', { content_id: ' ' }],
+      ['a content_id that is a tab', { content_id: String.fromCharCode(9) }],
+      ['a content_id that is a newline', { content_id: String.fromCharCode(10) }],
+      ['a content_id padded around nothing', { content_id: '   ' }],
+      // ...and one that carries real characters but is still not an
+      // identifier: no content id has a space in the middle of it, and a
+      // rule that only trimmed the ends would take this.
+      ['a content_id with a space in it', { content_id: 'sha256:ab cd' }],
+    ];
+    for (const [name, result] of answers) {
+      const outcome = await caughtWrite(fakeFetch(() => okResponse({ jsonrpc: '2.0', result, id: 9 })), auth);
+      check(`${name} is NOT an accepted write — submitToRoom rejects`, outcome.threw, outcome);
+      check(`...and it classifies as unknown, which lifts nothing and raises nothing`,
+        outcome.threw && classifySendFailure(outcome.e).kind === 'unknown',
+        outcome.threw ? classifySendFailure(outcome.e) : outcome);
+    }
   }
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

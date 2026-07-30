@@ -76,6 +76,11 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+/** How long the boundary stays in the tree after it stops being true. Imported
+ *  rather than retyped: the whole point of the check that reads it is that the
+ *  stylesheet's own number has to fit inside this one. */
+import { CROSSING_MS } from './wayIn';
+
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
   if (cond) console.log(`  ok  ${name}`);
@@ -159,17 +164,56 @@ async function main(): Promise<void> {
     // visible in the screenshot: the copy was neither centred nor positioned
     // (`shoal-edge-copy`), the title had no font and no colour
     // (`shoal-edge-title`), and the water was not dimmed (`shoal-edge-below`).
+    //
+    // THE LIFT IS ON THE LIST FOR THE SAME REASON AND A SHARPER ONE. It is the
+    // payoff of the whole newcomer arc, it is a picture with no words in it, and
+    // it is drawn ENTIRELY by these rules — a build that shipped without them
+    // would not look wrong, it would look like nothing happening, which is the
+    // one failure a player cannot report.
     for (const rule of [
       '.shoal-edge', '.shoal-edge-copy', '.shoal-edge-title', '.shoal-edge-body',
-      '.shoal-edge-below', '.shoal-edge-line', '.shoal-edge-orbit',
+      '.shoal-edge-below', '.shoal-edge-line',
+      '.shoal-edge--lifting', '.shoal-edge-swell',
     ]) {
       check(`the emitted stylesheet carries ${rule}`, css.includes(rule));
     }
     // `@keyframes` and `@media (prefers-reduced-motion)` are the two things a
     // style attribute cannot express and are the whole reason the boundary
     // needed a stylesheet rather than an inline object.
-    check('...its keyframes', css.includes('@keyframes') && css.includes('shoal-edge-circle'));
+    check('...its keyframes', css.includes('@keyframes') && css.includes('shoal-edge-rise')
+      && css.includes('shoal-edge-drain') && css.includes('shoal-edge-swell'));
     check('...and its reduced-motion rule', css.includes('prefers-reduced-motion'));
+
+    // THE SURROGATE FISH IS GONE FROM THE ARTIFACT, not merely from the source.
+    // It drew one small pale fish circling below the line and its comment called
+    // it "the player", which stopped being true the moment the shallows went
+    // underneath and the player got a real fish of their own. Asserted against
+    // `dist/` rather than by reading `theEdge.css`, because a check on the source
+    // is a check on the file this build was supposed to have used.
+    for (const gone of ['shoal-edge-orbit', 'shoal-edge-circle', 'shoal-edge-beat']) {
+      check(`...and nothing of the surrogate fish survives: no ${gone}`,
+        !css.includes(gone) && !js.includes(gone));
+    }
+
+    // THE ONE VALUE TWO FILES SHARE, AND THE ONLY PLACE THEY CAN BE COMPARED.
+    //
+    // `theEdge.css` times the lift with `--shoal-edge-lift-ms`; `wayIn.ts` keeps
+    // the component in the tree for `CROSSING_MS` and nothing else. Neither file
+    // can see the other, and getting them the wrong way round has exactly one
+    // symptom: the moment this whole arc exists for is cut off in mid-air, on a
+    // surface no unit test renders. So the emitted stylesheet is READ and its
+    // number held under the TypeScript one.
+    const lift = /--shoal-edge-lift-ms:\s*([\d.]+)(ms|s)\b/.exec(css);
+    check('the emitted stylesheet states how long the lift takes',
+      lift !== null, css.slice(0, 200));
+    const liftMs = lift === null ? -1 : Number(lift[1]) * (lift[2] === 's' ? 1000 : 1);
+    check('...and the moment outlasts it, so the lift is never cut off in mid-air',
+      liftMs > 0 && liftMs <= CROSSING_MS, { liftMs, CROSSING_MS });
+    // NON-DEGENERACY: the reader has to be able to find a number at all, and to
+    // read the seconds spelling a CSS minifier may have rewritten it into.
+    check('NON-DEGENERACY: the same reader finds it written in ms and in s',
+      /--shoal-edge-lift-ms:\s*([\d.]+)(ms|s)\b/.exec('a{--shoal-edge-lift-ms:2400ms}')?.[1] === '2400'
+      && /--shoal-edge-lift-ms:\s*([\d.]+)(ms|s)\b/.exec('a{--shoal-edge-lift-ms: 2.4s}')?.[2] === 's');
 
     // The window reset, which used to be inline in index.html.
     check('...and the window reset that used to sit inline in the HTML',

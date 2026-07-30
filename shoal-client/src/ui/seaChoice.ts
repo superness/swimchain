@@ -33,6 +33,8 @@
 import { chainSea, type ChainSea } from './chainSea';
 import type { RpcAuth } from '../lib/shoalRpc';
 import type { SendFailure, SignFn } from '../lib/shoalSend';
+import type { Vec } from '../lib/shoalTypes';
+import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
 
 /**
@@ -86,6 +88,264 @@ export function chooseSeaSource(dev: boolean, devParams: boolean, shell: boolean
   if (dev && devParams) return 'dev';
   if (shell) return 'shell';
   return 'offline';
+}
+
+// ---------------------------------------------------------------------------
+// Which water the player's own body is in
+// ---------------------------------------------------------------------------
+
+/**
+ * The sea the frame loop folds and draws — which is NOT the same question as
+ * `chooseSeaSource`, and keeping the two apart is the whole of this section.
+ *
+ *   scene     there is no configuration, so there is no water to be in. The
+ *             offline scene picker decides (`App.tsx`'s `SceneKind`).
+ *   chain     real water, and it will have us.
+ *   shallows  real water, and it will NOT have us yet (spec §2.16). The
+ *             player swims the tutorial water while their own writes keep
+ *             knocking at the door of the real one — see `knockOn`.
+ */
+export type PlayedWater = 'scene' | 'chain' | 'shallows';
+
+/**
+ * WHICH WATER THE PLAYER PLAYS IN, given whether a configuration exists and
+ * whether the water has refused them.
+ *
+ * ## The lockout this function is one half of
+ *
+ * "If refused, show the shallows instead of the real water" is the obvious
+ * implementation and it is a SILENT PERMANENT LOCKOUT. The shallows is
+ * offline. If it replaces the chain sea, this client stops writing — and a
+ * write that goes through is the only evidence it will ever have that somebody
+ * has let this swimmer in (`wayIn.ts`). The one signal that could lift the
+ * edge is the one the swap deletes. No error, nothing wrong in the logs, and
+ * the door can only be opened from a side nobody is standing on.
+ *
+ * So this function answers where the player's BODY is, and `knockOn` below
+ * answers where their WRITES go, and the two answers are deliberately
+ * different while the edge is up. Two presences, not two seas.
+ *
+ * ## Why `atTheEdge` cannot decide anything when there is no chain sea
+ *
+ * It never happens — the standing is raised by a refused chain write, so a
+ * window that never had a chain sea cannot be at the edge — but the rule is
+ * written to be total rather than to rely on that, because the caller's own
+ * `null` check and this one would otherwise have to agree by hand. A window
+ * with no configuration shows the offline scene whatever it believes about its
+ * standing.
+ */
+export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater {
+  if (!hasChain) return 'scene';
+  return atTheEdge ? 'shallows' : 'chain';
+}
+
+/**
+ * KEEP KNOCKING. Publish the vector the player just authored into the real
+ * water as well, while their body is swimming in the shallows.
+ *
+ * ## Why this is a re-stamp of the player's own vector and not a second life
+ *
+ * The ordinary emitter is `input.emitDue`, called once per frame from
+ * `App.tsx` step 3 and only when `shouldEmit` agrees, and that is a rate
+ * discipline as much as an architecture: `MIN_EMIT_GAP_MS` is the only thing
+ * keeping one window from crowding the per-space mempool budget every swimmer
+ * shares (shoalEmit.ts). A knocker with a schedule of its OWN would be a second
+ * emitter answering to nothing, and it would double this window's write rate at
+ * exactly the moment the node has told us it wants fewer of our writes.
+ *
+ * So the knock is the write the player's own game was making anyway. Nothing
+ * is fabricated: the vector is theirs, from the swimmer they are steering, in
+ * the same world coordinates. The only thing that changes is the timestamp.
+ *
+ * THERE IS A SECOND CALLER NOW AND IT IS NOT A SECOND CADENCE — see
+ * `knockBackstopDue`. A window that has stopped RENDERING makes no frames, so
+ * the emitter above is never called and the knocking simply stops; the backstop
+ * is a timer that notices the silence and re-sends THE LAST VECTOR THIS WINDOW
+ * AUTHORED. Its deadline is deliberately past the keep-alive, so it can only
+ * fire when the frame loop has already failed to, and the two can never write
+ * alongside each other. The rate a node sees is unchanged, which is asserted on
+ * the wire rather than argued here.
+ *
+ * ## The timestamp is the load-bearing part
+ *
+ * `vec.t` arrives on the SHALLOWS' clock, which is a constant instant inside a
+ * constant epoch (`SHALLOWS_OPEN_MS`) so that the teaching moment lands on the
+ * same tick on every machine. That instant is somewhere in 1970. A write
+ * carrying it would be refused by the node's own timestamp window rather than
+ * by `check_identity_sponsored`, so the client would stop hearing the one
+ * error code its standing is built on — and an acceptance, when it finally
+ * came, would never arrive at all. `wallAuthorMs` is the caller's own frame
+ * clock, read once, the same read `App.tsx` derives the sea instant from.
+ *
+ * ## Eat claims are NOT knocked, and that is not an oversight
+ *
+ * A presence vector is a statement about the swimmer's own body, and that body
+ * is the same body in either water. An eat claim is a claim on one cell of one
+ * sea's bloom map, judged against where everybody else in THAT sea has been —
+ * and in the real water this swimmer has never been anywhere. Knocking it
+ * would be asking to be credited for a bite taken somewhere else.
+ *
+ * ## THE CADENCE IS THE PLAYING CADENCE, DELIBERATELY, AND HERE IS WHAT IT COSTS
+ *
+ * A knock is a real write: mined, signed and sent. Measured on this machine at
+ * the profile a mainnet or testnet node verifies against (Argon2id 8 MiB, 1
+ * iteration, parallelism 2, `difficultyFor` -> 8 bits, so ~247 hashes a write):
+ *
+ *     n=25   mean 2924 ms   median 1618 ms   min 278 ms   max 10155 ms
+ *
+ * At one write per `MAX_EMIT_GAP_MS` that is ~36% of one core, continuously,
+ * for as long as the window is open. That number looks alarming until it is
+ * put beside the one that matters: IT IS THE SAME NUMBER FOR A PLAYER THE
+ * WATER HAS ACCEPTED. The keep-alive is 8 s for everybody, one emitter decides
+ * it, and this function does not add a write — it redirects one. So the knock
+ * is not a background process burning a refused player's laptop; it is the
+ * cost of being in this game at all, paid by someone who is in it.
+ *
+ * THE TWO WAYS TO GET THIS WRONG PULL IN OPPOSITE DIRECTIONS, and both are
+ * worse than leaving it alone:
+ *
+ *   - BACK OFF, which is the instinctive answer to a node saying no over and
+ *     over. Every second of back-off is a second a player who has already been
+ *     vouched for goes on sitting outside — and that is plan 4b's own defect
+ *     with the sign flipped: a real sponsorship took 200 s while the client had
+ *     stopped listening at 180. There is no deadline here and there must not be
+ *     a growing silence either.
+ *   - SPEED UP, to hear the yes sooner. `MIN_EMIT_GAP_MS` is the only thing
+ *     keeping one window from crowding a per-space mempool budget every swimmer
+ *     shares, and it is not suspended because the node is refusing us.
+ *
+ * Both bounds are asserted on the wire in `App.test.ts` §8, against those two
+ * constants imported rather than typed, and against an accepted window's own
+ * gaps — a back-off of one knock in three fails them at [16065] and [24077].
+ *
+ * WHAT CANNOT BE SAVED, STATED RATHER THAN GLOSSED: the node refuses at
+ * ingestion, before it verifies anything (`check_identity_sponsored` is the
+ * first thing `submit_reply` does), so every one of those mines is work nobody
+ * ever checks. The client cannot know that in advance without asking the node
+ * about this swimmer's standing, and asking is the one thing this client is not
+ * allowed to do (spec §2.16's RESOLVED block). Wasted work is the price of not
+ * asking, and it is the right way round.
+ */
+/**
+ * MAY A WRITE LEAVE THIS WINDOW FOR THE NODE AT `wallMs`, given when the last
+ * one did?
+ *
+ * ## Why the floor needs a second home, on a second clock
+ *
+ * `shouldEmit` (shoalEmit.ts) already holds `MIN_EMIT_GAP_MS`, and its own
+ * header calls the floor absolute with "no change-of-mind exception" — it is
+ * the only thing keeping one window from crowding the per-space mempool budget
+ * that every swimmer in the water shares. But it holds it against an
+ * `InputState`, and the input state is REBUILT whenever the standing changes,
+ * because the shallows and the real water keep clocks decades apart and
+ * carrying one across is a lockout of its own (App.tsx's effect deps). A fresh
+ * `InputState` has a null `last`, for which `shouldEmit` returns true
+ * unconditionally — so the first write on the far side of a transition left
+ * 94 ms after the one before it. Measured, both ways: `[115, 8001, 37, 8013,
+ * 8017]` for a window refused twice and then let in.
+ *
+ * So the floor is enforced a second time HERE, on the wall clock, where it can
+ * be true across a rebuild: this is the one clock both seas' writes are stamped
+ * on (`knockOn` re-stamps the shallows'), and the one the node's rate limit
+ * actually runs on. `lastNodeWriteMs` lives in a ref that outlives the frame
+ * effect, which is the whole point of it.
+ *
+ * ## What a refused write costs, stated rather than hidden
+ *
+ * `emitDue` has already called `markEmitted` by the time this answers, so a
+ * write the floor turns away is one this swimmer's peers never see: the world's
+ * copy of their vector is one behind until the next emit. That is bounded by
+ * `MAX_EMIT_GAP_MS` (8 s) plus this floor (3 s), against a `PRESENCE_TTL_MS` of
+ * 90 s, and it can only happen on the two frames a session where the standing
+ * changes. The alternative — writing anyway — is breaking the one rule that
+ * protects everybody else in the space, to save one vector at a moment when
+ * this window has just published a nearly identical one.
+ *
+ * ## THE READING IS MONOTONIC, NOT THE WALL CLOCK, AND THAT IS A FIX
+ *
+ * It took `Date.now()` and it stalled for the length of any backwards step the
+ * machine's clock made: NTP correcting a drifted laptop, waking from sleep,
+ * timezone tooling. `wallMs - lastNodeWriteMs` goes NEGATIVE, the floor reads
+ * "not yet" and goes on reading it until real time has caught the step back up.
+ * Measured against this client: a −10 min step gave ONE write where the control
+ * made five; a −20 s step gave a single 28.1 s hole. Unbounded, because the step
+ * is.
+ *
+ * So the caller passes a MONOTONIC reading (`performance.now()`), which no
+ * clock correction moves. The two clocks are doing two different jobs and both
+ * are needed: elapsed time is measured here, and the WRITE'S OWN TIMESTAMP is
+ * still `Date.now()`-derived, because that one is checked against the node's
+ * timestamp window and has to agree with the world's calendar rather than with
+ * this process's uptime.
+ *
+ * The `< lastMs` arm is belt and braces for a reading that is not monotonic
+ * after all (a coarsened or virtualised timer): a negative gap is a clock that
+ * moved rather than time that passed, and the safe answer to that is to let the
+ * write through and re-anchor, never to hold it back for an unbounded stretch.
+ *
+ * `lastMs < 0` is "this window has never written", which must not be treated as
+ * a write at the epoch.
+ */
+export function nodeWriteDue(lastMs: number, monoMs: number): boolean {
+  if (lastMs < 0 || monoMs < lastMs) return true;
+  return monoMs - lastMs >= MIN_EMIT_GAP_MS;
+}
+
+/**
+ * THE BACKSTOP: is it so long since this window wrote that something must have
+ * stopped calling the frame loop?
+ *
+ * ## The gap this exists for
+ *
+ * Every write this client makes is authored inside `requestAnimationFrame`.
+ * Throttling is survivable — a window rendering once a second, or once every
+ * five, still writes on the same schedule — but a MINIMISED, fully occluded or
+ * backgrounded window does not render AT ALL, and rAF stops rather than slows.
+ * Measured with rAF halted: one write, and none after the halt, over sixty
+ * seconds, against five per forty seconds in the control.
+ *
+ * That is not the permanent lockout — it heals on the next rendered frame — and
+ * it is still the wrong person to do it to. THE SHALLOWS IS AN HOURS-LONG
+ * WAITING ROOM, and somebody waiting to be let in is exactly the player who
+ * minimises the window. They come back an hour later still outside, having been
+ * accepted forty minutes earlier, because the write that would have told them
+ * was never attempted.
+ *
+ * ## Why the deadline is longer than the keep-alive rather than equal to it
+ *
+ * `MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS`. A window that IS rendering writes every
+ * `MAX_EMIT_GAP_MS` (8 s), so it can never reach 11 s between writes, so this
+ * can never fire alongside the frame loop — no doubled rate, and the refused
+ * player's cadence stays the accepted player's cadence, which is measurable
+ * from outside and is measured (`App.test.ts` §6). A deadline equal to the
+ * keep-alive would race the frame loop for every write.
+ *
+ * ## What it cannot do
+ *
+ * Timers are throttled too — a background window gets roughly one a minute in
+ * every current engine, and an intensively throttled one no better. So this is
+ * not "a write every 11 s while minimised"; it is "a write whenever the
+ * machine lets a timer run, instead of never". That is the whole claim.
+ */
+export const KNOCK_BACKSTOP_MS = MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS;
+
+export function knockBackstopDue(lastMs: number, monoMs: number): boolean {
+  if (lastMs < 0) return false; // nothing has been written yet; the frame loop opens
+  if (monoMs < lastMs) return true; // a clock that moved, not time that passed
+  return monoMs - lastMs >= KNOCK_BACKSTOP_MS;
+}
+
+export function knockOn(
+  chain: ChainSea | null,
+  water: PlayedWater,
+  vec: Vec,
+  wallAuthorMs: number,
+  say?: string,
+): void {
+  // `'chain'` means the played sea IS this chain sea and has already been
+  // handed the write; knocking as well would publish everything twice.
+  if (chain === null || water !== 'shallows') return;
+  chain.publish({ ...vec, t: wallAuthorMs }, say);
 }
 
 // ---------------------------------------------------------------------------

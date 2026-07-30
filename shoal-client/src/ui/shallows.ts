@@ -162,49 +162,60 @@
  *
  * A sea whose script runs out is a sea that empties: presence lapses after
  * `PRESENCE_TTL_MS` and the player is left alone in open water, which is the
- * dead end §2.16 forbids. So after the sweep the cast enters `LIFE` — a milling
+ * dead end §2.16 forbids. So after the sweep the cast enters `LIFE` — a
  * schedule at fixed absolute instants, deterministic in sea time rather than in
- * frame time for the same reason the scenario is. The ball mills, the three out
- * in the open keep drifting and feeding, so tension climbs again and the sweep
- * comes back. The lesson is not a cutscene; it is what this water does.
+ * frame time for the same reason the scenario is.
+ *
+ * IT IS A TIDE NOW RATHER THAN A MILL, and that is the difference between a sea
+ * that keeps moving and a place somebody can wait in. The old schedule parked
+ * the ball and let three loners feed; measured over seventy minutes, every
+ * swimmer was pinned on `MIN_SIZE` by T+8min and the same three fish were taken
+ * by every sweep for the rest of the hour. Every `SHALLOWS_TIDE_MS` the school
+ * now goes out to feed and comes back, because the fold's own arithmetic will
+ * not let it do both at once — the whole argument, and what it measures, is on
+ * `SHALLOWS_TIDE_MS`. The lesson is not a cutscene; it is what this water does.
  *
  * =============================================================================
- * WHERE THIS SEA IS SHOWN, AND THE ONE PLACE IT IS NOT — READ THIS FIRST
+ * WHERE THIS SEA IS SHOWN — READ THIS FIRST
  * =============================================================================
+ *
+ * TWO PLACES, and the second is the one to be careful about.
  *
  * `App.tsx` selects the shallows whenever `chooseSeaSource` answers `'offline'`:
  * no shell, or a node that has not synced `@shoal:main` yet, which is the state
  * of every fresh install for its first several minutes. That is §2.16's "never
  * let a downloader dead-end", and it is what this module was built for.
  *
- * IT IS NOT SHOWN TO A NEWCOMER WHOSE WRITE IS REFUSED, and that is a real gap
- * rather than an oversight — spec §2.16 wants the shallows to be exactly where
- * such a player waits, and the plan that commissioned this file says so. A
- * shipped build with a healthy node reaches real water in seconds; the first
- * write is refused for want of a voucher; `wayIn.afterWrite` raises
- * `AT_THE_EDGE`; and what they get is `TheEdge` over the real water, not this.
+ * AND IT IS WHERE A NEWCOMER WHOSE WRITES ARE REFUSED SWIMS (`chooseWater`,
+ * seaChoice.ts). A shipped build with a healthy node reaches real water in
+ * seconds; the first write is refused for want of a voucher; `wayIn.afterWrite`
+ * raises `AT_THE_EDGE`; and rather than a boundary drawn over a sea they cannot
+ * affect, the player is put here, in water with a cast and a sweep and a tide
+ * in it, for as long as it takes somebody to bring them through.
  *
- * DO NOT CLOSE IT BY DRAWING THE SHALLOWS WHEN `standing.atTheEdge`. A chain
- * write is the ONLY evidence this client ever has that a vouch has landed
- * (`wayIn.ts`: "a write that goes through is what lifts the edge"), so a window
- * that swapped to this sea would stop writing and the player would never find
- * out they had been let in — permanently, and in silence. That is the same
- * defect class as the cold-start lockout `SceneKind` documents.
+ * THIS SEA IS SHOWN INSTEAD OF THE REAL ONE. IT IS NEVER WRITTEN INSTEAD OF THE
+ * REAL ONE. A chain write is the ONLY evidence this client ever has that a
+ * vouch has landed (`wayIn.ts`: "a write that goes through is what lifts the
+ * edge"), so a window that swapped to this sea and stopped writing would be a
+ * silent permanent lockout — the player would never find out they had been let
+ * in, and nothing in the logs would look wrong. `seaChoice.knockOn` is what
+ * keeps the real writes going while the player is here, and `App.test.ts` §6
+ * asserts it on the wire. Do not remove either without reading both.
  *
- * The honest fix is §2.16's other half — "unvouched newcomers appear as small
- * fish circling at the edge of the real water, visible to everyone" — i.e. an
- * independent circling presence written into the open water on the WALL clock
- * while the player swims here on the sea's. Everything it needs already exists:
- * this is a `Sea` like any other, and `chainSea` is alive and polling at that
- * moment. It is a task, not a line, because it decides which sea the player's
- * body belongs to.
+ * §2.16's other half — "unvouched newcomers appear as small fish circling at
+ * the edge of the real water, VISIBLE TO EVERYONE" — is NOT delivered, and it
+ * cannot be from this side: every write those newcomers make is refused at
+ * ingestion, so no peer ever receives one and nobody can see them. Making that
+ * sentence true needs the network to carry an unvouched swimmer's presence,
+ * which is a node decision and not a client one. What this client can honestly
+ * do is what it does: keep offering, and give the player a sea in the meantime.
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochStartMs } from '../lib/epoch';
 import { reckon } from '../lib/fixed';
 import { speechFrom, type Sea } from './demoSea';
 import { cellIndex } from '../lib/bloom';
-import { HEADING_STEPS, SPEED_CRUISE, TICK_MS } from '../lib/shoalConst';
+import { HEADING_STEPS, QUANT, SPEED_CRUISE, TICK_MS } from '../lib/shoalConst';
 import type { Checkpoint, LogEntry, ShoalState, Vec } from '../lib/shoalTypes';
 
 // ---------------------------------------------------------------------------
@@ -369,6 +380,15 @@ interface Player {
    *  ones out in the open — see `SHALLOWS_FORAGE_EVERY` for why that is the
    *  thesis rather than a convenience. */
   readonly forages: boolean;
+  /**
+   * The two patches this swimmer feeds on when the school goes out on the
+   * tide, or `null` for the ones who never gather in the first place (the
+   * three out in the open, and the player). See `SHALLOWS_TIDE_MS`.
+   *
+   * Both are BLOOM CELL CENTRES, hand-derived — see `SHALLOWS_CAST`.
+   */
+  readonly graze: readonly [{ readonly x: number; readonly y: number },
+    { readonly x: number; readonly y: number }] | null;
 }
 
 /**
@@ -420,22 +440,23 @@ interface Player {
  */
 export const SHALLOWS_CAST: readonly Player[] = [
   // The school. Sizes are a believable spread; see `shallowsSeed` for why they
-  // are seeded high.
-  { id: 's1', size: 180, x: 1664, y: 1416, move: { atMs: 1_750, heading: 8, travelMs: 5_000 }, life: { radius: 96, angle: 0, rate: 21 }, forages: false },
-  { id: 's2', size: 204, x: 1904, y: 1832, move: { atMs: 2_500, heading: 200, travelMs: 3_750 }, life: { radius: 128, angle: 51, rate: -17 }, forages: false },
-  { id: 's3', size: 232, x: 2256, y: 1232, move: { atMs: 1_250, heading: 93, travelMs: 4_500 }, life: { radius: 112, angle: 102, rate: 25 }, forages: false },
-  { id: 's4', size: 264, x: 2376, y: 1672, move: { atMs: 3_000, heading: 151, travelMs: 4_250 }, life: { radius: 80, angle: 153, rate: -29 }, forages: false },
-  { id: 's5', size: 298, x: 2080, y: 1952, move: { atMs: 2_000, heading: 192, travelMs: 5_000 }, life: { radius: 120, angle: 204, rate: 13 }, forages: false },
+  // are seeded high. `graze` is the pair of patches each one feeds on when the
+  // tide takes the school out — derived on `SHALLOWS_TIDE_MS`.
+  { id: 's1', size: 180, x: 1664, y: 1416, move: { atMs: 1_750, heading: 8, travelMs: 5_000 }, life: { radius: 96, angle: 0, rate: 21 }, forages: false, graze: [{ x: 2496, y: 1600 }, { x: 2496, y: 1728 }] },
+  { id: 's2', size: 204, x: 1904, y: 1832, move: { atMs: 2_500, heading: 200, travelMs: 3_750 }, life: { radius: 128, angle: 51, rate: -17 }, forages: false, graze: [{ x: 2240, y: 1984 }, { x: 1984, y: 1984 }] },
+  { id: 's3', size: 232, x: 2256, y: 1232, move: { atMs: 1_250, heading: 93, travelMs: 4_500 }, life: { radius: 112, angle: 102, rate: 25 }, forages: false, graze: [{ x: 1728, y: 1856 }, { x: 1600, y: 1600 }] },
+  { id: 's4', size: 264, x: 2376, y: 1672, move: { atMs: 3_000, heading: 151, travelMs: 4_250 }, life: { radius: 80, angle: 153, rate: -29 }, forages: false, graze: [{ x: 1728, y: 1216 }, { x: 1856, y: 1088 }] },
+  { id: 's5', size: 298, x: 2080, y: 1952, move: { atMs: 2_000, heading: 192, travelMs: 5_000 }, life: { radius: 120, angle: 204, rate: 13 }, forages: false, graze: [{ x: 2240, y: 1088 }, { x: 2368, y: 1216 }] },
   // The newcomer.
-  { id: 'you', size: 194, x: SHALLOWS_SPAWN.x, y: SHALLOWS_SPAWN.y, move: null, life: { radius: 0, angle: 0, rate: 0 }, forages: false },
+  { id: 'you', size: 194, x: SHALLOWS_SPAWN.x, y: SHALLOWS_SPAWN.y, move: null, life: { radius: 0, angle: 0, rate: 0 }, forages: false, graze: null },
   // The three out in the open. Two fat and one small, all alone, all further out
   // than the player. Their milling radii are 200 cu apart at the closest, so at
   // most two of them can ever be inside SHELTER_R of each other — and a pair is
   // never enough (2 * (SHELTER_BASE + SHELTER_SIZE_CAP) = 290 < 300), so none of
   // them can accidentally shelter its way out of being a candidate.
-  { id: 'o1', size: 384, x: 848, y: 1536, move: null, life: { radius: 1_200, angle: 128, rate: 5 }, forages: true },
-  { id: 'o2', size: 334, x: 2048, y: 336, move: null, life: { radius: 1_000, angle: 192, rate: -6 }, forages: true },
-  { id: 'o3', size: 168, x: 2856, y: 2336, move: null, life: { radius: 1_360, angle: 32, rate: 4 }, forages: true },
+  { id: 'o1', size: 384, x: 848, y: 1536, move: null, life: { radius: 1_200, angle: 128, rate: 5 }, forages: true, graze: null },
+  { id: 'o2', size: 334, x: 2048, y: 336, move: null, life: { radius: 1_000, angle: 192, rate: -6 }, forages: true, graze: null },
+  { id: 'o3', size: 168, x: 2856, y: 2336, move: null, life: { radius: 1_360, angle: 32, rate: 4 }, forages: true, graze: null },
 ];
 
 /** The player's own swimmer. */
@@ -578,45 +599,240 @@ export const SHALLOWS_LIFE_GAP_MS = 4_000;
  * is not (§2.5), and the swimmers who are out where the food is are exactly the
  * ones the shark can reach. The shallows shows that without saying it.
  *
- * THE RATE IS CHOSEN AGAINST HUNGER, NOT AGAINST THE SWEEP. `BITE_GROWTH` is 12
- * and hunger is 1 a second, so a bite every third write — every 12 s — is +1 a
- * second against hunger's -1. One bite per write would be +3 against -1 and
- * would inflate a loner into a whale inside five minutes; the gap is also
- * `3 * SHALLOWS_LIFE_GAP_MS` = 12_000, comfortably past `EAT_COOLDOWN_MS`
- * (2_500), so no claim is ever wasted on a cooldown the fold would refuse.
+ * THE RATE WAS CHOSEN AGAINST HUNGER ALONE, AND THAT WAS NOT ENOUGH ONCE THE
+ * TIDE EXISTED. `BITE_GROWTH` is 12 and hunger is 1 a second, so a bite every
+ * THIRD write — every 12 s — is +1 a second against hunger's -1: break-even,
+ * which was the whole argument for 3, and which quietly assumed the sweep was
+ * a rounding error. It is not. These three are alone, exposed and candidates at
+ * every sweep in the sea, and the tide brought the sweep back oftener (gaps of
+ * 25-99 s against a flat ~70 s before it, `SHALLOWS_TIDE_MS`). At break-even
+ * income and `SCATTER_COST` (30) plus every bite inside `VOID_WINDOW_MS` going
+ * out every minute or so, break-even is a slow slide: measured over thirty
+ * minutes at a bite every third write, all three sat between 60 and 75 — pinned
+ * on `MIN_SIZE` in everything but name, in a sea whose whole point is that size
+ * is the scoreboard (§2.8).
  *
- * WHAT IT DOES NOT DO, measured rather than hoped — and the figures below are
- * the measurements, because an earlier version of this paragraph guessed and was
- * a full two minutes optimistic. It does not hold anybody steady. The sweep
- * comes back about every 68 s and takes two of the three, and each time costs
- * `SCATTER_COST` (30) plus every bite inside `VOID_WINDOW_MS`. Driven against the
- * real fold, minute by minute:
+ * A bite every SECOND write is +1.5 a second against hunger's -1, which pays
+ * for being eaten. Measured over the same thirty minutes, the highest each of
+ * the three reached after T+10min: 104, 144 and 117 at a bite every second
+ * write against 74, 79 and 78 at every third — i.e. at the old rate none of
+ * them ever got `SCATTER_COST` (30) clear of the floor, so every sweep put them
+ * straight back on it. `shallows.test.ts` §6 holds that bar. The gap is still
+ * `2 * SHALLOWS_LIFE_GAP_MS` = 8_000, comfortably past `EAT_COOLDOWN_MS`
+ * (2_500), so no claim is wasted on a cooldown the fold would refuse; one bite
+ * per write would be +3 against -1 and would inflate a loner into a whale
+ * inside five minutes.
  *
- *   T+0     school 96 120 148 180 214   open water 300 250 84   player 110
- *   T+1min  school 60  60  88 120 154   open water 249 212 76
- *   T+2min  school 60  60  60  60  94   open water 186 162 71
- *   T+3min  school 60  60  60  60  60   open water 136 111 70   <- school pinned
- *   T+8min  school all 60                open water all near 60
- *
- * THE SCHOOL IS PINNED AT `MIN_SIZE` BY THREE MINUTES, not the five this comment
- * used to claim, and the three out in the open follow it down by eight. A player
- * who forages meanwhile goes the other way — 563 on a modest circuit, 1028 on a
- * wide one, by T+10min — so the water ends as one whale and eight minnows.
- *
- * That is the fold's own economy answering correctly rather than a defect to tune
- * away: a swimmer who never leaves cover starves, a swimmer who feeds in the open
- * is eaten, and the only swimmer here who can do both is the one holding the
- * mouse. The spread of sizes the shallows OPENS with is a property of the
- * opening. IF IT EVER WANTS A REAL ANSWER the lever is a school that DRIFTS and
- * grazes — a moving ball crosses untrampled water, so `canEat` would start
- * answering yes for its members — and that belongs with the circling-presence
- * task described in this module's header, not with a bigger forage rate. This is
- * a tutorial someone passes through, not a world someone lives in.
+ * These claims are the ONLY ones authored from a moving swimmer, and a moving
+ * claim can miss: `canEat` wants the claimant inside `EAT_R` (90) of the cell
+ * centre and a circuit does not aim for one. That is priced in rather than
+ * corrected — the rate above is what the fold actually credited, not what was
+ * offered. The school's own claims are the opposite case and are authored at
+ * cell centres it is parked on; see `SHALLOWS_TIDE_MS`.
  *
  * Foraging begins at `SHALLOWS_LIFE_FROM_MS`, after the teaching moment has
  * resolved, so nothing in the scenario proper is touched by it.
  */
-export const SHALLOWS_FORAGE_EVERY = 3;
+export const SHALLOWS_FORAGE_EVERY = 2;
+
+// ---------------------------------------------------------------------------
+// The tide — what the shallows are once the lesson has landed
+// ---------------------------------------------------------------------------
+
+/**
+ * THE SCHOOL IS EITHER TOGETHER OR FEEDING, NEVER BOTH, AND THE TIDE IS HOW
+ * LONG EACH LASTS.
+ *
+ * =============================================================================
+ * WHY THE PARKED BALL HAD TO GO
+ * =============================================================================
+ *
+ * The shallows was built as a first-launch teaching moment: fourteen seconds on
+ * a fixed clock, and then a milling schedule so the water would not empty. That
+ * is the right shape for a lesson and the wrong shape for a place to WAIT, and
+ * a newcomer at the edge of the real water may now wait here for hours (spec
+ * §2.16, and `chooseWater` in seaChoice.ts). Driven against the real fold for
+ * seventy minutes, the milling water goes like this:
+ *
+ *   T+0min   o1=300 o2=250 o3=84  s1..s5 = 96 120 148 180 214   you=110
+ *   T+3min   o1=136 o2=111 o3=70  s1..s5 = 60 60 60 60 60       you=60
+ *   T+8min   everybody at or near MIN_SIZE, and there for the next hour
+ *
+ * Nine identical minnows, a ball that never moves, and a sweep every seventy
+ * seconds that takes the same three fish it took last time. Spec §2.8 says size
+ * IS the scoreboard; after five minutes there is nothing on it. THE SEA WAS
+ * STILL RUNNING AND HAD STOPPED BEING A PLACE.
+ *
+ * It is not a tuning problem, and the arithmetic says why. Hunger costs 1 size
+ * a second (`HUNGER_AMOUNT` per `HUNGER_TICK_INTERVAL`), a bite is worth
+ * `BITE_GROWTH` (12) on an `EAT_COOLDOWN_MS` (2_500) cooldown, so a swimmer
+ * must be eating a ready bloom roughly a fifth of the time simply to hold its
+ * size. And a swimmer in the ball CANNOT EAT AT ALL: `canEat` refuses a cell
+ * anybody other than the claimant has been within `BLOOM_VISIT_R` (200 cu) of
+ * in the last `BLOOM_READY_MS`, and a ball tight enough to shelter — every
+ * member holding three neighbours inside `SHELTER_R` (340) — is a ball whose
+ * members are permanently inside each other's shadow. The two radii decide it:
+ * a formation that shelters is a formation that starves. So the shallows can
+ * have a permanent ball or a fed cast and not both, and this file used to have
+ * the ball. Plan 4b's own header named the lever ("a school that DRIFTS and
+ * grazes") and left it to this plan.
+ *
+ * =============================================================================
+ * SO THE WATER HAS WEATHER
+ * =============================================================================
+ *
+ * Every `SHALLOWS_TIDE_MS` the school goes out to feed and comes back:
+ *
+ *   phase 0        the ball breaks. Each of the five turns for its own patch.
+ *   phase 12_000   they are on it, and feeding — one claim every
+ *                  `SHALLOWS_BITE_GAP_MS` until the bloom is empty.
+ *   phase 30_000   on to the second patch.
+ *   phase 42_000   feeding again.
+ *   phase 60_000   home. The ball is whole again by ~72_000 and holds until the
+ *                  tide turns.
+ *
+ * That is 40% of every tide with cover in the water and 60% without, and the
+ * asymmetry is the point rather than a compromise: THE CROWD IS NOT ALWAYS
+ * THERE. A player waiting here learns the shape of the game — food grows where
+ * the school is not (§2.5), safety is other people (§2.11), and the two are
+ * never in the same place (§2.2) — by watching eight other fish be caught by it,
+ * over and over, differently each time. The first sweep still lands at T+5.75 s
+ * on the parked arrangement the lesson needs; the tide only starts at
+ * `SHALLOWS_LIFE_FROM_MS`, after the scatter freeze has ended.
+ *
+ * =============================================================================
+ * WHAT IT MEASURES, DRIVEN AGAINST THE REAL FOLD FOR THIRTY MINUTES
+ * =============================================================================
+ *
+ * Three player behaviours — idle, following the crowd, and running for open
+ * water — each folded at 250 ms frames for half an hour. `shallows.test.ts` §6
+ * re-derives every one of these rather than trusting the paragraph:
+ *
+ *   swimmers outside the tension core   min 3, max 7 (6 when the player joins
+ *                                       the ball). THE FLOOR IS UNTOUCHED.
+ *   the ball is whole                   47-49% of frames
+ *   sweeps in thirty minutes            24 (following) to 50 (running out),
+ *                                       gaps 25-99 s, and 16-22 DISTINCT
+ *                                       take-lists rather than one repeated
+ *   size spread across the cast,        44-346 across the three, and
+ *     sampled every 10 s from T+10min   59/118/178 (min/median/max) for the
+ *                                       idle player §6 drives
+ *   swimmers above MIN_SIZE + 30        1-8 of nine, median 4 (running out) to
+ *                                       7 (following)
+ *
+ * The player's own behaviour moves those last two a long way, and correctly: a
+ * newcomer who tucks into the ball keeps the count outside the core down, which
+ * calls the shark less often, which lets the cast keep what it eats — 250 median
+ * spread against 74 for a player who spends the session dragging the sweep back
+ * every twenty-five seconds. Greed costs everybody, which is §2.11's whole
+ * thesis, and the shallows now demonstrates it on the cast as well as on the
+ * player.
+ *
+ * Against the parked sea this replaces, where from T+8min every swimmer sat on
+ * MIN_SIZE — a spread of at most 11 — and the same three fish were taken by
+ * every sweep for the rest of the hour.
+ *
+ * =============================================================================
+ * WHERE THE PATCHES ARE, AND THE CLAIM ABOUT THEM THAT WAS FALSE
+ * =============================================================================
+ *
+ * Every one of the ten cells on `SHALLOWS_CAST` is 453-487 cu from the
+ * GATHERING POINT, against `CORE_R`'s 620. The first version of this paragraph
+ * concluded from that that a grazing school stays inside the tension core and
+ * the count outside it never moves off three. THAT IS FALSE, and the
+ * measurement above is what says so: the core is anchored on the school's
+ * MEDIAN position, not on the gathering point, and when the ball breaks up the
+ * median is no longer where the ball was — so between three and SEVEN swimmers
+ * are outside it while the school is out. `spreadPerMille` runs 333 to 777 and
+ * the tension rate +83 to +527 a tick, which is why the sweep can come back
+ * inside thirty seconds during a graze and takes a minute and a half over it
+ * when the school is home.
+ *
+ * WHAT THE RADIUS ACTUALLY BUYS is the CEILING, and that is worth having: a
+ * school grazing out past `CORE_R` from the median in every direction would
+ * pin the spread near 888 and bring a sweep every twelve seconds, which is a
+ * massacre on a timer rather than weather. And the FLOOR — the invariant this
+ * sea's reliability rests on, that the count never drops below three — is
+ * untouched by any of it, for the reason it always held: the three out in the
+ * open are 1000-1360 cu from the gathering point and never come in, so they are
+ * outside the core wherever the school happens to be. Measured at min 3 in all
+ * three behaviours.
+ *
+ * The cells are also at least 286 cu apart from any OTHER swimmer's cells and
+ * at least 272 cu from the player's own spawn, both against `BLOOM_VISIT_R`'s
+ * 200: a grazer standing on its own patch must not be the reason its neighbour
+ * cannot eat, and an idle newcomer must not starve the school by existing.
+ */
+export const SHALLOWS_TIDE_MS = 120_000;
+/** When each grazer is on its first patch, and when it moves to the second. */
+export const SHALLOWS_FEED_A_MS = 12_000;
+export const SHALLOWS_MOVE_B_MS = 30_000;
+export const SHALLOWS_FEED_B_MS = 42_000;
+/** When they turn for home. The ball is whole again about twelve seconds later
+ *  — the swim back is 453-487 cu at `SPEED_CRUISE`. */
+export const SHALLOWS_GATHER_AT_MS = 60_000;
+/**
+ * How often a feeding swimmer claims a bite.
+ *
+ * Above `EAT_COOLDOWN_MS` (2_500), so no claim is ever wasted on a cooldown the
+ * fold would refuse, and it divides `SHALLOWS_TIDE_MS` exactly — which is what
+ * makes every tide identical in sea time rather than slowly drifting out of
+ * phase with its own windows.
+ *
+ * Six claims land inside each feeding window and a bloom is worth exactly
+ * `BLOOM_BITES` (6), so a patch is emptied and not farmed: the seventh claim of
+ * a window would be refused, and there isn't one.
+ */
+export const SHALLOWS_BITE_GAP_MS = 3_000;
+
+/**
+ * How far into the current tide `atMs` falls. Pure arithmetic on sea time, so
+ * every window sees the same tide at the same instant however long ago its icon
+ * was pressed, exactly as the scenario does.
+ *
+ * Before `SHALLOWS_LIFE_FROM_MS` this is negative modulo, which JavaScript
+ * gives a negative answer for; corrected here rather than at the call sites so
+ * the teaching moment (which runs before the first tide) cannot accidentally be
+ * read as being mid-graze.
+ */
+export function tidePhaseMs(atMs: number): number {
+  const p = (atMs - SHALLOWS_LIFE_FROM_MS) % SHALLOWS_TIDE_MS;
+  return p < 0 ? p + SHALLOWS_TIDE_MS : p;
+}
+
+/**
+ * The patch this grazer should be standing on at `atMs`, or `null` when the
+ * school is gathered (or when this swimmer never grazes at all).
+ *
+ * Both feeding windows START AFTER THE SWIM: a grazer leaves at the first
+ * milling write of the tide, which can be up to `SHALLOWS_LIFE_GAP_MS` late,
+ * and covers 487 cu in eight seconds. Twelve seconds of clearance is two of
+ * those and change.
+ */
+export function grazePatchAt(p: Player, atMs: number): { x: number; y: number } | null {
+  if (p.graze === null) return null;
+  const t = tidePhaseMs(atMs);
+  if (t >= SHALLOWS_GATHER_AT_MS) return null;
+  return t < SHALLOWS_MOVE_B_MS ? p.graze[0] : p.graze[1];
+}
+
+/**
+ * The patch this grazer may CLAIM A BITE on at `atMs` — `null` outside the two
+ * feeding windows, including while it is still swimming to the patch it is
+ * heading for.
+ *
+ * A claim authored on the way would not be a defect (the fold judges it against
+ * the claimant's own reckoned position and refuses it), but it would be a write
+ * the sea pays for and nothing gets, which is exactly the kind of noise the
+ * emit floor exists to keep off a real wire.
+ */
+export function feedingPatchAt(p: Player, atMs: number): { x: number; y: number } | null {
+  if (p.graze === null) return null;
+  const t = tidePhaseMs(atMs);
+  if (t >= SHALLOWS_FEED_A_MS && t < SHALLOWS_MOVE_B_MS) return p.graze[0];
+  if (t >= SHALLOWS_FEED_B_MS && t < SHALLOWS_GATHER_AT_MS) return p.graze[1];
+  return null;
+}
 
 /**
  * Where a swimmer is trying to get to at a given instant, once the scenario is
@@ -637,12 +853,39 @@ export const SHALLOWS_FORAGE_EVERY = 3;
  * and then contradict it.
  */
 export function lifeTarget(p: Player, atMs: number): { x: number; y: number } {
+  // ...unless the tide has taken the school out to feed, in which case it is
+  // trying to get to a patch. `grazePatchAt` answers `null` for everyone else
+  // and for the whole gathered half of every tide, so the circuit below is
+  // still what the three out in the open do at every instant, and what the
+  // school does whenever it is home.
+  const patch = grazePatchAt(p, atMs);
+  if (patch !== null) return patch;
   const turns = ((atMs - SHALLOWS_LIFE_FROM_MS) * p.life.rate) / 600_000;
   const a = ((p.life.angle / 256) + turns) * Math.PI * 2;
   return {
     x: SHALLOWS_GATHER.x + Math.cos(a) * p.life.radius,
     y: SHALLOWS_GATHER.y + Math.sin(a) * p.life.radius,
   };
+}
+
+/**
+ * How fast to set off, given how far there is left to go before the next
+ * milling write.
+ *
+ * `SPEED_CRUISE` FLAT WAS WRONG THE MOMENT ANYTHING HAD TO ARRIVE SOMEWHERE
+ * EXACT, and the milling schedule got away with it only because a circuit point
+ * moves. A swimmer covers 240 cu between writes at cruise, so one chasing a
+ * fixed patch overshoots it by up to that much and then turns round: it
+ * oscillates about the spot with an amplitude far wider than `EAT_R` (90) and
+ * every bite it claims there is refused for being nowhere near the middle of
+ * the cell. The last leg is therefore taken at whatever pace lands on the
+ * target at the next write, capped at cruise so nobody is ever seen to sprint,
+ * and the write after that is a standing start (dist < QUANT, which is the
+ * smallest difference the fold can even represent).
+ */
+export function arrivalSpeed(dist: number): number {
+  if (dist < QUANT) return 0;
+  return Math.min(SPEED_CRUISE, Math.round((dist * 1000) / SHALLOWS_LIFE_GAP_MS));
 }
 
 /** A direction in radians, as the engine's brads. */
@@ -682,6 +925,66 @@ export function shallowsSea(wallStartMs: number): Sea {
   /** How many milling writes each has made — the forage cadence counts these
    *  rather than a clock, so a late frame cannot skip a meal. */
   const writes = new Map<string, number>(SHALLOWS_CAST.map((p) => [p.id, 0]));
+  /**
+   * The next instant each grazer may claim a bite at. A SCHEDULE OF ITS OWN,
+   * not a count of milling writes: a bite is worth `BITE_GROWTH` on a
+   * cooldown of `EAT_COOLDOWN_MS`, and pinning it to the 4-second write
+   * cadence would throw away nearly half of what the fold is willing to give
+   * a swimmer that is standing on a bloom — which is the difference between a
+   * school that holds its size and one that starves anyway.
+   */
+  const nextBiteMs = new Map<string, number>(SHALLOWS_CAST.map((p) => [p.id, SHALLOWS_LIFE_FROM_MS]));
+  /**
+   * THE LAST VECTOR THIS SEA AUTHORED FOR EACH SWIMMER, and the reason it is
+   * kept here rather than read back out of the fold.
+   *
+   * `millDue` used to author from `loop.state.fish.get(id)`, which is the world
+   * as of the PREVIOUS frame — correct as long as no more than one write comes
+   * due per frame, which is true while frames are under
+   * `SHALLOWS_LIFE_GAP_MS` (4 s) apart and false the moment they are not. Past
+   * that, every write in a catch-up burst was authored from the same stale
+   * position: the whole burst says "I am here, going there", nobody arrives
+   * anywhere, and the grazers' claims land nowhere near the cells they were
+   * scheduled on. Measured at fifteen minutes of sea time, cast sizes at the end:
+   *
+   *   250 ms .. 4 s frames   s1..s5 = 161 185 167 187 179   (fed)
+   *   8 s frames             s1..s5 =  71  64 106  71  60
+   *   30 s frames            all nine at or one tick off MIN_SIZE
+   *   120 s frames           all nine on MIN_SIZE
+   *
+   * i.e. a throttled window starved this cast back into exactly the still life
+   * the tide exists to replace — and A BACKGROUNDED WINDOW IS THE NORMAL CASE
+   * for somebody waiting to be let in, because browsers and webviews clamp
+   * `requestAnimationFrame` to seconds, or stop it entirely, in a tab or window
+   * nobody is looking at.
+   *
+   * With the vector chain kept here, the same fifteen minutes now folds the
+   * IDENTICAL world at 250 ms, 1 s, 4 s, 8 s and 30 s frames, and at 120 s the
+   * cast is fed (97..137) rather than on the floor. `shallows.test.ts` §5 holds
+   * four of those frame rates body for body at one exact sea instant.
+   *
+   * WHAT IS STILL FRAME-SHAPED AT 120 s, AND IS NOT THIS SEA'S TO FIX: the
+   * PLAYER writes once a frame, so a window rendering every two minutes writes
+   * every two minutes, and its own presence lapses at `PRESENCE_TTL_MS` (90 s).
+   * Measured, the fold then holds eight swimmers rather than nine on seven
+   * frames in eight, which moves the tension statistic and lands the sweeps
+   * elsewhere. That is the same in real water, and it is a property of the
+   * window rather than of the schedule.
+   *
+   * The seam is exact rather than an approximation of the fold. The fold NEVER
+   * moves a swimmer itself — a scatter changes `size` and nothing else
+   * (shoalEngine.ts step 5) — so a cast member's folded vector IS the last entry
+   * this sea authored for it, and `reckon` is the same pure function on both
+   * sides, clamp and quantization included. What the local copy removes is only
+   * the staleness, plus one real difference in the sea's favour: a swimmer whose
+   * presence had expired used to be authored from its OPENING position, which is
+   * a teleport across the water.
+   *
+   * Seeded from the scenario's own last vector per swimmer, so the first milling
+   * write continues the script rather than looking it up.
+   */
+  const lastVec = new Map<string, Vec>();
+  for (const e of log) if (e.kind === 'presence') lastVec.set(e.id, e.vec);
 
   const seaMs = (wallMs: number) => SHALLOWS_OPEN_MS + (wallMs - wallStartMs);
 
@@ -697,22 +1000,47 @@ export function shallowsSea(wallStartMs: number): Sea {
   function millDue(toMs: number): void {
     for (const p of SHALLOWS_CAST) {
       if (p.id === SHALLOWS_SELF) continue;
+      // THE BITES FIRST, because they are judged against where this swimmer
+      // already is: a claim authored at `at` is folded against the vector
+      // standing at `at`, and the presence write below is the one that will
+      // move it next.
+      let bite = nextBiteMs.get(p.id) as number;
+      while (bite <= toMs) {
+        const patch = feedingPatchAt(p, bite);
+        if (patch !== null) {
+          log.push({
+            kind: 'eat',
+            id: p.id,
+            cell: cellIndex(patch.x, patch.y),
+            ms: bite,
+            hash: `shg-${p.id}-${serial++}`,
+          });
+        }
+        bite += SHALLOWS_BITE_GAP_MS;
+      }
+      nextBiteMs.set(p.id, bite);
+
       let at = nextLifeMs.get(p.id) as number;
       let n = (writes.get(p.id) as number);
       while (at <= toMs) {
-        const f = loop.state.fish.get(p.id);
-        const from = f ? reckon(f.vec, at) : { x: p.x, y: p.y };
+        // FROM THE VECTOR THIS SEA LAST AUTHORED, never from the fold — see
+        // `lastVec`. Every write in a catch-up burst therefore continues the
+        // one before it, exactly as it would have on an unthrottled window.
+        const was = lastVec.get(p.id) as Vec;
+        const from = reckon(was, at);
         const t = lifeTarget(p, at);
         const dx = t.x - from.x;
         const dy = t.y - from.y;
         const dist = Math.hypot(dx, dy);
-        const heading = dist === 0 ? (f ? f.vec.heading : 0) : toBrads(Math.atan2(dy, dx));
+        const heading = dist === 0 ? was.heading : toBrads(Math.atan2(dy, dx));
+        const vec: Vec = { x: from.x, y: from.y, heading, speed: arrivalSpeed(dist), t: at };
+        lastVec.set(p.id, vec);
         log.push({
           kind: 'presence',
           id: p.id,
           ms: at,
           hash: `shl-${p.id}-${serial++}`,
-          vec: { x: from.x, y: from.y, heading, speed: dist < 40 ? 0 : SPEED_CRUISE, t: at },
+          vec,
         });
         // ...and a bite, for the ones out where the food is. Claimed on the cell
         // this swimmer is standing in, named by the ENGINE's own `cellIndex`, and

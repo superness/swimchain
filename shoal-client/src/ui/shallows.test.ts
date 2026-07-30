@@ -44,12 +44,13 @@ import { dist2 } from '../lib/fixed';
 import { readTether, scatterReplay, TETHER_MAX_CU, SCATTER_FREEZE_MS } from './tether';
 import { applyInput, createInput, emitDue, headingTo, positionAt, type InputState } from './input';
 import {
-  HUSH_MS, LOCK_MS, MAX_TAKE, SHELTER_R, SHELTER_THRESHOLD, TENSION_NEUTRAL,
+  HUSH_MS, LOCK_MS, MAX_TAKE, MIN_SIZE, SCATTER_COST, SHELTER_R, SHELTER_THRESHOLD, TENSION_NEUTRAL,
   TENSION_TRIGGER, TICK_MS,
 } from '../lib/shoalConst';
 import {
-  SHALLOWS_CAST, SHALLOWS_EPOCH, SHALLOWS_FIRST_MS, SHALLOWS_GATHER, SHALLOWS_OPEN_MS,
-  SHALLOWS_SELF, SHALLOWS_SPAWN, SHALLOWS_WILD_SEED, shallowsScript, shallowsSea, shallowsSeed,
+  SHALLOWS_CAST, SHALLOWS_EPOCH, SHALLOWS_FIRST_MS, SHALLOWS_GATHER, SHALLOWS_LIFE_FROM_MS,
+  SHALLOWS_OPEN_MS, SHALLOWS_SELF, SHALLOWS_SPAWN, SHALLOWS_TIDE_MS, SHALLOWS_WILD_SEED,
+  shallowsScript, shallowsSea, shallowsSeed,
 } from './shallows';
 
 let failures = 0;
@@ -544,6 +545,50 @@ console.log('\n5. the same sea every time — the lesson is not a coin flip');
   check('...and the same sea, body for body, at the instant the sweep judged it',
     new Set(worlds).size === 1, worlds.map((w) => w.split('|')[2]));
 
+  // A THROTTLED WINDOW FOLDS THE SAME SEA, and this is a much stronger demand
+  // than the four frame rates above because it reaches past
+  // `SHALLOWS_LIFE_GAP_MS`. Browsers and webviews clamp `requestAnimationFrame`
+  // to seconds in a window nobody is looking at, or stop it altogether — and a
+  // BACKGROUNDED WINDOW IS THE NORMAL CASE HERE, because the shallows is where
+  // somebody waits, possibly for hours, to be let into the real water.
+  //
+  // `millDue` used to author each write from `loop.state`, the world as of the
+  // previous frame. Under 4 s frames that is one write per frame and the
+  // difference never shows; past it, a catch-up burst authored every write in
+  // it from the same stale position, nobody arrived anywhere, and the grazers'
+  // claims landed nowhere near the cells they were scheduled on. Measured at
+  // fifteen minutes, cast sizes at the end: 161/185/167/187/179 at 250 ms and
+  // ALL NINE ON MIN_SIZE at 120 s — i.e. the throttled window starved the cast
+  // back into precisely the still life the tide exists to replace.
+  //
+  // Twelve minutes, which is six tides, at four frame rates spanning two orders
+  // of magnitude, compared body for body at one exact sea instant. 720_000 is
+  // divisible by every step, so all four runs end on the same instant rather
+  // than within a frame of it.
+  {
+    const worldAt = (stepMs: number) => {
+      const run = playShallows({ follow: false, untilMs: 720_000, stepMs });
+      return run[run.length - 1].bodies.map((b) => `${b.id}:${b.x},${b.y}:${b.size}`).sort().join(' ');
+    };
+    const throttled = [250, 4_000, 8_000, 30_000].map(worldAt);
+    check('a throttled window folds the same sea — 250 ms to 30 s frames, twelve minutes in',
+      new Set(throttled).size === 1, throttled);
+    // NON-DEGENERACY: the comparison is of a real, fed, moving sea rather than
+    // of four identical floors. A cast pinned on MIN_SIZE would agree perfectly
+    // and prove nothing, which is exactly what the defect produced.
+    const sizes = throttled[0].split(' ').map((s) => Number(s.split(':')[2]));
+    check('...and it is a sea with something in it, not four identical floors',
+      new Set(sizes).size >= 5 && Math.max(...sizes) > 2 * MIN_SIZE, sizes);
+    // WHAT IS NOT CLAIMED, because it is not true and the reason is not this
+    // module's to fix: past ~90 s between frames the PLAYER's own presence
+    // lapses (`PRESENCE_TTL_MS`), since a window that renders once every two
+    // minutes writes once every two minutes. At 120 s frames the fold holds
+    // eight swimmers instead of nine for seven frames in eight — measured — so
+    // the tension statistic differs and the sweeps fall elsewhere. The cast
+    // stays fed (97..137 at fifteen minutes); it is the population that
+    // changes, and it would change identically in real water.
+  }
+
   // And nothing about the world depends on when the icon was pressed: the sea
   // rides its own clock, so two windows opened an hour apart see one sea.
   const later = shallowsSea(3_600_000 * 7 + 12_345);
@@ -561,16 +606,28 @@ console.log('\n5. the same sea every time — the lesson is not a coin flip');
 }
 
 // ===========================================================================
-console.log('\n6. and then it keeps going — the shallows is a place, not a cutscene');
+console.log('\n6. and then it keeps going — the shallows is a PLACE TO WAIT');
 // ===========================================================================
 //
 // §2.16: "Never let a downloader dead-end." A scripted sea whose script runs out
 // empties itself PRESENCE_TTL_MS later and leaves the player alone in open
 // water, which is the dead end with extra steps.
+//
+// AND A NEWCOMER AT THE EDGE OF THE REAL WATER MAY WAIT HERE FOR HOURS
+// (`seaChoice.chooseWater`), so "it keeps going" is no longer enough on its
+// own. The sea this group used to describe kept going and stopped being a
+// place: every swimmer pinned on MIN_SIZE by T+8min, a ball that never moved,
+// and the same three fish taken by every sweep for the rest of the hour. The
+// checks below are the properties that failed for that sea and hold for this
+// one, and every threshold is stated before the run.
+//
+// HALF AN HOUR AT 250 ms FRAMES, which is 7_200 folded frames per behaviour —
+// the whole group runs in a few seconds because `advance` is incremental.
 {
-  const frames = playShallows({ follow: false, untilMs: 200_000, stepMs: 250 });
+  const HALF_HOUR = 1_800_000;
+  const frames = playShallows({ follow: false, untilMs: HALF_HOUR, stepMs: 250 });
   const last = frames[frames.length - 1];
-  check('every scripted swimmer is still in the water three minutes later',
+  check('every scripted swimmer is still in the water half an hour later',
     last.bodies.length >= SHALLOWS_CAST.length - 1,
     last.bodies.map((b) => b.id));
 
@@ -584,11 +641,128 @@ console.log('\n6. and then it keeps going — the shallows is a place, not a cut
     laterSweeps.size >= 1 && [...laterSweeps].every((k) => k.split('|')[1].length > 0),
     [...laterSweeps]);
 
-  // The ball is still a ball, so there is still somewhere safe to be.
-  const ball = last.bodies.filter((b) => b.id.startsWith('s'));
-  check('...with the school still holding together as cover',
-    ball.length === 5 && ball.every((b) => shelterOf(b, ball) >= SHELTER_THRESHOLD),
-    ball.map((b) => `${b.id}:${shelterOf(b, ball)}`));
+  // AND IT DOES NOT KEEP TAKING THE SAME THREE. The parked sea's sweep had one
+  // answer and repeated it for an hour, which is the difference between weather
+  // and a metronome. Distinct take-lists, over the sweeps after the lesson.
+  const takeLists = new Set([...laterSweeps].map((k) => k.split('|')[1]));
+  check('...to DIFFERENT swimmers — the shark is not on a loop',
+    takeLists.size >= 8, [...takeLists].slice(0, 12));
+
+  // THE BALL IS SOMETIMES WHOLE AND SOMETIMES NOT, and both halves are the
+  // design: the school cannot shelter and feed at once (`SHALLOWS_TIDE_MS`), so
+  // a sea with cover at every instant would be a sea whose cast starves. Cover
+  // exists for a large part of every tide and is really gone for the rest —
+  // measured at 47-49%, checked here as "between a third and two thirds" so it
+  // is a claim about the shape rather than a copy of one run's number.
+  const ballWhole = frames.filter((f) => {
+    const ball = f.bodies.filter((b) => b.id.startsWith('s'));
+    return ball.length === 5 && ball.every((b) => shelterOf(b, f.bodies) >= SHELTER_THRESHOLD);
+  }).length;
+  const held = ballWhole / frames.length;
+  check('...the school holds together as cover for a large part of every tide',
+    held > 0.33 && held < 0.66, Number(held.toFixed(3)));
+
+  // THE SCOREBOARD STILL READS. Spec §2.8: size IS the scoreboard, and a
+  // scoreboard everybody is at the bottom of is not one. Sampled every ten
+  // seconds from T+10min — long past the point at which the parked sea had
+  // flattened (its spread was 11 and falling by T+8min).
+  const spreads: number[] = [];
+  for (const f of frames) {
+    if ((f.atMs - SHALLOWS_OPEN_MS) < 600_000 || (f.atMs - SHALLOWS_OPEN_MS) % 10_000 !== 0) continue;
+    const sizes = f.bodies.map((b) => b.size);
+    spreads.push(Math.max(...sizes) - Math.min(...sizes));
+  }
+  const worstSpread = Math.min(...spreads);
+  check('...and the water still has a size spread in it after half an hour',
+    spreads.length > 100 && worstSpread >= 40,
+    { samples: spreads.length, worst: worstSpread, median: [...spreads].sort((a, b) => a - b)[spreads.length >> 1] });
+
+  // ...because the school EATS. Not "is not at the floor" — that would pass for
+  // a sea one hunger tick away from it — but visibly fed, half an hour in, on
+  // bites the fold credited against its own bloom map.
+  const fedSchool = frames.filter((f) => (f.atMs - SHALLOWS_OPEN_MS) >= 600_000
+    && (f.atMs - SHALLOWS_OPEN_MS) % 10_000 === 0)
+    .filter((f) => f.bodies.filter((b) => b.id.startsWith('s') && b.size >= MIN_SIZE + 30).length >= 2);
+  check('...the school having really fed itself, at nearly every moment of it',
+    fedSchool.length >= spreads.length - 10, { fed: fedSchool.length, of: spreads.length });
+
+  // ...AND SO ARE THE THREE OUT IN THE OPEN, which is a separate claim about a
+  // separate rule. `SHALLOWS_FORAGE_EVERY` is their whole economy, and it was
+  // set against hunger alone: break-even income, which the tide's oftener sweep
+  // turned into a slow slide to MIN_SIZE. Nothing pinned it — the interval
+  // could be moved back and every check in this file stayed green.
+  //
+  // THE BAR IS `MIN_SIZE + SCATTER_COST`, DERIVED RATHER THAN OBSERVED, and it
+  // is the smallest bar that means anything: a swimmer that never gets that far
+  // above the floor is one for whom a single sweep is unrecoverable, which is
+  // being pinned on MIN_SIZE with extra steps. At a bite every SECOND write the
+  // income is BITE_GROWTH (12) per 2 * SHALLOWS_LIFE_GAP_MS (8 s) against
+  // hunger's 1 a second — +0.5/s, which pays for being eaten. At every THIRD
+  // write it is +1/s against -1/s exactly: break-even, so `SCATTER_COST` is
+  // taken out of a swimmer with no way to earn it back. Measured over this run,
+  // peaks after T+10min: 104/144/117 at two, 74/79/78 at three.
+  const loners = ['o1', 'o2', 'o3'];
+  const peak = new Map(loners.map((id) => [id, 0]));
+  for (const f of frames) {
+    if ((f.atMs - SHALLOWS_OPEN_MS) < 600_000) continue;
+    for (const b of f.bodies) {
+      if (peak.has(b.id)) peak.set(b.id, Math.max(peak.get(b.id) as number, b.size));
+    }
+  }
+  check('...and the three out in the open are fed enough to survive being eaten',
+    loners.every((id) => (peak.get(id) as number) >= MIN_SIZE + SCATTER_COST),
+    Object.fromEntries(peak));
+
+  // THE FLOOR OF THREE, over the whole half hour and all three behaviours. It
+  // is the invariant the sweep's reliability rests on (this module's header),
+  // and the tide is the first thing that could ever have broken it: when the
+  // ball breaks up the tension core's median moves, so the count outside it is
+  // no longer the constant it was. It rises — measured up to 7 — and it must
+  // never fall.
+  for (const [label, run] of [
+    ['idle', frames],
+    ['follows the crowd', playShallows({ follow: true, untilMs: HALF_HOUR, stepMs: 250 })],
+    ['runs for open water', playShallows({ follow: 'away', untilMs: HALF_HOUR, stepMs: 250 })],
+  ] as Array<[string, Frame[]]>) {
+    const counts = run.filter((f) => f.bodies.length > 0).map((f) => f.outside.length);
+    check(`the floor of three holds for half an hour (player ${label})`,
+      Math.min(...counts) >= 3,
+      { min: Math.min(...counts), max: Math.max(...counts) });
+  }
+
+  // THE TIDE REALLY RUNS, measured on the school's own positions rather than on
+  // the count above.
+  //
+  // THERE WAS A ROW HERE PER BEHAVIOUR CLAIMING THAT `max(outside) > 3` PROVED
+  // THE SCHOOL GOES OUT, AND IT WAS VACUOUS: with the tide disabled outright,
+  // two of the three still passed. The count outside the core is a statistic
+  // over EVERYONE, and the player alone is enough to move it — an idle newcomer
+  // sits 602 cu from the gathering point against a CORE_R of 620, so the median
+  // wandering by twenty cu takes them in and out of it all session, in a sea
+  // where the school never moved at all. Only "follows the crowd" discriminated,
+  // and then only by accident: a player tucked into the ball cannot be the
+  // swimmer whose drift makes the count move.
+  //
+  // So it is measured directly, once, on the five swimmers the claim is about:
+  // there are frames where the whole school is on the gathering point, and
+  // frames where the whole school is out at its patches. The ball is a ring of
+  // radius ~112 about the gathering point and the patches are 453-487 cu from
+  // it, so 200 and 400 separate the two states with room on both sides and
+  // neither threshold is a measurement read back out of the code.
+  const outFromGather = (b: SwimmerBody) => Math.sqrt(dist2(b.x, b.y, SHALLOWS_GATHER.x, SHALLOWS_GATHER.y));
+  const schoolOf = (f: Frame) => f.bodies.filter((b) => b.id.startsWith('s'));
+  const gathered = frames.filter((f) => schoolOf(f).length === 5 && schoolOf(f).every((b) => outFromGather(b) < 200));
+  const feeding = frames.filter((f) => schoolOf(f).length === 5 && schoolOf(f).every((b) => outFromGather(b) > 400));
+  check('the school is really sometimes gathered on the point...',
+    gathered.length > 0, gathered.length);
+  check('...and really sometimes all the way out at its patches',
+    feeding.length > 0, feeding.length);
+  // ...and it is a TIDE rather than one excursion: both states recur, many
+  // times, over half an hour. `SHALLOWS_TIDE_MS` is 120 s, so half an hour is
+  // fifteen of them.
+  const tidesSeen = new Set(feeding.map((f) => Math.floor((f.atMs - SHALLOWS_LIFE_FROM_MS) / SHALLOWS_TIDE_MS)));
+  check('...on a tide that turns again and again, not once',
+    tidesSeen.size >= 12, tidesSeen.size);
 }
 
 // ===========================================================================

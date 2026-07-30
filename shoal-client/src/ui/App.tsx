@@ -24,9 +24,23 @@
  * a player who cannot reach the shoal must see A PLACE, NOT AN ERROR, and a
  * place with no way of saying what would change it is a dead end. The words
  * live in `wayIn.ts` and are held to the diegetic rule by name in
- * `wayIn.test.ts`; the surface itself is water, a boundary, and one small fish
- * circling on the wrong side of it. It appears for one classified failure and
- * for nothing else — see `wayIn.afterWrite`.
+ * `wayIn.test.ts`; the surface itself is water and a boundary, and nothing on
+ * it stands in for the player any more (`TheEdge.tsx`, on the fish that used
+ * to). It appears for one classified failure and for nothing else — see
+ * `wayIn.afterWrite`.
+ *
+ * IT LEAVES WITHOUT A WORD, TOO. When a write is accepted the boundary lifts —
+ * a picture, not a sentence, per spec 2.18 — and this component's only part in
+ * that is to keep `TheEdge` in the tree for `CROSSING_MS` while it plays. The
+ * player is in real water from the instant the node said yes; nothing waits for
+ * the animation, and no copy is added anywhere.
+ *
+ * AND THE WATER UNDER IT IS A SEA THEY CAN PLAY. A refused swimmer is put in
+ * the shallows (`seaChoice.chooseWater`) rather than left standing in water
+ * that carries nothing they do — while the same frame loop goes on publishing
+ * their vectors into the real water, which is the only way they will ever find
+ * out they have been let in. Both halves are in step 3 of the frame loop, and
+ * `seaChoice.knockOn`'s header is where the reasoning lives.
  *
  * NOTHING IN THIS CLIENT ASKS FOR OR CHANGES ANYONE'S STANDING WITH THE WATER.
  * Being let in is part of being on the network, not something the game grants:
@@ -118,10 +132,12 @@ import { Diagnostics } from './Diagnostics';
 import { harnessSea, livelySea, type Sea } from './demoSea';
 import { shallowsSea } from './shallows';
 import { type ChainSea } from './chainSea';
-import { chooseSeaSource, retryDelayMs, seaFrom } from './seaChoice';
+import {
+  chooseSeaSource, chooseWater, knockBackstopDue, knockOn, nodeWriteDue, retryDelayMs, seaFrom,
+} from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
-import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import { afterWrite, CROSSING_MS, OPEN_WATER, settled, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
@@ -141,6 +157,7 @@ import { bodiesOf } from '../lib/shoalEngine';
 import type { Body, ShelterBody } from '../lib/shelter';
 import type { ReadonlyVisitMap } from '../lib/shoalTypes';
 import type { SendFailure } from '../lib/shoalSend';
+import type { Vec } from '../lib/shoalTypes';
 import { reckon } from '../lib/fixed';
 import { HUSH_MS, TICK_MS, WORLD_H, WORLD_W } from '../lib/shoalConst';
 
@@ -321,6 +338,18 @@ function chainParams(): ChainParams | null {
   return { rpc, cookie: devParam('cookie'), space, room, id, who };
 }
 
+/**
+ * How often the knock backstop looks at the clock.
+ *
+ * Not the knock's own rate — `knockBackstopDue` decides that, and it is a
+ * deadline rather than an interval. This only sets how promptly the deadline is
+ * NOTICED, and it is deliberately far below it so that a window which is being
+ * throttled rather than halted still trips the backstop at roughly the right
+ * moment. A background engine will clamp this to about once a minute whatever
+ * is asked for, which is the ceiling that actually applies.
+ */
+const KNOCK_TICK_MS = 1_000;
+
 /** How long a swept swimmer is drawn dazed. Spec 2.9's "a few seconds". */
 const DAZED_MS = 2_500;
 
@@ -433,6 +462,14 @@ export function App() {
    *
    * `afterWrite` returns the SAME object when nothing changed, so the accepted
    * write every few seconds does not re-render the tree.
+   *
+   * IT STARTS AT `OPEN_WATER` EVERY TIME AND IS NEVER PERSISTED, and that is
+   * the whole of how a slow yes survives a restart. A player vouched for while
+   * this app was closed opens claiming nothing, writes on the first frame, is
+   * accepted, and is simply in the water — no boundary, no ceremony, nothing
+   * to reconcile. A standing cached on disk could only ever be a stale copy of
+   * a decision made somewhere else, and the state it would get wrong is the
+   * good one.
    */
   const [standing, setStanding] = useState<Standing>(OPEN_WATER);
   /**
@@ -452,6 +489,30 @@ export function App() {
    * making it conditional produced.
    */
   const [shell, setShell] = useState<ShellSeaConfig | null>(null);
+  /**
+   * WHEN THIS WINDOW LAST PUT A WRITE ON THE WIRE, on a MONOTONIC clock
+   * (`performance.now()`). `-1` until it has.
+   *
+   * A REF, AND THAT IS THE WHOLE REASON IT EXISTS: it has to outlive the frame
+   * effect, because the effect is torn down and rebuilt whenever the standing
+   * changes and the `InputState` that normally holds the emit floor goes with
+   * it. See `seaChoice.nodeWriteDue`, which also says why the reading is
+   * monotonic rather than `Date.now()` — a backwards clock step used to stall
+   * every write for the length of the step.
+   */
+  const lastNodeWriteRef = useRef(-1);
+  /**
+   * THE LAST VECTOR THIS WINDOW PUT ON THE WIRE, and the chain sea it went to.
+   *
+   * Both are here so that the BACKSTOP can knock without a frame: a window that
+   * has stopped rendering has no `sea`, no `input` and no frame clock, because
+   * all three live inside the frame effect, but it does still have whatever it
+   * last published — which for a player who is not touching anything (they have
+   * minimised the window) is exactly what the next keep-alive would have said.
+   * See `seaChoice.knockBackstopDue`.
+   */
+  const lastVecRef = useRef<Vec | null>(null);
+  const chainRef = useRef<ChainSea | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const typingRef = useRef<string | null>(null);
   typingRef.current = typing;
@@ -526,6 +587,97 @@ export function App() {
       if (timer !== undefined) clearTimeout(timer);
     };
   }, []);
+
+  /**
+   * THE END OF THE MOMENT. One of the two timers in this component; the
+   * other is the knock backstop below.
+   *
+   * `crossing` is raised by the write the node accepted and is lowered here,
+   * `CROSSING_MS` later, purely so the boundary can be seen leaving instead of
+   * vanishing. NOTHING IS BEING WAITED FOR: the standing's other flag is
+   * already down, so the frame effect below has already rebuilt on the real
+   * water and the player has been swimming it since the instant the yes
+   * arrived.
+   *
+   * `settled` is idempotent and returns the SAME object when there is nothing
+   * to lower, so a timer that fires after a second refusal put the player back
+   * at the edge changes nothing and re-renders nothing — the one race this can
+   * have, answered in `wayIn.ts` rather than by a flag here.
+   *
+   * Keyed on `standing.crossing` alone: a re-render for any other reason must
+   * not restart the clock, or a busy window could hold the boundary on screen
+   * indefinitely.
+   */
+  useEffect(() => {
+    if (!standing.crossing) return;
+    const t = setTimeout(() => { setStanding(settled); }, CROSSING_MS);
+    return () => { clearTimeout(t); };
+  }, [standing.crossing]);
+
+  /**
+   * THE KNOCK BACKSTOP — the one write path that does not need a frame.
+   *
+   * ## The gap it closes
+   *
+   * Every other write this client makes is authored inside
+   * `requestAnimationFrame`. A THROTTLED window is fine: at one frame a second,
+   * or one every five, the loop still reaches its keep-alive on time. A window
+   * that has stopped RENDERING is not — minimise it, fully occlude it, or send
+   * it to a background desktop and rAF stops rather than slows. Measured with
+   * rAF halted: one write, and none at all after the halt, over sixty seconds,
+   * against five per forty in the control.
+   *
+   * It is not the permanent lockout — the next rendered frame resumes it — and
+   * it is still the wrong player to do it to. The shallows is an hours-long
+   * waiting room, and somebody waiting to be let in is exactly the person who
+   * minimises the window: they come back an hour later still outside, having
+   * been accepted forty minutes ago.
+   *
+   * ## What it sends, and why that is honest
+   *
+   * The last vector this window put on the wire, re-stamped to now. A window
+   * that is not rendering is a window nobody is steering, so the keep-alive the
+   * frame loop would have produced is the same vector — `shouldEmit` republishes
+   * an unchanged intent, and the intent cannot change while nothing is reading
+   * the mouse. Nothing here invents a position.
+   *
+   * ## Why it cannot double the write rate
+   *
+   * `knockBackstopDue` is a strictly later deadline than the keep-alive
+   * (`KNOCK_BACKSTOP_MS` is `MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS`), so a window
+   * that is rendering never reaches it and this never fires beside the frame
+   * loop. Both paths anchor the SAME monotonic ref, so whichever writes last is
+   * what the other one measures from, and `App.test.ts` §6 holds the refused
+   * cadence against an accepted window's own gaps on the wire.
+   *
+   * ## The clock
+   *
+   * `performance.now()` for the deadline, because it is monotonic and no NTP
+   * correction or sleep/wake can move it; `Date.now()` for the write's own
+   * timestamp, because the node checks that against a window in calendar time.
+   * A timer is throttled in a background window like everything else — roughly
+   * one a minute in current engines — so this is "a knock whenever the machine
+   * lets a timer run" rather than one every eleven seconds. Against a wait
+   * measured in hours, that is the whole difference.
+   */
+  useEffect(() => {
+    if (!standing.atTheEdge) return;
+    const t = setInterval(() => {
+      const chain = chainRef.current;
+      const last = lastVecRef.current;
+      if (chain === null || last === null) return;
+      const mono = performance.now();
+      if (!knockBackstopDue(lastNodeWriteRef.current, mono)) return;
+      lastNodeWriteRef.current = mono;
+      const t2 = Date.now() + TICK_MS;
+      lastVecRef.current = { ...last, t: t2 };
+      knockOn(chain, chooseWater(true, true), { ...last, t: t2 }, t2);
+    }, KNOCK_TICK_MS);
+    return () => { clearInterval(t); };
+    // Keyed on the standing alone: the chain sea is read through a ref, so a
+    // sea rebuild does not have to restart the timer and a restart cannot lose
+    // the deadline (it is held in a ref too).
+  }, [standing.atTheEdge]);
 
   /**
    * The queue between the DOM's event handlers and the frame loop.
@@ -620,12 +772,36 @@ export function App() {
     // exists. The reverse of that sentence is the lockout described on
     // `SceneKind`.
     const chain = buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); });
-    const sea: Sea = chain
-      ?? (scene === 'harness'
-        ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
-        : scene === 'lively'
-          ? livelySea(startWall)
-          : shallowsSea(startWall));
+    // Reachable from outside the frame loop, so the backstop can knock on a
+    // window that has stopped rendering. Cleared by this effect's cleanup, so
+    // nothing ever writes into a sea that has been stopped.
+    chainRef.current = chain;
+    /**
+     * WHICH WATER THE PLAYER'S OWN BODY IS IN (spec §2.16). Three answers, and
+     * the third is the newcomer's: real water that will not have them yet, so
+     * they swim the shallows while their writes keep knocking at its door.
+     * The rule is `seaChoice.chooseWater`, stated where a test can drive it at
+     * all four combinations rather than as a conditional in a component.
+     *
+     * THE SHALLOWS IS NOT DRAWN *INSTEAD OF* WRITING. Step 3 below hands every
+     * vector to `knockOn` as well, so the chain sea keeps offering — that
+     * invariant is the only thing between this and a silent permanent lockout,
+     * and `App.test.ts` §6 asserts it on the wire. Read `chooseWater`'s header
+     * before touching either half.
+     *
+     * The offline scene picker is consulted only when there is no water at all
+     * — never as a way of refusing water that exists (`SceneKind`).
+     */
+    const water = chooseWater(chain !== null, standing.atTheEdge);
+    const sea: Sea = water === 'chain' && chain !== null
+      ? chain
+      : water === 'shallows'
+        ? shallowsSea(startWall)
+        : (scene === 'harness'
+          ? harnessSea(startWall, at ?? 0, devParam('me') ?? 'e0')
+          : scene === 'lively'
+            ? livelySea(startWall)
+            : shallowsSea(startWall));
 
     // The tether's fade clock. `?played=` overrides it for a screenshot.
     const playedOverride = devNumber('played');
@@ -745,7 +921,43 @@ export function App() {
 
       // --- 3. THE ONE PLACE A VECTOR CAN LEAVE. `emitDue` asks `shouldEmit`
       // and calls `sea.publish` only if it agrees.
-      input = emitDue(input, authorMs, (vec, say) => sea.publish(vec, say));
+      //
+      // AND WHILE THE EDGE IS UP IT LEAVES TWICE: once into the water the
+      // player can see and act in, and once into the water that has refused
+      // them, re-stamped onto this frame's own wall clock (`knockOn`). Still
+      // ONE emitter, still one `shouldEmit` decision, so the write rate is
+      // exactly what it would have been — a second timer here would double
+      // this window's share of the mempool budget at the one moment the node
+      // has said it wants fewer writes from us, and it would be a second place
+      // for the emit floor to be got wrong.
+      //
+      // A CLIENT THAT STOPS KNOCKING IS SEALED IN. A write that goes through
+      // is the only evidence this client will ever have that somebody has let
+      // this swimmer in, and there is no second channel and nothing to poll.
+      // `knockOn` is a no-op in the other two waters, so this line is the
+      // whole of the difference.
+      input = emitDue(input, authorMs, (vec, say) => {
+        // The offline sea is a local append into a log this window owns, and is
+        // free; only the chain sea's publish mines, signs and reaches a node.
+        if (water !== 'chain') sea.publish(vec, say);
+        if (chain === null || water === 'scene') return;
+        // THE EMIT FLOOR, HELD ON THE WALL CLOCK so that it survives the sea
+        // rebuild a transition performs — `shouldEmit` cannot, because the
+        // input state it holds the floor against is one of the things the
+        // rebuild replaces. `nodeWriteDue`'s header carries the measurement and
+        // what a turned-away write costs.
+        // The floor is measured on a MONOTONIC reading and the write's own
+        // timestamp is `Date.now()`-derived: two clocks, two jobs, and the
+        // reason for each is on `nodeWriteDue`.
+        const mono = performance.now();
+        if (!nodeWriteDue(lastNodeWriteRef.current, mono)) return;
+        lastNodeWriteRef.current = mono;
+        // What the backstop will re-send if this window stops rendering. The
+        // vector as the WIRE would carry it, so the two paths cannot drift.
+        lastVecRef.current = water === 'chain' ? vec : { ...vec, t: wall + TICK_MS };
+        if (water === 'chain') sea.publish(vec, say);
+        else knockOn(chain, water, vec, wall + TICK_MS, say);
+      });
 
       // --- 4. Fold the world forward and draw it.
       const state = sea.step(wall);
@@ -969,6 +1181,7 @@ export function App() {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', onUp);
+      chainRef.current = null;
       chain?.stop();
     };
     // `shell` is a dependency and not a ref read on purpose: the sea has to be
@@ -982,15 +1195,46 @@ export function App() {
     // started is the node it started). Nothing else is set alongside it — the
     // `lively -> chain` scene change that used to accompany it was the lockout
     // and is gone.
-  }, [scene, shell]);
+    //
+    // `standing.atTheEdge` IS A DEPENDENCY, AND IT IS A REBUILD RATHER THAN A
+    // SWAP INSIDE THE LOOP. Two clocks meet here: the shallows maps the wall
+    // clock onto a fixed instant in a fixed epoch, so a window that switched
+    // seas mid-loop would carry an `InputState` whose `lastEmitMs` is decades
+    // ahead of the new sea's own time — and `shouldEmit` compares exactly
+    // those two numbers, so the next write would be due in fifty-six years.
+    // The lockout, by a different road. Everything the loop keeps across
+    // frames (the input state, the camera, the arrival, the locked snapshot)
+    // is effect-local, so re-running the effect is what puts every one of them
+    // back to a start the new sea agrees with, and the shallows opens on its
+    // first second rather than partway through the one lesson it exists for.
+    //
+    // It costs one chain-sea teardown and rebuild (a socket, a refetch) PER
+    // CHANGE OF THE FLAG, which for an ordinary session is none (accepted from
+    // the first write), once (refused and still refused), or twice (refused,
+    // then let in). It is not a bound: a node that refuses this swimmer AGAIN
+    // after the crossing — a vouch withdrawn, a node flapping — raises the flag
+    // again and rebuilds again, correctly, and could do so any number of times.
+    // What IS bounded is that nothing rebuilds without a real change:
+    // `afterWrite` returns the SAME object unless the standing actually moved,
+    // so the accepted or refused write every few seconds re-renders nothing and
+    // re-runs nothing.
+  }, [scene, shell, standing.atTheEdge]);
 
   return (
     <div style={S.page}>
       <canvas ref={canvasRef} style={S.canvas} />
       {/* THE EDGE OF THE WATER (spec §2.16). Over the live canvas, never
           instead of it: the sea keeps folding and drawing underneath, because
-          a player who cannot get in has to see a place, not an error. */}
-      {standing.atTheEdge && <TheEdge />}
+          a player who cannot get in has to see a place, not an error.
+
+          IT OUTLASTS ITS OWN TRUTH BY `CROSSING_MS`, on purpose. `crossing` is
+          raised for the one moment the water takes this swimmer in, and while
+          it is up the player is ALREADY in the real water — `chooseWater` reads
+          `atTheEdge`, which is down by then — so this is a boundary being drawn
+          going, not a gate still shut. One `<TheEdge>` across both, never two,
+          so React keeps the element and the lift happens to the boundary the
+          player has been looking at rather than to a fresh copy of it. */}
+      {(standing.atTheEdge || standing.crossing) && <TheEdge lifting={standing.crossing} />}
       {typing !== null && (
         // A bare line with a caret. No label, no placeholder, no send button —
         // the diegetic rule holds here too, and there is nothing to say about

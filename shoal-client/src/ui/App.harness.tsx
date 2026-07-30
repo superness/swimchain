@@ -61,11 +61,67 @@
 import { JSDOM } from 'jsdom';
 
 export interface Observation {
-  /** Every `submit_reply` the window made, in order. */
-  readonly submitted: { author: string; parent: string }[];
+  /**
+   * Every `submit_reply` the window made, in order.
+   *
+   * `body` IS THE WIRE BODY, VERBATIM, and it is here because "the window kept
+   * writing" and "the window is somewhere the player can play" are two
+   * different claims and only one of them is visible in a count. A presence
+   * body carries the position of the swimmer that authored it, so a decoded
+   * write says WHICH SEA the player's own fish is in — the shallows' spawn and
+   * the open water's are different points, and neither is reachable from the
+   * other by accident. `App.test.ts` §6 decodes it with the shipping decoder
+   * rather than parsing fields here.
+   *
+   * `atMs` is when it reached the node, so a check can ask whether writes were
+   * still arriving a whole emit-gap after the first refusal — which is the
+   * difference between a client that is still swimming and one whose last few
+   * writes were already in flight when it gave up.
+   */
+  readonly submitted: { author: string; parent: string; body: string; atMs: number }[];
   /** How many live sockets were opened. One chain sea opens exactly one, so a
    *  second means the sea was torn down and rebuilt. */
   readonly sockets: number;
+  /**
+   * How many of those were CLOSED, counted after the window was torn down, and
+   * the most that were ever open at the same instant.
+   *
+   * A REBUILD IS NOT A LEAK AND A COUNT OF OPENINGS CANNOT TELL THE DIFFERENCE,
+   * which is why these two are here. Every change of standing rebuilds the sea,
+   * so a window that is refused and then let in opens THREE sockets in its life
+   * (the shell arriving, the edge going up, the edge coming down) — and the
+   * question nobody had answered was whether the earlier ones were ever shut.
+   * `maxSocketsOpen` is the answer while the window is running (React's
+   * cleanup must stop the old sea before the new effect builds the next one)
+   * and `socketsClosed` is the answer at the end. A socket the driver
+   * abandoned without calling `close()` shows up in neither `sockets` nor any
+   * error: it shows up here, as a number that does not match.
+   */
+  readonly socketsClosed: number;
+  readonly maxSocketsOpen: number;
+  /**
+   * How many times the boundary ENTERED the DOM, and how many times it began
+   * lifting — sampled continuously, not read once at teardown.
+   *
+   * `edgeAtEnd` below cannot see a surface that came and went, and the two
+   * things this task must forbid are both of that shape: a boundary that
+   * flickers up for a frame on a player who was let in between sessions, and a
+   * welcome that plays twice because every later accepted write re-triggers it.
+   * Neither is observable in a final state; both are observable here.
+   */
+  readonly edgeAppearances: number;
+  readonly liftAppearances: number;
+  /**
+   * The wall-clock gap between the node ACCEPTING a write and the boundary
+   * starting to lift, or `-1` if either never happened.
+   *
+   * The measurement that says the yes was acted on rather than noticed later.
+   * Plan 4b's failure was a 180 s deadline against a 200 s answer; the shape of
+   * the opposite failure — a client that polls, or waits for a refetch, or
+   * lifts on the NEXT write instead of this one — is a number here that is
+   * seconds rather than milliseconds.
+   */
+  readonly msFromAcceptToLift: number;
   /** Whether `get_rpc_config` was ever asked. */
   readonly askedShell: boolean;
   /**
@@ -95,6 +151,16 @@ export interface Observation {
    *  the DOM, or `null` when there was no boundary. Compared against
    *  `wayIn.EDGE_BODY` rather than retyped — the copy has exactly one home. */
   readonly edgeLine: string | null;
+  /**
+   * HOW LONG THIS WINDOW HAD GONE WITHOUT PAINTING when it was torn down.
+   *
+   * The control for `haltFramesAfterWrites`. A check that asserted only "writes
+   * kept coming" would pass just as well against a window that was still
+   * rendering happily, i.e. against no halt at all — so the scenario has to
+   * prove it produced the state it claims to. Measured off the frame callbacks
+   * themselves rather than off the flag that stopped them.
+   */
+  readonly msSinceLastFrame: number;
 }
 
 export interface Scenario {
@@ -154,6 +220,69 @@ export interface Scenario {
    * the answer.
    */
   readonly writesRefused?: boolean;
+  /**
+   * A NODE THAT REFUSES THE FIRST `n` WRITES AND THEN ACCEPTS EVERYTHING — the
+   * vouch landing while the window is open, which is the only way this client
+   * can ever learn of it (`wayIn.ts`).
+   *
+   * It is here for the WRITE FLOOR rather than for the welcome: the sea is
+   * rebuilt when the standing changes, a rebuilt sea gets a fresh `InputState`,
+   * and a fresh `InputState` has no memory of when this window last wrote. The
+   * first write after a transition therefore used to leave 94 ms after the one
+   * before it, inside a floor `shoalEmit.ts` calls absolute. Nothing else in
+   * this harness can produce a transition to measure that across.
+   */
+  readonly refuseFirst?: number;
+  /**
+   * REFUSE THE FIRST `n` WRITES, AND THEN LOSE THE NODE ENTIRELY — every call
+   * after that rejects at the transport, the way a laptop that dropped its wifi
+   * does. `classifySendFailure` calls this `'unreachable'`.
+   *
+   * This is the scenario the whole transition has to survive, and the reason it
+   * is here rather than only in `wayIn.test.ts`: a rule that lifted the
+   * boundary on "the write was not refused" instead of on "the write was
+   * accepted" would let one lost packet fake a welcome — the player dropped
+   * into water that still will not carry them, with the one thing on screen
+   * that said so now gone. The edge must still be up at the end of this run.
+   */
+  readonly thenUnreachable?: number;
+  /**
+   * REFUSE THE FIRST `n` WRITES, AND THEN FAIL THEM FOR SOME OTHER REASON
+   * ENTIRELY — `-32010 PowInvalid`, a node answering perfectly well and saying
+   * no to a different question. `classifySendFailure` calls this `'unknown'`.
+   *
+   * A second, independent shape of the same trap: `thenUnreachable` fails
+   * before the node answers and this one fails after it, so a client that
+   * happened to special-case transport errors would pass that one and fail
+   * this one.
+   */
+  readonly thenUnknown?: number;
+  /**
+   * STOP RENDERING once this many writes have been made, and never render
+   * again — a window that has been minimised, fully occluded, or sent to a
+   * background desktop.
+   *
+   * `requestAnimationFrame` STOPS in that state rather than slowing down, and
+   * that is the whole reason this is a separate knob from a slow frame rate:
+   * every check in this file that watches writes accumulate goes on passing
+   * under a window that renders once every five seconds, and none of them can
+   * see a window that renders never. Modelled exactly rather than approximated
+   * — the shim below simply does not schedule, so the frame loop's own
+   * `raf = requestAnimationFrame(frame)` finds nothing to run it again.
+   */
+  readonly haltFramesAfterWrites?: number;
+  /**
+   * STEP THE WALL CLOCK BACKWARDS BY THIS MANY MS, once, after the first write
+   * — NTP correcting a machine that had drifted forward, a laptop waking from
+   * sleep, timezone tooling.
+   *
+   * `Date.now()` is replaced for the window under observation; nothing else
+   * moves, which is exactly the real shape of the event. A step is not a slow
+   * clock: elapsed real time is unchanged, and any rule that measures "how long
+   * since X" by subtracting two `Date.now()` readings simply reports a negative
+   * number for the length of the step.
+   */
+  readonly stepClockBackMs?: number;
 }
 
 /** Nothing here mines for longer than this even on a slow machine; a scenario
@@ -167,13 +296,21 @@ const NODE_ADDRESS = 'sw1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
 /**
  * The water's space id, DERIVED exactly as the shipped client derives it.
  *
- * It was an invented `sp1qqq…` that the fake `list_spaces` handed back. That
- * cannot work any more, and the way it failed is worth recording: the client
- * now derives the id, but the fake sponsorship offer below is SPACE-SCOPED, and
- * `ensureSponsored` only claims an offer whose `space_scope` matches the space
- * asked for. A hand-written constant here therefore made every claim silently
- * find no eligible offer — the same "the game sponsor has no open slots"
- * dead end a real scope mismatch produces.
+ * It was an invented `sp1qqq…` that the fake `list_spaces` handed back, and it
+ * has to be derived now because the client derives it too: a hand-written
+ * constant here would name a different space from the one the window resolves,
+ * so every write would go to a room the window is not in and every "reached
+ * water" check in `App.test.ts` would be measuring this file instead of the
+ * client.
+ *
+ * THIS PARAGRAPH USED TO DESCRIBE A FAKE SPONSORSHIP OFFER AND AN
+ * `ensureSponsored` THAT MATCHED ITS `space_scope`. NEITHER EXISTS. Both went
+ * with the claim flow (`passage.ts`, removed on the ruling that sponsorship is
+ * part of being on the network and not something the game grants), and the
+ * comment outlived them by two plans — sitting two hundred lines under this
+ * file's own "NO SPONSORSHIP METHOD IS FAKED HERE", describing machinery for
+ * the one rule this client is strictest about. Nothing in this harness answers
+ * any sponsorship method, and `App.test.ts` §6 proves the window never asks.
  */
 export const SHOAL_SPACE = await waterSpaceId();
 const SIG_HEX = Array.from({ length: 64 }, (_, i) => (i * 5 + 11) & 0xff)
@@ -232,13 +369,26 @@ function fakeContext(canvas: unknown): unknown {
 
 /** Run one window, from mount to teardown, and report what reached the node. */
 export async function observe(s: Scenario): Promise<Observation> {
-  const submitted: { author: string; parent: string }[] = [];
+  const submitted: { author: string; parent: string; body: string; atMs: number }[] = [];
   const rpcCalls: string[] = [];
   let sockets = 0;
+  /** When a frame callback last actually ran. See the `requestAnimationFrame`
+   *  shim: a halted window stops stamping this, and the observation is the
+   *  measured silence rather than the flag that caused it. */
+  let lastFrameMs = 0;
+  /** What `stepClockBackMs` has done to this window's wall clock so far. */
+  let clockOffsetMs = 0;
+  let socketsClosed = 0;
+  let socketsOpen = 0;
+  let maxSocketsOpen = 0;
   let askedShell = false;
   let listings = 0;
   let roomAsks = 0;
   let identityAsks = 0;
+  /** When the node first ANSWERED YES to a write, and when the boundary first
+   *  started lifting. Wall clock, `-1` for "never". */
+  let firstAcceptMs = -1;
+  let firstLiftMs = -1;
 
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: `http://localhost/${s.search ?? ''}`,
@@ -264,15 +414,35 @@ export async function observe(s: Scenario): Promise<Observation> {
     getContext: (id: string) => unknown;
   }).getContext = function getContext(this: unknown) { return fakeContext(this); };
 
+  /**
+   * A socket that opens, says nothing, and REMEMBERS WHETHER IT WAS SHUT.
+   *
+   * The close bookkeeping is the whole reason this class grew. `startLive`'s
+   * `closeSocket` nulls every handler before calling `close()`, so a socket
+   * being torn down reports nothing through `onclose` and a harness watching
+   * only the callbacks would see an abandoned socket and a properly closed one
+   * as the same thing. Counting the `close()` CALL is the observation that can
+   * tell them apart. `open` guards against double-counting a socket the driver
+   * closes twice (the connect-timeout path and `stop()` can both reach one).
+   */
   class QuietSocket {
     readyState = 1;
+    private open = true;
     onopen: (() => void) | null = null;
     onmessage: ((e: { data: string }) => void) | null = null;
     onerror: (() => void) | null = null;
     onclose: (() => void) | null = null;
-    constructor() { sockets++; setTimeout(() => this.onopen?.(), 0); }
+    constructor() {
+      sockets++;
+      socketsOpen++;
+      if (socketsOpen > maxSocketsOpen) maxSocketsOpen = socketsOpen;
+      setTimeout(() => this.onopen?.(), 0);
+    }
     send(): void { /* the node never answers */ }
-    close(): void { this.onclose?.(); }
+    close(): void {
+      if (this.open) { this.open = false; socketsOpen--; socketsClosed++; }
+      this.onclose?.();
+    }
   }
 
   const nodeFetch = (async (_input: unknown, init?: { headers?: Record<string, string>; body?: string }) => {
@@ -323,12 +493,46 @@ export async function observe(s: Scenario): Promise<Observation> {
         submitted.push({
           author: String(req.params.author_id ?? ''),
           parent: String(req.params.parent_id ?? ''),
+          body: String(req.params.body ?? ''),
+          atMs: Date.now(),
         });
+        // ...and, once, the machine's clock jumps backwards under the window.
+        if (s.stepClockBackMs !== undefined && submitted.length === 1) {
+          clockOffsetMs = -s.stepClockBackMs;
+        }
         // RECORDED FIRST, THEN REFUSED. A refused write is still a write the
         // window mined, signed and sent — `submitted` is how every other check
         // in `App.test.ts` knows the window reached the water at all, and an
         // unsponsored player reaches it exactly as far as anyone else does.
-        if (s.writesRefused) return err(-32_015, 'Identity is not sponsored');
+        //
+        // ONE COUNT, THREE ENDINGS. All three "refuse the first n" scenarios
+        // share the same opening — the player is at the edge, for the real
+        // reason, with the real code — and differ only in what happens on the
+        // write AFTER it. That is the point: the opening is a control the three
+        // share, so a difference in the outcome is a difference in what the
+        // client did with the ending and nothing else.
+        {
+          const refuseUpTo = s.refuseFirst ?? s.thenUnreachable ?? s.thenUnknown ?? 0;
+          if (s.writesRefused || submitted.length <= refuseUpTo) {
+            return err(-32_015, 'Identity is not sponsored');
+          }
+        }
+        // THE WRITE NEVER LANDS, AND NOTHING EVER SAYS SO. `fetch` itself
+        // rejects — a connection reset, a proxy that dropped the POST — which
+        // is what `rpcCall` turns into `NodeUnreachableError` and
+        // `classifySendFailure` into `'unreachable'`.
+        //
+        // ONLY THE WRITE, and that is the sharper scenario rather than the
+        // weaker one. A window that had lost its network entirely would fail
+        // `sign_message` first and never reach `submit_reply` at all, which
+        // makes the attempts uncountable and, worse, makes the run pass for a
+        // client that had simply stopped. Here the node is plainly there, the
+        // window reaches it, mines and signs — and the one call that decides
+        // its standing comes back as nothing at all. That is the case where
+        // "the write was not refused" is most tempting and most wrong.
+        if (s.thenUnreachable !== undefined) throw new TypeError('fetch failed');
+        if (s.thenUnknown !== undefined) return err(-32_010, 'Proof of work invalid');
+        if (firstAcceptMs < 0) firstAcceptMs = Date.now();
         return ok({ content_id: `sha256:${'ef'.repeat(32)}` });
       default:
         return ok({});
@@ -365,8 +569,33 @@ export async function observe(s: Scenario): Promise<Observation> {
   put('Node', dom.window.Node);
   put('Event', dom.window.Event);
   put('KeyboardEvent', dom.window.KeyboardEvent);
-  put('requestAnimationFrame', (cb: FrameRequestCallback) => dom.window.requestAnimationFrame(cb));
+  // THE HALT (`haltFramesAfterWrites`): from the named write onward this
+  // schedules nothing, so no further frame ever runs. It still returns a
+  // handle, because the component stores one and cancels it on teardown.
+  //
+  // `lastFrameMs` is stamped by the WRAPPER around every callback that actually
+  // runs, so `msSinceLastFrame` is a measurement of silence rather than an
+  // inference from the flag that caused it.
+  put('requestAnimationFrame', (cb: FrameRequestCallback) => {
+    const halt = s.haltFramesAfterWrites;
+    if (halt !== undefined && submitted.length >= halt) return 0;
+    return dom.window.requestAnimationFrame((t: number) => { lastFrameMs = Date.now(); cb(t); });
+  });
   put('cancelAnimationFrame', (h: number) => dom.window.cancelAnimationFrame(h));
+  // THE BACKWARDS STEP (`stepClockBackMs`). Only `Date.now()` and a bare
+  // `new Date()` move; `performance.now()` is untouched, which is the whole
+  // point — it is monotonic, and a rule that measures elapsed time with it
+  // cannot be stalled by a clock correction. Installed for every scenario so
+  // the shape of the global is identical whether or not a step is asked for.
+  const RealDate = Date;
+  class SteppedDate extends RealDate {
+    constructor(...args: unknown[]) {
+      if (args.length === 0) super(RealDate.now() + clockOffsetMs);
+      else super(...(args as [number]));
+    }
+    static now(): number { return RealDate.now() + clockOffsetMs; }
+  }
+  put('Date', SteppedDate);
   put('fetch', nodeFetch);
   put('WebSocket', QuietSocket);
   put('IS_REACT_ACT_ENVIRONMENT', false);
@@ -377,6 +606,41 @@ export async function observe(s: Scenario): Promise<Observation> {
   const { createElement } = await import('react');
 
   const root = createRoot(dom.window.document.getElementById('root') as unknown as Element);
+
+  /**
+   * WATCH THE BOUNDARY FOR THE WHOLE RUN, not at the end.
+   *
+   * Two watchers on one sampler, on purpose, and neither is redundant. The
+   * MutationObserver is EXACT — React commits through DOM mutations, so every
+   * appearance and disappearance is a callback — but its callbacks are batched
+   * per microtask, so an appear-and-vanish inside one batch would read as
+   * nothing happening. The interval cannot miss a state that lasts (the lift is
+   * `CROSSING_MS`, ~130 of these) and cannot see one that does not. Together
+   * they cover both, and the sampler is idempotent so double-sampling one
+   * change counts it once.
+   */
+  let edgeOn = false;
+  let liftOn = false;
+  let edgeAppearances = 0;
+  let liftAppearances = 0;
+  const sample = () => {
+    const el = dom.window.document.querySelector('.shoal-edge');
+    const on = el !== null;
+    if (on && !edgeOn) edgeAppearances++;
+    edgeOn = on;
+    const lifting = el !== null && el.classList.contains('shoal-edge--lifting');
+    if (lifting && !liftOn) {
+      liftAppearances++;
+      if (firstLiftMs < 0) firstLiftMs = Date.now();
+    }
+    liftOn = lifting;
+  };
+  const observer = new dom.window.MutationObserver(sample);
+  observer.observe(dom.window.document.body, {
+    childList: true, subtree: true, attributes: true, attributeFilter: ['class'],
+  });
+  const sampleTimer = setInterval(sample, 20);
+
   root.render(createElement(App));
 
   const pressKey = () => {
@@ -398,13 +662,24 @@ export async function observe(s: Scenario): Promise<Observation> {
 
   await sleep(s.settleMs);
 
+  sample();
   const edgeAtEnd = dom.window.document.querySelector('.shoal-edge') !== null;
   const edgeLine = dom.window.document.querySelector('.shoal-edge-body')?.textContent ?? null;
+  clearInterval(sampleTimer);
+  observer.disconnect();
+  // AFTER the unmount, so the socket counts include what React's own cleanup
+  // did — closing the last live sea is the effect teardown's job, and a run
+  // that read them a line earlier would report every window as leaking one.
   root.unmount();
   dom.window.close();
   for (const [k, d] of Object.entries(saved)) {
     if (d === undefined) delete g[k]; else Object.defineProperty(g, k, d);
   }
 
-  return { submitted, sockets, askedShell, rpcCalls, edgeAtEnd, edgeLine };
+  return {
+    submitted, sockets, socketsClosed, maxSocketsOpen, askedShell, rpcCalls,
+    edgeAtEnd, edgeLine, edgeAppearances, liftAppearances,
+    msSinceLastFrame: lastFrameMs === 0 ? -1 : Date.now() - lastFrameMs,
+    msFromAcceptToLift: firstAcceptMs < 0 || firstLiftMs < 0 ? -1 : firstLiftMs - firstAcceptMs,
+  };
 }

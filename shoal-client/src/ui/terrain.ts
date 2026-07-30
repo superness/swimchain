@@ -80,6 +80,68 @@
  * label, and none says node, chain, space, post, reply or Swimchain.
  * `terrain.test.ts` guards that with a literal substring check so a later
  * addition cannot drift back across the line quietly.
+ *
+ * ===========================================================================
+ * THE SOUTH-WEST CORNER IS EMPTY ON PURPOSE — RULED 2026-07-29
+ * ===========================================================================
+ *
+ * The four places cover 7.70% of the sea and they are not evenly spread. Mean
+ * distance from a point to the nearest place's EDGE, by quadrant, measured on
+ * an 8-cu grid over the whole world:
+ *
+ *   SE 304 cu    NW 397 cu    NE 491 cu    SW 748 cu
+ *
+ * The loneliest water in the sea is the south-west corner itself — (0, 3072)
+ * is 1_822 cu from the Drop-off's edge, or 30 s at SPEED_CRUISE (60 cu/s).
+ * 11.1% of the sea is more than 900 cu (15 s) from anywhere named, and nearly
+ * all of that 11.1% is that one corner. So the gap is real and it is measured,
+ * not eyeballed.
+ *
+ * IT STAYS OPEN. A fifth place there, or shifting the Drop-off west to even
+ * the quadrants out, were both live options; here is why neither was taken.
+ *
+ * **1. Terrain is not shelter, so an empty corner is not a dangerous corner.**
+ * `shelterOf` counts fish — people at SHELTER_BASE and wild fish at
+ * WILD_SHELTER_WEIGHT — and nothing else. Nothing in `src/lib/` imports this
+ * module or any geometry from it (`grep -rn terrain src/lib/` returns one
+ * unrelated comment), so no place in this file makes any swimmer one point
+ * safer. A place is safe only because PEOPLE are at it. What the corner costs
+ * a player is therefore company, not survival — and company is exactly what
+ * they went out there to trade away.
+ *
+ * **2. The corner is the sea's food pole, and the four places are what make
+ * it one.** `bloom.ts`: a cell carries a bloom once nothing has come within
+ * BLOOM_VISIT_R (200 cu) of it for BLOOM_READY_MS (45 s). Places gather the
+ * school into the other three quadrants, so the south-west is the water most
+ * reliably fallow, which is to say the most reliably worth the swim. That is
+ * §2.2 drawn on a map — bloom.ts's own header states it as "food grows in the
+ * open, safety is in the crowd, and they are never in the same place" — and a
+ * fifth place in the corner would move the crowd onto the food and flatten
+ * it. Spec 2.13's RESOLVED block refuses to bias blooms toward terrain for
+ * exactly this reason; siting terrain where the food reliably is would be the
+ * same mistake run backwards, and it would need no fold change to do the
+ * damage.
+ *
+ * **3. Moving a place costs more than it did a week ago.** Since plan 4b every
+ * place says its name as you arrive, so these coordinates are now the referent
+ * of a word players share. Sliding the Drop-off west would make "the drop-off
+ * is south" wrong for everyone who has already learned it, which is a real
+ * price for a cosmetic evening-out.
+ *
+ * WHAT IS BEING PRICED, STATED HONESTLY. Spec 2.13's argument for places is
+ * that without them the minute between sweeps is "hold a heading, which is
+ * waiting". In the shallows' own arrangement a sweep lands roughly every 90 s
+ * (TENSION_TRIGGER 30_000 at +83 a tick with three of nine outside the core),
+ * so a swimmer in the far corner is about a third of a cycle from named water.
+ * That is a genuine cost and it is the price of the richest food in the sea.
+ * Open water has to be genuinely open somewhere or "food in the open" is a
+ * sentence about nothing.
+ *
+ * WHAT WOULD OVERTURN THIS, so it stays falsifiable: if the corner turns out
+ * to be where the school actually LIVES — if the food pull is strong enough
+ * that players spend the minute between sweeps down there — then it is not
+ * open water any more and it should be named. The measurement that settles it
+ * is where the bodies are when a hush starts, not where the food is.
  */
 import { dist2 } from '../lib/fixed';
 import { WORLD_W, WORLD_H, SHELTER_R, BLOOM_CELL } from '../lib/shoalConst';

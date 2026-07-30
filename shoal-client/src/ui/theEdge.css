@@ -27,9 +27,12 @@
  * when this shipped, because jsdom has no CSP and the dev server does not
  * apply Tauri's.
  *
- * Everything below is the same CSS that used to be the template literal, with
- * one change: the orbit radius is written here rather than interpolated from a
- * TypeScript constant, because this file is now its only home.
+ * Everything below started as the CSS that used to be a template literal in the
+ * component. The one value it shares with TypeScript is `--shoal-edge-lift-ms`,
+ * and it is shared in the only direction that is safe: this file states it, and
+ * `shippedStyles.test.ts` reads it back out of the EMITTED stylesheet and holds
+ * it under `wayIn.CROSSING_MS`. Nothing is interpolated at build time, so there
+ * is no second home for any of it.
  */
 .shoal-edge {
   position: absolute;
@@ -50,18 +53,35 @@
    filter works on the live canvas underneath, so wild fish drifting across the
    boundary really do dim as they cross it. The mask softens the top edge over
    ~64px so the transition is water, not a seam — the drawn line below is what
-   the eye actually reads as the boundary. */
+   the eye actually reads as the boundary.
+
+   IT USED TO REACH THE BOTTOM OF THE WINDOW, AND THAT WAS RIGHT UNTIL THE SEA
+   UNDERNEATH BECAME PLAYABLE. When this was written, a refused newcomer was
+   looking at water they could not affect, so dimming all of it cost nothing and
+   said the whole thing. They now swim the shallows while their writes keep
+   knocking (`seaChoice.chooseWater`), and the camera holds their own fish at
+   the middle of the window — which is exactly where a `brightness(0.62)
+   blur(1.4px)` pall was sitting. A game you play through frosted glass is not a
+   sea somebody can wait in.
+
+   So the pall is a BAND under the line now: deep where the boundary is, gone by
+   the time it reaches anything the player is steering. The line, the vignette
+   above it and the copy are untouched, and the cold water still reads as cold
+   where the eye is actually looking for it. Verified by screenshot from an
+   installed build (plan 4c task 2), not only in a dev server. */
 .shoal-edge-below {
   position: absolute;
-  left: 0; right: 0; top: 31%; bottom: 0;
-  backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
-  -webkit-backdrop-filter: saturate(0.46) brightness(0.62) blur(1.4px);
+  left: 0; right: 0; top: 31%; height: 22%;
+  backdrop-filter: saturate(0.46) brightness(0.72) blur(1.1px);
+  -webkit-backdrop-filter: saturate(0.46) brightness(0.72) blur(1.1px);
   background: linear-gradient(to bottom,
-    rgba(1, 8, 13, 0.04) 0%,
-    rgba(1, 8, 13, 0.24) 26%,
-    rgba(1, 6, 10, 0.54) 100%);
-  mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
-  -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px);
+    rgba(1, 8, 13, 0.05) 0%,
+    rgba(1, 8, 13, 0.22) 34%,
+    rgba(1, 6, 10, 0) 100%);
+  mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
+  -webkit-mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0px, rgba(0,0,0,1) 64px, rgba(0,0,0,1) 55%, rgba(0,0,0,0) 100%);
 }
 
 /* The line itself. Two waves, drawn 3x the viewport wide and drifting at
@@ -82,24 +102,15 @@
 }
 .shoal-edge-glow { filter: blur(7px); opacity: 0.5; }
 
-/* The player: one small fish, circling. */
-.shoal-edge-orbit {
-  position: absolute;
-  left: 29%; top: 46%;
-  width: 0; height: 0;
-  animation: shoal-edge-circle 13s linear infinite;
-}
-.shoal-edge-arm {
-  /* How far the player's fish circles from the centre of its orbit. Small —
-     this is a fish going nowhere, not a patrol. */
-  position: absolute;
-  transform: translateX(66px);
-}
-.shoal-edge-heading { transform: rotate(90deg) translate(-17px, -8px); }
-.shoal-edge-beat {
-  transform-origin: 4px 12px;
-  animation: shoal-edge-beat 1100ms ease-in-out infinite alternate;
-}
+/* THERE IS NO SURROGATE FISH HERE ANY MORE, and its absence is the point.
+   `.shoal-edge-orbit` drew one small pale fish circling below the line, and the
+   comment called it "the player". That was true when this layer sat over water
+   the player could not move in. It stopped being true the moment the shallows
+   went underneath: their real fish is centred, ringed and steering, and this one
+   answered nothing. It was also a picture of §2.16's "visible to everyone",
+   which is superseded — a refused write never reaches a peer, so nobody is
+   watching anyone circle. `TheEdge.tsx`'s header carries the full argument.
+   Removing it takes `shoal-edge-circle` and `shoal-edge-beat` with it. */
 
 .shoal-edge-copy {
   position: absolute;
@@ -123,6 +134,92 @@
   text-shadow: 0 1px 10px rgba(0, 12, 18, 0.9);
 }
 
+/* ===========================================================================
+   THE MOMENT IT LIFTS
+   ===========================================================================
+
+   Spec §2.18's rule, applied to the one moment this whole arc is for: it is
+   SHOWN, not announced. Nothing is added to the copy — the copy is the first
+   thing to go, and it goes fastest, because the answer to "someone already
+   swimming has to bring you through" is not another sentence.
+
+   What the eye is given instead is the boundary BEHAVING like a boundary that
+   has stopped applying: the cold band and the line rise together and pass up
+   over the top of the window, and the open water they were keeping out comes
+   down over the player as they go. Two directions at once, which is what
+   separates "the edge lifted" from "the overlay was switched off".
+
+   THE ORDER IS THE WHOLE READ, and it is hand-timed rather than staggered by
+   an even division:
+
+     0        the words begin to go        (420 ms — before anything moves)
+     260 ms   the band and the line start rising
+     300 ms   the wash of open water starts down over the player
+     ~2400 ms nothing is left
+
+   `--shoal-edge-lift-ms` is the single source of the long duration. It is
+   deliberately SHORTER than `wayIn.CROSSING_MS`, which is how long the element
+   stays in the tree — a lift that outlived it would be cut off in mid-air, and
+   `shippedStyles.test.ts` reads this very declaration out of the EMITTED
+   stylesheet and holds it under that number. Change one and that check fails,
+   which is the intent: the two files have to agree and neither can see the
+   other. */
+.shoal-edge--lifting {
+  --shoal-edge-lift-ms: 2400ms;
+}
+
+/* The words first, and quickly. */
+.shoal-edge--lifting .shoal-edge-copy {
+  animation: shoal-edge-words-go 420ms ease-in both;
+}
+
+/* The line and the cold band rise together — same curve, same duration, same
+   delay, because they are one object: the boundary. The band travels a little
+   further so the cold clears the line rather than trailing it. */
+.shoal-edge--lifting .shoal-edge-line {
+  animation: shoal-edge-rise 0s 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-duration: var(--shoal-edge-lift-ms);
+}
+.shoal-edge--lifting .shoal-edge-below {
+  animation: shoal-edge-drain 0s 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation-duration: var(--shoal-edge-lift-ms);
+}
+/* The vignette on the open half has nothing left to mark off. */
+.shoal-edge--lifting .shoal-edge-open {
+  animation: shoal-edge-words-go 900ms ease-out both;
+}
+
+/* The open water coming down over them. It starts where the line was and
+   sweeps past the middle of the window — over the player's own fish, which is
+   the thing that has just been let in.
+
+   EVERY EDGE OF IT HAS TO REACH ZERO, and the first version of this did not.
+   It was `radial-gradient(... at 50% 0%)`, whose brightest point is the
+   element's own top edge — so the wash travelled up the window as a pale
+   rectangle with a crisp horizontal line across the top of it, full width. It
+   is not subtle and it is not visible in a unit test: it was found by
+   photographing the moment in an installed build, and it survived one wrong
+   diagnosis (the pall's `backdrop-filter`, which turned out to have nothing to
+   do with it) before the gradient itself was the answer.
+
+   So the origin sits INSIDE the element now, and a mask takes both ends to
+   nothing regardless of what the gradient does. Light with no edges. */
+.shoal-edge-swell {
+  position: absolute;
+  left: -10%; right: -10%;
+  top: 4%; height: 72%;
+  background: radial-gradient(ellipse 76% 78% at 50% 32%,
+    rgba(176, 232, 246, 0.30) 0%,
+    rgba(132, 206, 226, 0.15) 44%,
+    rgba(132, 206, 226, 0) 80%);
+  mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0%, rgba(0,0,0,1) 26%, rgba(0,0,0,1) 58%, rgba(0,0,0,0) 100%);
+  -webkit-mask-image: linear-gradient(to bottom,
+    rgba(0,0,0,0) 0%, rgba(0,0,0,1) 26%, rgba(0,0,0,1) 58%, rgba(0,0,0,0) 100%);
+  animation: shoal-edge-swell 0s 300ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
+  animation-duration: var(--shoal-edge-lift-ms);
+}
+
 @keyframes shoal-edge-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -131,21 +228,45 @@
   from { transform: translateX(0); }
   to   { transform: translateX(-33.3333%); }
 }
-@keyframes shoal-edge-circle {
-  from { transform: rotate(0deg); }
-  to   { transform: rotate(360deg); }
+@keyframes shoal-edge-words-go {
+  from { opacity: 1; }
+  to   { opacity: 0; }
 }
-@keyframes shoal-edge-beat {
-  from { transform: skewX(9deg); }
-  to   { transform: skewX(-9deg); }
+@keyframes shoal-edge-rise {
+  from { transform: translateY(0);     opacity: 1; }
+  60%  { transform: translateY(-26vh); opacity: 0.55; }
+  to   { transform: translateY(-64vh); opacity: 0; }
+}
+@keyframes shoal-edge-drain {
+  from { transform: translateY(0);     opacity: 1; }
+  55%  { transform: translateY(-30vh); opacity: 0.45; }
+  to   { transform: translateY(-72vh); opacity: 0; }
+}
+@keyframes shoal-edge-swell {
+  from { transform: translateY(-14%); opacity: 0; }
+  30%  { transform: translateY(12%);  opacity: 1; }
+  to   { transform: translateY(52%);  opacity: 0; }
 }
 
-/* Asked for less motion: the picture must still be complete, so the fish stays
-   where it is and everything simply stops. Nothing is hidden. */
+/* Asked for less motion: the picture must still be complete, so nothing drifts
+   and nothing travels. Nothing is hidden either — and the lift in particular
+   must still RESOLVE, or a player who asked for stillness would be left with a
+   boundary frozen on screen until `CROSSING_MS` snapped it away, which is the
+   abruptness this whole section exists to remove. So it becomes a plain fade of
+   the entire layer over the same duration: no transform anywhere, and the wash
+   (which is nothing but a moving highlight) does not run at all. */
 @media (prefers-reduced-motion: reduce) {
   .shoal-edge,
   .shoal-edge-wave-far,
-  .shoal-edge-wave-near,
-  .shoal-edge-orbit,
-  .shoal-edge-beat { animation: none; }
+  .shoal-edge-wave-near { animation: none; }
+
+  .shoal-edge--lifting {
+    animation: shoal-edge-words-go 0s ease-out both;
+    animation-duration: var(--shoal-edge-lift-ms);
+  }
+  .shoal-edge--lifting .shoal-edge-copy,
+  .shoal-edge--lifting .shoal-edge-open,
+  .shoal-edge--lifting .shoal-edge-line,
+  .shoal-edge--lifting .shoal-edge-below { animation: none; }
+  .shoal-edge-swell { display: none; }
 }
