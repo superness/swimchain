@@ -8,6 +8,8 @@ import { Deck } from './deck.mjs';
 import { buildConfigMessage, watchReadiness } from './handover.mjs';
 import { createStatic } from './static-shader.mjs';
 import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './measure.mjs';
+import { createDwell } from './dwell.mjs';
+import { mineSignSubmit } from './engage.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -34,10 +36,32 @@ async function rpc(method, params = {}) {
   return json.result;
 }
 
+// Task 3: dwell-engage's signature helper — wraps sign_message. Callers pass
+// an already hex-encoded message (engage.mjs owns the UTF-8 -> hex step so
+// the exact preimage it signs is visible in one place).
+async function sign(messageHex) {
+  const res = await rpc('sign_message', { message: messageHex });
+  return res.signature;
+}
+
 const deckEl = document.getElementById('deck');
 const staticCtl = createStatic(document.getElementById('static'), { rpc: (m, p) => rpc(m, p) });
 const timer = createFlipTimer();
 const hud = createHud(document.getElementById('hud'), timer);
+
+// --- dwell-engage (Task 3): "watching is feeding" — B2 (policy.mjs dials) ---
+// engageOne closes over the mutable `myPk`/`sign`/`rpc` bindings above by
+// reference (not by value) — each call reads whatever `myPk` currently is,
+// which matters because myPk isn't populated until rpcReady resolves below;
+// by the time dwell ever actually fires (45s after a settle()'s onReady,
+// which itself only happens post-acquisition, post-rpcReady) it's long set.
+const engageOne = (contentId) => mineSignSubmit({ rpc, sign, myPk, contentId });
+const dwell = createDwell({
+  rpc,
+  engageOne,
+  store: localStorage,
+  onEngaged: (contentId) => hud.note(`dwell engaged ${contentId}`),
+});
 
 // Review fix 4: while a seam is up (acquisition, a cold/warm mount gate, or
 // node-dead), the static must intercept input — its canvas is
@@ -169,6 +193,18 @@ function settle(target, tuneResult, from, kindOverride = null) {
       showOsd(byId.get(target), rec);
       localStorage.setItem(LAST_CHANNEL_KEY, target);
       tuneDriver(target);
+      // Task 3 (B2): dwell is re-armed ONLY here — settle's onReady is the
+      // single integration point every settle() call site (power-on,
+      // acquisition's own final settle, flip, retune) shares. Guard: never
+      // dwell during acquisition (this callback only fires post-acquisition
+      // since acquisitionBoot's own probe-mount bypasses settle() entirely),
+      // never on a channel with no declared spaces (wiki/reef today — see
+      // channels.json), and never once this channel has latched receive-only
+      // for the session.
+      const dwellSpaces = byId.get(target)?.spaces ?? [];
+      if (acquired && dwellSpaces.length && !dwell.isReceiveOnly(target)) {
+        dwell.tuned(target, dwellSpaces);
+      }
     },
     onTimeout: () => {
       timer.abort();
@@ -185,6 +221,13 @@ function flip(dir) {
   const now = performance.now();
   if (now - lastFlipAt < 250) return;
   lastFlipAt = now;
+  // Task 3: dwell.untuned() must run only on flips that pass BOTH guards
+  // above — deliberately placed AFTER them, not at the top of flip(). Dwell
+  // is re-armed only by settle()'s onReady (see settle() above), so a
+  // debounced/guarded no-op flip that still called untuned() would
+  // permanently disarm dwell on the channel the viewer stays tuned to, with
+  // no following settle() to re-arm it.
+  dwell.untuned();
   const from = deck.current;
   gate?.cancel();
   const r = dir > 0 ? deck.next() : deck.prev();
@@ -286,6 +329,7 @@ function powerOff() {
   // this just lets the current channel know it's no longer visible so it can
   // do battery-courtesy things (pause polling/animation) behind the off screen.
   if (deck.current) advisory(deck.current, 'SWIMCHAIN_CHANNEL_HIDDEN');
+  dwell.untuned(); // Task 3: no dwell mining behind the off screen
   gate?.cancel();
   staticCtl.stop();
   const off = document.getElementById('off-screen');
