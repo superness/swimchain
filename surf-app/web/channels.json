@@ -5,6 +5,7 @@
       "id": "feed",
       "number": 2,
       "name": "FEED",
+      "spacesNote": "fallback only -- live bootstrap ranks list_spaces (Surf Phase B, decision B5). shell.mjs's pickBootstrap() overwrites this array at first-signal acquisition with the top-3 'social'-classed spaces by last_activity, and persists the pick to localStorage['surf.feedSpaces'] so every later boot re-applies it before this file is even read again. This trio is used ONLY when list_spaces returns no 'social' space at all (a fresh/empty node) or on a first-ever run before any pick has landed.",
       "spaces": [
         "01000f8857cd77a75d8fcd7951d99ede",
         "01000da9416b0bd33114a11234a1397d",

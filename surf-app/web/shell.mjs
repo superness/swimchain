@@ -12,6 +12,7 @@ import { createDwell, ledgerMark } from './dwell.mjs';
 import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, freshestTs, isMetered, pickFlareTarget } from './deadair.mjs';
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
+import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -21,6 +22,47 @@ const invoke = window.__TAURI__.core.invoke;
 const cfg = await (await fetch('/channels.json')).json();
 const byId = new Map(cfg.channels.map((c) => [c.id, c]));
 const deck = new Deck(cfg.channels.map((c) => c.id), cfg.warmSize);
+
+// --- Task 6 (B5): health-driven bootstrap replaces A1's hardcoded-space debt.
+// FEED_ID is channels.json's first channel (today: "feed") -- the only
+// channel with any declared spaces at all. FALLBACK_FEED_SPACES is a VALUE
+// COPY of its original channels.json spaces array, captured now, before
+// anything below can mutate it -- byId.get(FEED_ID) and cfg.channels[0] are
+// the SAME object (byId is built directly from cfg.channels), so
+// `byId.get(FEED_ID).spaces = picked` a few lines down would silently mutate
+// cfg.channels[0].spaces too were this not a snapshot; pickBootstrap's own
+// empty-pick fallback must always mean "channels.json's original trio", not
+// whatever the live set happened to drift to.
+const FEED_ID = cfg.channels[0].id;
+// `?? []` guards a malformed channels.json (feed entry missing `spaces`
+// entirely) the same way every other spaces-read in this file does
+// (tuneDriver, checkDeadAir's isMetered, etc.) -- a spread over `undefined`
+// would throw here, at MODULE TOP LEVEL, bricking the whole shell import
+// before power-on even exists (the same class of bug loadMoored/
+// loadFeedSpaces are hardened against for localStorage; channels.json is
+// static config, but the failure mode is identical).
+const FALLBACK_FEED_SPACES = [...(cfg.channels[0].spaces ?? [])];
+
+// Boot-time re-apply: the persisted live-picked bootstrap set (if any prior
+// boot's acquisitionBoot successfully picked one) becomes the feed channel's
+// spaces the INSTANT byId exists -- before ANY other code in this module
+// reads byId.get(FEED_ID).spaces. This single mutation is what routes the
+// live set to EVERY consumer for this session AND all later ones: tuneDriver
+// (drives follow_space/list_space_content/request_content over
+// byId.get(id).spaces), the acquisition lock's localItemCount
+// (byId.get(feed).spaces), dwell (settle's onReady reads
+// byId.get(target)?.spaces), dead-air (checkDeadAir/isMetered via `ch` =
+// byId.get(target)), and the Chart (renderChart's `cfg.channels` filter --
+// note cfg.channels[0] IS byId.get(FEED_ID), same object, so this mutation
+// is visible there too). None of those call sites need to know
+// surf.feedSpaces exists. channels.json's trio stays live here whenever
+// loadFeedSpaces returns null: the key was never written (no successful pick
+// yet), or the stored value degraded (corrupt/wrong-shape/empty -- see
+// bootstrap.mjs's own guards, following chart.mjs's loadMoored precedent so
+// a bad localStorage value can never brick this module's own load, matching
+// the review fix already applied there).
+const storedFeedSpaces = loadFeedSpaces(localStorage);
+if (storedFeedSpaces) byId.get(FEED_ID).spaces = storedFeedSpaces;
 
 // --- RPC plumbing (D1: no proxy; direct loopback fetch with cookie auth) ---
 const rpcEndpoint = await invoke('get_rpc_endpoint');
@@ -689,7 +731,7 @@ function powerOn() {
   // run B's successful reveal.
   if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
   const stored = localStorage.getItem(LAST_CHANNEL_KEY);
-  const target = deck.current ?? (byId.has(stored) ? stored : cfg.channels[0].id);
+  const target = deck.current ?? (byId.has(stored) ? stored : FEED_ID);
   const r = deck.tune(target);
   settle(target, r, null, 'power');
 }
@@ -715,7 +757,34 @@ async function acquisitionBoot() {
   document.getElementById('acquire').hidden = false;
   try {
     await rpcReady; // rpcAuth + myPk + rpcConfig (boot section below)
-    const feed = cfg.channels[0].id;
+    const feed = FEED_ID;
+    // Task 6 (B5): rank the node's OWN live spaces BEFORE following the
+    // hardcoded set (deck.tune/mount/tuneDriver below -- tuneDriver is what
+    // actually calls follow_space). On a successful pick (list_spaces has
+    // >=1 'social' space), adopt it as the feed channel's single source of
+    // truth AND persist it in the same step -- both writes happen together
+    // so a later boot's re-apply (module top, above) reflects exactly what
+    // THIS pick decided, never a half-applied state. pickBootstrap signals
+    // "nothing to adopt" (list_spaces empty, or no social space in it) by
+    // returning the exact FALLBACK_FEED_SPACES reference back unchanged --
+    // the `!==` check below is that signal (matches chart.mjs's toggleMoor
+    // cap-signal idiom: reference equality as the "no-op happened" tell). On
+    // that path neither write happens, and byId.get(feed).spaces is already
+    // channels.json's own trio (this module's load-time default -- since
+    // acquisitionBoot only ever runs pre-acquisition, see its call site's
+    // `!acquired` guard, no prior successful pick could have overwritten it
+    // yet by the time this runs).
+    let listed = null;
+    try {
+      listed = await rpc('list_spaces', { limit: 20 });
+    } catch { /* best-effort: a transient RPC failure just leaves byId.get(feed).spaces as whatever it already was (channels.json's trio) */ }
+    if (listed) {
+      const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
+      if (picked !== FALLBACK_FEED_SPACES) {
+        byId.get(feed).spaces = picked;
+        localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+      }
+    }
     deck.tune(feed);
     mount(feed); // paints its own loading UI behind the static; NOT revealed
     await tuneDriver(feed); // driver FIRST: follows + request_content
