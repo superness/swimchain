@@ -86,8 +86,13 @@
  *
  * ## THE `limit` CEILING IS A CLIFF, AND THIS MODULE FALLS OFF IT LOUDLY
  *
- * A room post never rotates (epochs roll the FOLD, not the room), so its direct
- * replies accumulate for the life of the room, forever. `limit` is NOT clamped
+ * A room's direct replies accumulate for the life of that room, and nothing in
+ * THIS half of the module ever ends one. (The other half — "the room is a
+ * function of the hour", below — is the answer to that, and this ceiling is why
+ * it exists. It derives which room an hour uses; the crossing from one to the
+ * next is the next task's. Until that crossing is wired up, the shipped build
+ * still joins `shellConfig.ts`'s single never-rotating room and everything in
+ * this section applies to it verbatim.) `limit` is NOT clamped
  * by the node (methods.rs:9358-9363 takes it verbatim), and
  * `get_replies_for_content` returns direct children OLDEST FIRST: its index key
  * is `parent || timestamp || hash` and it is a plain forward `scan_prefix`
@@ -150,9 +155,12 @@
  * is indistinguishable from a complete one, erring toward the throw is the only
  * safe direction.
  */
+import { createSHA256 } from 'hash-wasm';
+
 import type { LogEntry } from './shoalTypes';
 import { decodeBody, decodeCheckpointBody, type CheckpointEntry } from './shoalWire';
 import { orderLog } from './shoalEngine';
+import { epochOf } from './epoch';
 import { rpcCall, type RpcAuth } from './shoalRpc';
 
 /** The subset of a node's `ReplyInfo` (src/rpc/types.rs:660) that `repliesToLog`
@@ -445,4 +453,221 @@ export async function fetchRoom(
   });
 
   return splitRoomReplies(narrowRoomReplies(result, roomContentId, ROOM_FETCH_LIMIT));
+}
+
+// ===================================================================================
+// WHICH ROOM — the room is a function of the hour
+// ===================================================================================
+
+/**
+ * ## THE ROOM IS A FUNCTION OF THE HOUR
+ *
+ * Everything above this line assembles ONE room's log and refuses to answer once
+ * that room outgrows a single fetch. This section is the other half: WHICH room,
+ * and it exists because the ceiling above is not a distant hazard. Spec §2.15's
+ * healthy shoal is 25 swimmers; `shoalEmit.ts`'s own cadence puts each of them
+ * at a write every 3-8 seconds; that is 11_250-30_000 replies an hour into one
+ * post. `ROOM_FETCH_LIMIT` is 100_000. So a single room is a matter of hours,
+ * and rotating it is not an optimisation — it is the only thing standing between
+ * the game and `narrowRoomReplies` throwing forever.
+ *
+ * It rotates HOURLY, on the epoch boundary the fold and the checkpoints already
+ * run on (`epoch.ts`, `EPOCH_MS` = 3_600_000). Not a second clock: `roomIdAtMs`
+ * composes `epochOf` and nothing else, so "which room" and "which fold" can
+ * never answer differently about the same instant.
+ *
+ * ## THIS IS CONSENSUS, AND A WRONG DERIVATION HAS NO SYMPTOM
+ *
+ * Read this before changing a single byte below. Two clients that derive
+ * different rooms for the same hour are not in a degraded world or a staler one
+ * — they are in DIFFERENT worlds and cannot see each other at all. What each of
+ * them sees is a calm, empty, entirely healthy sea: no error, no warning, no
+ * missing peer, nothing to debug. That is strictly worse than the truncation
+ * failure above, which at least produces a fold that disagrees with somebody.
+ *
+ * The defence is that the derivation is PINNED as a literal in
+ * `shoalRoom.test.ts` — `sha256("The Shoal\n\nroom:shoal:v1:main:0")` and the
+ * same for epoch 495936 — hand-derived offline with three SHA-256
+ * implementations that are not this one. Any change to the grammar, the tag, the
+ * separator or the number formatting fails those checks loudly instead of
+ * forking the population silently. DO NOT "FIX" A FAILING PIN BY UPDATING IT.
+ * A pin that has to change is a hard fork of every room ever derived, and it
+ * needs the same treatment as a fold rule (project_fold_rules_are_permanent):
+ * decided deliberately, versioned in the tag below, never edited in passing.
+ *
+ * ## THE IDENTIFYING BYTES, AND WHY THEY ARE THESE
+ *
+ * A room is a POST, and `submit_post` derives its content id from the post's
+ * text and nothing else: `content_id = "sha256:" + hex(sha256(`${title}\n\n${body}`))`
+ * (src/rpc/methods.rs:2221-2223). So a room is fully determined by two strings,
+ * and the whole job is choosing them. For epoch N in a water named W:
+ *
+ *     title = "The Shoal"
+ *     body  = "room:shoal:v1:" + W + ":" + N        (N in plain decimal)
+ *
+ * i.e. the hashed preimage is `The Shoal\n\nroom:shoal:v1:main:495936`.
+ *
+ * **Why the title is constant and all the identity is in the body.** One string
+ * with one grammar is one place to be wrong. It also makes "different epochs
+ * never collide" a claim about a single format rather than about an interaction
+ * between two, and keeps the human-readable half stable for anyone reading a
+ * node's content store.
+ *
+ * **Why `room:shoal:v1:` mirrors the space id's shape.** The water's own id is
+ * `sha256("app:shoal:v1:main")[..15]` under a class byte — a frozen tag, a
+ * version, and the name (`shellConfig.waterSpaceId`, src/types/space_class.rs:70-73).
+ * The room uses the same discipline for the same reason: the tag says what kind
+ * of thing this preimage names so it can never be confused with another one, and
+ * the `v1` is where a future change to the grammar goes instead of into these
+ * bytes.
+ *
+ * The `shoal` in that tag is FROZEN WIRE TEXT and is deliberately NOT read from
+ * `WATER_APP`. It is not a reference to a constant that could be re-pointed: if
+ * someone renamed the app constant, every room id ever derived would silently
+ * move. (It is also why this module does not import `shellConfig` — `src/lib/`
+ * does not depend on `src/ui/`, and this direction of that rule is load-bearing
+ * rather than tidy: the derivation must be usable by the smoke scripts and by
+ * whatever mints a room, none of which have a UI.)
+ *
+ * **Why the WATER NAME is in the preimage, and why it is a parameter.** THE
+ * SPACE IS NOT IN THE HASH. `submit_post` hashes title and body only, and
+ * `get_replies` is keyed on the parent content id alone — so two spaces whose
+ * room posts share a title and body share ONE room and one reply set. That is
+ * content addressing working correctly, not a node bug, and "fixing" it by
+ * salting the preimage with a space id would re-score every content id ever
+ * minted. The obligation is ours: a room that must stay separate needs separate
+ * TEXT. `shellConfig.ts` records the near miss — the regtest smoke's moves would
+ * have landed in the water people play in. So the water name is in the body, and
+ * it is a parameter rather than a constant because the smoke scripts
+ * (`@shoal:smoke`, `@shoal:two`, `@shoal:cp`) are exactly the callers that must
+ * get a different answer.
+ *
+ * Callers pass the DISPLAY name (`main`), not the marker form (`@shoal:main`) —
+ * the same distinction `WATER_NAME` and `WATER_SPACE_NAME` already draw, and the
+ * single most likely way to derive a real, healthy, reply-able room that is
+ * shared with nobody. `roomTextFor` therefore REJECTS a water containing `:`
+ * rather than deriving from it, which also makes the grammar's fields
+ * unambiguous: no field but the last can contain the delimiter, so
+ * `(water, epoch)` is recoverable from the body and two distinct pairs can never
+ * spell the same bytes.
+ *
+ * **Why the epoch is spelled in plain decimal, and checked.** `${epoch}` on a
+ * safe integer is always plain decimal — exponent notation starts at 1e21, three
+ * orders of magnitude past `Number.MAX_SAFE_INTEGER` — and `${-0}` is `"0"`, so
+ * the `-0` that `Math.floor` can hand back derives the same room as `0` rather
+ * than a private `"-0"` one. Both are pinned in the test. A NON-integer epoch
+ * would quietly spell `495936.5` and derive a room of its own, and `NaN` would
+ * derive one called `NaN`, so `roomTextFor` throws on anything that is not a
+ * safe integer. That is the tripwire for this project's integer-math-only rule
+ * in `src/lib/`, at the one place where breaking it splits the population.
+ *
+ * ## WHAT THIS SECTION DOES NOT DO
+ *
+ * It does not read a clock: `roomIdAtMs` takes the instant as an argument, the
+ * way every other function in `src/lib/` does. It does not decide WHEN to cross
+ * from one room to the next, or who publishes the room post for an hour that
+ * nobody has minted yet — `submit_reply` rejects an unknown parent outright
+ * (src/rpc/methods.rs:3070-3084), so an hour's post has to exist before its
+ * first move can land. That crossing is the next task's, and it has this
+ * derivation to build on.
+ *
+ * `shellConfig.ts`'s fixed `ROOM_TITLE`/`ROOM_BODY`/`roomContentId` are the
+ * single never-rotating room this replaces. They are still what the shipped
+ * build joins today; the crossing task is what retires them.
+ */
+
+/**
+ * Every room's title, in every water and every hour. Constant on purpose — all
+ * of a room's identity lives in its body (see the section header). Exported so
+ * whatever mints an hour's post types no literal of its own.
+ */
+export const ROOM_TITLE = 'The Shoal';
+
+/**
+ * The frozen head of every room body: what kind of thing this preimage names,
+ * and which version of the grammar spells it. NOT derived from `WATER_APP` —
+ * see the section header on why re-pointing it must be impossible. A change
+ * here is a hard fork of every room; it goes in `v2`, alongside a decision about
+ * what happens to `v1`'s rooms.
+ */
+const ROOM_BODY_TAG = 'room:shoal:v1';
+
+/** A room post's two identifying strings. Together they ARE the room: the node
+ *  hashes `${title}\n\n${body}` and that hash is the content id. */
+export interface RoomText {
+  readonly title: string;
+  readonly body: string;
+}
+
+/**
+ * The identifying text of the room for `epoch` in the water named `water`.
+ * Pure, integer-only, and the whole of the derivation — everything else in this
+ * section is hashing or composition.
+ *
+ * `water` is the space's DISPLAY name (`main`), never the marker form
+ * (`@shoal:main`); a colon in it throws rather than deriving a room nobody else
+ * shares. `epoch` must be a safe integer, for the same reason. See the section
+ * header for both.
+ */
+export function roomTextFor(water: string, epoch: number): RoomText {
+  if (!Number.isSafeInteger(epoch)) {
+    throw new RangeError(
+      `roomTextFor: epoch must be a safe integer, got ${JSON.stringify(epoch)}. A fractional ` +
+      'epoch spells a room of its own (`…:495936.5`) and NaN spells one called `NaN` — both ' +
+      'are rooms no other client derives, i.e. a private sea with no symptom. Pass ' +
+      'epochOf(ms), which floors.',
+    );
+  }
+  if (water === '' || water.includes(':') || water.includes('\n')) {
+    throw new RangeError(
+      `roomTextFor: water must be a space's DISPLAY name with no colon or newline, got ` +
+      `${JSON.stringify(water)}. The marker form (@shoal:main) is the likely mistake here and ` +
+      'it is a silent one: it derives a real, healthy, reply-able room shared with nobody. ' +
+      'Pass WATER_NAME (`main`), not WATER_SPACE_NAME. The colon is also the grammar\'s field ' +
+      'delimiter, so allowing one would let two different waters spell the same room.',
+    );
+  }
+  return { title: ROOM_TITLE, body: `${ROOM_BODY_TAG}:${water}:${epoch}` };
+}
+
+/**
+ * The room an INSTANT falls in — `roomTextFor` composed with `epochOf`, the
+ * fold's own clock. Every instant inside one hour gives one room, so a client
+ * that joins at :00 and one that joins at :59 are in the same water.
+ *
+ * `ms` is an argument, never a clock read: nothing in `src/lib/` reads the wall
+ * clock (see the section header).
+ */
+export function roomTextAtMs(water: string, ms: number): RoomText {
+  return roomTextFor(water, epochOf(ms));
+}
+
+/**
+ * The exact bytes `submit_post` hashes: `${title}\n\n${body}`
+ * (src/rpc/methods.rs:2221). Exported because the PoW miner needs the same
+ * preimage the node will re-derive, and every site that spelled that template
+ * itself is a place the two could disagree.
+ */
+export function roomPreimage(text: RoomText): string {
+  return `${text.title}\n\n${text.body}`;
+}
+
+/**
+ * The room's content id for `epoch` — `sha256:<hex>`, derived the way the node
+ * derives it, so it needs no lookup, no configuration and no discovery.
+ *
+ * Async only because `hash-wasm` is (the same digest `shoalSend` mines over).
+ * The value is constant for a given `(water, epoch)` and callers should hold it
+ * for the hour rather than recompute it per write.
+ */
+export async function roomIdFor(water: string, epoch: number): Promise<string> {
+  const hasher = await createSHA256();
+  hasher.update(new TextEncoder().encode(roomPreimage(roomTextFor(water, epoch))));
+  return `sha256:${hasher.digest('hex')}`;
+}
+
+/** The content id of the room an instant falls in. `roomIdFor` composed with
+ *  `epochOf` — see `roomTextAtMs`. */
+export async function roomIdAtMs(water: string, ms: number): Promise<string> {
+  return roomIdFor(water, epochOf(ms));
 }

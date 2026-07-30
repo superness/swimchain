@@ -13,10 +13,14 @@
  * Expected values are derived by hand in comments, never by calling `repliesToLog` or
  * `orderLog` twice and comparing the result to itself.
  */
+import { createHash } from 'node:crypto';
+
 import {
   repliesToLog, splitRoomReplies, narrowRoomReplies, ROOM_FETCH_LIMIT,
+  ROOM_TITLE, roomTextFor, roomTextAtMs, roomPreimage, roomIdFor, roomIdAtMs,
   type RawReply, type NodeReply, type GetRepliesResult,
 } from './shoalRoom';
+import { epochOf, epochStartMs, epochEndMs } from './epoch';
 import { encodePresence, encodeEat, encodeCheckpoint } from './shoalWire';
 import type { Checkpoint, EatClaim } from './shoalTypes';
 
@@ -363,6 +367,237 @@ function result(replies: NodeReply[]): GetRepliesResult {
   check('ROOM_FETCH_LIMIT is a positive integer (fetchRoomLog passes it as both the ' +
         'request limit and the ceiling it checks against)',
     Number.isSafeInteger(ROOM_FETCH_LIMIT) && ROOM_FETCH_LIMIT > 0, ROOM_FETCH_LIMIT);
+}
+
+// ===================================================================================
+// THE ROOM IS A FUNCTION OF THE HOUR
+// ===================================================================================
+//
+// The single highest-consequence value in this client: two clients that derive
+// different rooms for the same hour are not degraded, they are in DIFFERENT WORLDS,
+// each seeing a calm and entirely healthy empty sea. There is no symptom. So this
+// section triangulates the derivation from three directions that cannot all be wrong
+// together:
+//
+//   1. the TEXT is asserted against hand-typed literals ('The Shoal',
+//      'room:shoal:v1:main:495936') — not against anything the module built;
+//   2. the ID is recomputed with **node:crypto**, a different SHA-256 implementation
+//      from the `hash-wasm` one `roomIdFor` uses, over a preimage this file spells
+//      out by hand (`handPreimage`) rather than getting from `roomPreimage`;
+//   3. two ids are PINNED as literals, hand-derived OFFLINE with three more
+//      implementations still (GNU `sha256sum`, `openssl dgst -sha256`, Python
+//      `hashlib`) — see the recipe below. A change to the grammar that someone
+//      "helpfully" mirrored into `handPreimage` above would still fail here, which
+//      is the whole point of pinning.
+//
+// THE PIN RECIPE, reproducible from any shell:
+//
+//   printf 'The Shoal\n\nroom:shoal:v1:main:0' | sha256sum
+//     -> f95e9c7505a6fef02757a5247e5e4d2595faf0033fdc033c66247356eeee30d2
+//   printf 'The Shoal\n\nroom:shoal:v1:main:495936' | sha256sum
+//     -> 9ec91781fb7827324bda796a0f731c3d6366f9195f1969e3585b74ab403ef528
+//
+// (`printf`, not `echo` — `echo` appends a trailing newline that is NOT in the
+// preimage. Confirmed byte-for-byte against `openssl dgst -sha256` and Python's
+// `hashlib.sha256` as well.)
+//
+// Epoch 495936 is not arbitrary: 495936 * 3_600_000 = 1_785_369_600_000 ms, which is
+// exactly 2026-07-30T00:00:00Z — a real hour of play, and one whose epoch number can
+// be re-derived from a date by anyone auditing this. Epoch 0 is pinned alongside it
+// because it needs no date arithmetic at all to check.
+{
+  console.log('\n--- the room is a function of the hour ---');
+
+  // Hand-typed, and DELIBERATELY NOT built from `roomTextFor`/`roomPreimage`: this is
+  // the grammar written out a second time by a human, so a change to the module's
+  // grammar has to be made here too before these checks can pass.
+  const handPreimage = (water: string, epoch: number) =>
+    `The Shoal\n\nroom:shoal:v1:${water}:${epoch}`;
+  const handRoomId = (water: string, epoch: number) =>
+    'sha256:' + createHash('sha256').update(handPreimage(water, epoch), 'utf8').digest('hex');
+
+  const MAIN = 'main';
+  const E = 495_936; // 2026-07-30T00:00:00Z, see above
+
+  // --- The pinned literals. Hand-derived offline; see the recipe above. ------------
+  const PINNED_EPOCH_0 = 'sha256:f95e9c7505a6fef02757a5247e5e4d2595faf0033fdc033c66247356eeee30d2';
+  const PINNED_EPOCH_495936 = 'sha256:9ec91781fb7827324bda796a0f731c3d6366f9195f1969e3585b74ab403ef528';
+
+  check('PINNED: the room for epoch 0 of the water `main` is the hand-derived literal',
+    (await roomIdFor(MAIN, 0)) === PINNED_EPOCH_0, await roomIdFor(MAIN, 0));
+  check('PINNED: the room for epoch 495936 (2026-07-30T00:00:00Z) is the hand-derived literal',
+    (await roomIdFor(MAIN, E)) === PINNED_EPOCH_495936, await roomIdFor(MAIN, E));
+
+  // The pin's own arithmetic, so the epoch number above is not taken on trust.
+  check('...and 495936 really is the epoch containing 2026-07-30T00:00:00Z (1785369600000 ms)',
+    epochOf(1_785_369_600_000) === E && epochStartMs(E) === 1_785_369_600_000,
+    { epochOf: epochOf(1_785_369_600_000), start: epochStartMs(E) });
+
+  // --- The identifying TEXT, against hand-typed literals ---------------------------
+  {
+    const text = roomTextFor(MAIN, E);
+    check('the room\'s title is the constant `The Shoal`', text.title === 'The Shoal', text.title);
+    check('the room\'s body names the grammar, the water and the epoch',
+      text.body === 'room:shoal:v1:main:495936', text.body);
+    check('the preimage is exactly what submit_post hashes: title, blank line, body',
+      roomPreimage(text) === 'The Shoal\n\nroom:shoal:v1:main:495936', roomPreimage(text));
+    check('ROOM_TITLE is that same constant, exported for whatever mints the post',
+      ROOM_TITLE === 'The Shoal', ROOM_TITLE);
+    check('the id is a content id the node would accept as a parent_id',
+      /^sha256:[0-9a-f]{64}$/.test(await roomIdFor(MAIN, E)), await roomIdFor(MAIN, E));
+  }
+
+  // --- A second SHA-256 implementation agrees, over a hand-spelled preimage --------
+  // `hash-wasm` agreeing with itself would be no evidence at all.
+  {
+    let allAgree = true;
+    const disagreed: unknown[] = [];
+    for (const epoch of [-1, 0, 1, 495_935, E, 495_937, 1_000_000]) {
+      const got = await roomIdFor(MAIN, epoch);
+      const want = handRoomId(MAIN, epoch);
+      if (got !== want) { allAgree = false; disagreed.push({ epoch, got, want }); }
+    }
+    check('node:crypto over a hand-spelled preimage agrees with hash-wasm for seven epochs',
+      allAgree, disagreed);
+  }
+
+  // --- The same epoch is the same room, from three instants inside that hour -------
+  // The property the whole rotation rests on: a client that opens the game at :00,
+  // one that opens it at :30 and one that opens it one millisecond before the hour
+  // ends must all be in the SAME room. `roomIdAtMs` composes `epochOf`, the fold's
+  // own clock — not a second one.
+  {
+    const first = epochStartMs(E);                 // 1_785_369_600_000, the hour's first ms
+    const middle = epochStartMs(E) + 1_800_000;    // + 30 minutes
+    const last = epochEndMs(E) - 1;                // 1_785_373_199_999, its last ms
+    const ids = [await roomIdAtMs(MAIN, first), await roomIdAtMs(MAIN, middle), await roomIdAtMs(MAIN, last)];
+    check('three different instants inside the same hour derive the SAME room',
+      ids[0] === ids[1] && ids[1] === ids[2], ids);
+    check('...and that room is the pinned literal for epoch 495936',
+      ids[0] === PINNED_EPOCH_495936, ids[0]);
+
+    // `roomTextAtMs` is the same composition one level down — the form whatever
+    // MINTS an hour's post needs, because the PoW miner hashes the preimage, not
+    // the id. Asserted against the hand-typed body, and against the pin through
+    // a second SHA-256 implementation, so it cannot drift from `roomIdAtMs`.
+    const texts = [roomTextAtMs(MAIN, first), roomTextAtMs(MAIN, middle), roomTextAtMs(MAIN, last)];
+    check('roomTextAtMs gives the same hand-typed body at all three instants',
+      texts.every((t) => t.body === 'room:shoal:v1:main:495936' && t.title === 'The Shoal'),
+      texts.map((t) => t.body));
+    check('...and its preimage hashes (node:crypto) to the pinned literal',
+      'sha256:' + createHash('sha256').update(roomPreimage(texts[1]), 'utf8').digest('hex')
+        === PINNED_EPOCH_495936, roomPreimage(texts[1]));
+
+    // The crossing (Task 2's job) is visible right here: one ms later is another world.
+    const across = await roomIdAtMs(MAIN, epochEndMs(E));
+    check('the first ms of the NEXT hour derives a different room',
+      across !== ids[0] && across === (await roomIdFor(MAIN, E + 1)), { across, inside: ids[0] });
+  }
+
+  // --- Adjacent epochs never collide ----------------------------------------------
+  {
+    const a = await roomIdFor(MAIN, E - 1);
+    const b = await roomIdFor(MAIN, E);
+    const c = await roomIdFor(MAIN, E + 1);
+    check('epoch E-1, E and E+1 are three distinct rooms',
+      a !== b && b !== c && a !== c, { a, b, c });
+
+    // Around zero too, where the decimal spelling changes sign.
+    const neg = await roomIdFor(MAIN, -1);
+    const zero = await roomIdFor(MAIN, 0);
+    const one = await roomIdFor(MAIN, 1);
+    check('epochs -1, 0 and 1 are three distinct rooms', neg !== zero && zero !== one && neg !== one,
+      { neg, zero, one });
+  }
+
+  // --- No two (water, epoch) pairs in a wide sweep collide -------------------------
+  // 300 consecutive epochs across four waters. Distinctness is asserted on the IDS,
+  // not the texts, so a hash-level collapse would show up as well as a grammar one.
+  {
+    const seen = new Set<string>();
+    let collisions = 0;
+    for (const water of ['main', 'smoke', 'two', 'cp']) {
+      for (let epoch = E - 150; epoch < E + 150; epoch++) {
+        const id = await roomIdFor(water, epoch);
+        if (seen.has(id)) collisions++;
+        seen.add(id);
+      }
+    }
+    check('1200 (water, epoch) pairs give 1200 distinct rooms',
+      collisions === 0 && seen.size === 1200, { collisions, distinct: seen.size });
+  }
+
+  // --- A DIFFERENT WATER IS A DIFFERENT ROOM, AND THIS IS LOAD-BEARING -------------
+  // `submit_post` does NOT put the space in the preimage (methods.rs:2221) and
+  // `get_replies` is keyed on the parent content id alone. So two waters whose room
+  // posts share a title and body share ONE room and one reply set: the smoke scripts'
+  // moves would land in the water people are playing in. The water name is in the
+  // body for exactly this reason.
+  {
+    const main = await roomIdFor('main', E);
+    const smoke = await roomIdFor('smoke', E);
+    check('the same hour in a different water is a different room',
+      main !== smoke, { main, smoke });
+  }
+
+  // --- The water name is checked, because the likely mistake is silent -------------
+  // Passing `@shoal:main` (WATER_SPACE_NAME) where `main` (WATER_NAME) belongs would
+  // derive a room that is real, healthy, reply-able and shared with nobody. A colon
+  // is also what makes the grammar's fields unambiguous, so banning it does both jobs.
+  {
+    const threwFor = async (water: string): Promise<boolean> => {
+      try { await roomIdFor(water, E); return false; } catch { return true; }
+    };
+    check('the marker form `@shoal:main` is REJECTED, not silently accepted',
+      await threwFor('@shoal:main'));
+    check('an empty water is rejected', await threwFor(''));
+    check('a water containing a newline is rejected', await threwFor('ma\nin'));
+    check('a plain water name is accepted', !(await threwFor('main')));
+  }
+
+  // --- The epoch is checked too ----------------------------------------------------
+  // A float epoch would stringify as `495936.5` and derive a room of its own; NaN
+  // would derive one called `NaN`. Both are silent forks, so both throw. (Integer
+  // math only in src/lib is the standing rule; this is the tripwire for it.)
+  {
+    const threwFor = (epoch: number): boolean => {
+      try { roomTextFor(MAIN, epoch); return false; } catch { return true; }
+    };
+    check('a fractional epoch is rejected', threwFor(495_936.5));
+    check('NaN is rejected', threwFor(Number.NaN));
+    check('Infinity is rejected', threwFor(Number.POSITIVE_INFINITY));
+    check('an epoch past Number.MAX_SAFE_INTEGER is rejected', threwFor(2 ** 53));
+    check('a plain integer epoch is accepted', !threwFor(E));
+    check('a negative integer epoch is accepted (the grid is absolute, and floors below zero)',
+      !threwFor(-1));
+  }
+
+  // --- Two JavaScript number quirks that would fork the population silently --------
+  // `-0` is a real value `Math.floor` can produce, and `${-0}` is "0" — so the room
+  // for -0 and the room for 0 are the same room. Pinned so a future hand-rolled
+  // formatter that spelled it "-0" fails here.
+  {
+    check('epoch -0 derives the same room as epoch 0',
+      (await roomIdFor(MAIN, -0)) === (await roomIdFor(MAIN, 0)), await roomIdFor(MAIN, -0));
+
+    // Template-literal number formatting stays plain decimal for every safe integer
+    // (exponent notation only starts at 1e21, three orders past MAX_SAFE_INTEGER).
+    // An exponent in the body would make two different epochs spell the same bytes.
+    const huge = roomTextFor(MAIN, Number.MAX_SAFE_INTEGER);
+    check('a safe-integer epoch is spelled in plain decimal, never in exponent form',
+      huge.body === 'room:shoal:v1:main:9007199254740991' && !huge.body.includes('e'), huge.body);
+  }
+
+  // --- Purity: the derivation reads no clock and holds no state --------------------
+  // "The derivation needs no state a fresh client lacks" is the requirement. The
+  // observable form of it: the same arguments give the same answer with nothing else
+  // touched, and the answer depends on NOTHING but the arguments.
+  {
+    const once = await roomIdFor(MAIN, E);
+    const twice = await roomIdFor(MAIN, E);
+    check('called twice with the same arguments, byte-identical both times', once === twice, { once, twice });
+    check('...and still the pinned literal', twice === PINNED_EPOCH_495936, twice);
+  }
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
