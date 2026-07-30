@@ -511,14 +511,34 @@ async function tick(state) {
         // the claims in this offer, or the rest of the tiers, forever.
         try {
           if (d.action === 'approve') {
-            await approveClaim(offer, claim, me.public_key);
-            state.totalApproved++;
-            state.approvedAtMs.push(nowMs);
-            saveState(state);
+            // A claimant can submit to BOTH the global and scoped offers.
+            // Approving both burns two slots and double-counts against the
+            // caps even though the second on-chain Sponsor is a no-op (one
+            // sponsorship per identity, so no extra privilege is granted) —
+            // caps are the whole containment story here, so that waste is
+            // worth a check. get_sponsorship_status (NOT get_sponsorship_info
+            // — that one has a regtest bypass reporting everyone sponsored,
+            // per Task 9) already folds in "chain + mempool = reality"
+            // (src/rpc/methods.rs:9156-9172): has_sponsorship is true once a
+            // Sponsor action lands OR sits pending in mempool, but NOT for a
+            // merely-pending claim on some other offer — exactly the signal
+            // needed to not skip someone who is only queued elsewhere.
+            const status = await rpc('get_sponsorship_status', { identity: claim.claimant_pubkey });
+            if (status?.has_sponsorship) {
+              log(`claim ${claim.claimant_pubkey.slice(0, 8)} skip (already-sponsored)`);
+            } else {
+              await approveClaim(offer, claim, me.public_key);
+              state.totalApproved++;
+              state.approvedAtMs.push(nowMs);
+              saveState(state);
+            }
           } else if (d.action === 'reject') {
             await rejectClaim(offer, claim, me.public_key);
           }
         } catch (e) {
+          // Covers both the get_sponsorship_status check and approve/reject
+          // themselves: a failure here just leaves the claim for next tick
+          // rather than wedging the rest of this one.
           log(`${d.action} ${claim.claimant_pubkey.slice(0, 8)} on ${offer.offer_id.slice(0, 8)} failed: ${e.message}`);
         }
       }
