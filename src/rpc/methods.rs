@@ -193,6 +193,123 @@ fn encode_space_id(bytes: &[u8; 16]) -> String {
     bech32::encode::<Bech32m>(hrp, &data).expect("valid encoding")
 }
 
+/// Fold engage actions into per-space stats (Surf Phase B — decision B1:
+/// minimal-honest `get_space_health`). `rows` yields
+/// `(space_id_16, action_type, actor, timestamp)` tuples the caller extracts
+/// from `ContentBlock.actions`; only `Engage` actions are folded (chain
+/// `blocks::action::ActionType`, NOT the PoW-challenge byte type — see the
+/// NOTE at the call site). `now` is injected for testability.
+///
+/// Returns, per space: `(last_engagement_ts, engagements_7d, unique_actors_7d)`
+/// — `last_engagement_ts` is the max Engage timestamp ever seen for the space
+/// (even if it's older than 7 days), while the 7d counters only include
+/// engagements within the trailing 7-day window from `now`.
+fn fold_space_engage_stats(
+    rows: impl Iterator<Item = ([u8; 16], crate::blocks::action::ActionType, [u8; 32], u64)>,
+    now: u64,
+) -> std::collections::HashMap<[u8; 16], (Option<u64>, u64, std::collections::HashSet<[u8; 32]>)> {
+    let week_ago = now.saturating_sub(7 * 24 * 3600);
+    let mut map: std::collections::HashMap<
+        [u8; 16],
+        (Option<u64>, u64, std::collections::HashSet<[u8; 32]>),
+    > = std::collections::HashMap::new();
+    for (space, ty, actor, ts) in rows {
+        if ty != crate::blocks::action::ActionType::Engage {
+            continue;
+        }
+        let e = map.entry(space).or_default();
+        if e.0.map_or(true, |cur| ts > cur) {
+            e.0 = Some(ts);
+        }
+        if ts >= week_ago {
+            e.1 += 1;
+            e.2.insert(actor);
+        }
+    }
+    map
+}
+
+#[cfg(test)]
+mod space_health_fold_tests {
+    use super::fold_space_engage_stats;
+    use crate::blocks::action::ActionType;
+
+    fn space(n: u8) -> [u8; 16] {
+        [n; 16]
+    }
+    fn actor(n: u8) -> [u8; 32] {
+        [n; 32]
+    }
+
+    const NOW: u64 = 10_000_000;
+    const WEEK: u64 = 7 * 24 * 3600;
+
+    #[test]
+    fn buckets_by_space_and_ignores_non_engage() {
+        let rows = vec![
+            (space(1), ActionType::Engage, actor(1), NOW),
+            (space(1), ActionType::Post, actor(2), NOW), // ignored: not Engage
+            (space(2), ActionType::Engage, actor(3), NOW),
+            (space(2), ActionType::Reply, actor(4), NOW), // ignored: not Engage
+        ];
+        let map = fold_space_engage_stats(rows.into_iter(), NOW);
+        assert_eq!(map.len(), 2);
+
+        let (ts1, count1, actors1) = &map[&space(1)];
+        assert_eq!(*ts1, Some(NOW));
+        assert_eq!(*count1, 1, "the Post action must not be folded in");
+        assert_eq!(actors1.len(), 1);
+
+        let (ts2, count2, actors2) = &map[&space(2)];
+        assert_eq!(*ts2, Some(NOW));
+        assert_eq!(*count2, 1, "the Reply action must not be folded in");
+        assert_eq!(actors2.len(), 1);
+    }
+
+    #[test]
+    fn last_engagement_ts_is_max_even_when_outside_7d_window() {
+        // Both timestamps are older than the 7-day window, but the fold must
+        // still surface the MAX of the two as last_engagement_ts (chain truth,
+        // not "the last one that happened to count toward the 7d bucket").
+        let old_ts = NOW - 2 * WEEK;
+        let more_recent_but_still_old_ts = NOW - WEEK - 100;
+        let rows = vec![
+            (space(1), ActionType::Engage, actor(1), old_ts),
+            (
+                space(1),
+                ActionType::Engage,
+                actor(2),
+                more_recent_but_still_old_ts,
+            ),
+        ];
+        let map = fold_space_engage_stats(rows.into_iter(), NOW);
+        let (ts, count, actors) = &map[&space(1)];
+        assert_eq!(*ts, Some(more_recent_but_still_old_ts));
+        assert_eq!(*count, 0, "both rows are outside the 7d window");
+        assert_eq!(actors.len(), 0);
+    }
+
+    #[test]
+    fn unique_actors_7d_dedupes_repeat_actor_across_contents() {
+        let rows = vec![
+            (space(1), ActionType::Engage, actor(1), NOW),
+            (space(1), ActionType::Engage, actor(1), NOW - 10), // same actor again
+            (space(1), ActionType::Engage, actor(2), NOW - 20),
+        ];
+        let map = fold_space_engage_stats(rows.into_iter(), NOW);
+        let (_, count, actors) = &map[&space(1)];
+        assert_eq!(*count, 3, "engagements_7d counts every row");
+        assert_eq!(actors.len(), 2, "unique_actors_7d dedupes actor(1)");
+    }
+
+    #[test]
+    fn empty_iterator_yields_empty_map() {
+        let rows: Vec<([u8; 16], ActionType, [u8; 32], u64)> = vec![];
+        let map = fold_space_engage_stats(rows.into_iter(), NOW);
+        assert!(map.is_empty());
+    }
+}
+
 /// Load space names from config.toml in the data directory
 fn load_space_names(data_dir: &std::path::Path) -> std::collections::HashMap<String, String> {
     use std::collections::HashMap;
@@ -549,6 +666,22 @@ pub struct NodeRef {
     /// polls it rapidly, which otherwise pegs every core. Pagination is applied per-request
     /// from the cached list. `(computed_at, full_sorted_spaces)`.
     pub space_list_cache: std::sync::Mutex<Option<(std::time::Instant, Vec<SpaceSummary>)>>,
+    /// Short-TTL cache of the fully-computed per-space engagement-health map
+    /// (Surf Phase B, decision B1). `get_space_health` folds every Engage
+    /// action in one `iter_content_blocks()` scan — same cost class as
+    /// `resolved_space_list` — so it's cached identically: whole-map, 3s TTL,
+    /// filtered per request. `space_id_16 -> (last_engagement_ts,
+    /// engagements_7d, unique_actors_7d-as-a-set)`.
+    #[allow(clippy::type_complexity)]
+    pub space_health_cache: std::sync::Mutex<
+        Option<(
+            std::time::Instant,
+            std::collections::HashMap<
+                [u8; 16],
+                (Option<u64>, u64, std::collections::HashSet<[u8; 32]>),
+            >,
+        )>,
+    >,
     /// Short-TTL cache of per-space content counts (`list_space_content` total). The count is
     /// a prefix scan over a space's items and the feed calls it per space repeatedly; bounded
     /// by the (small) number of spaces. `space_id_16 -> (computed_at, count)`.
@@ -1085,6 +1218,7 @@ impl RpcMethods {
             // Content query
             "get_content" => self.get_content(params, id).await,
             "list_spaces" => self.list_spaces(params, id).await,
+            "get_space_health" => self.get_space_health(params, id).await,
             "create_space" => self.create_space(params, id).await,
             "resolve_space_name" => self.resolve_space_name(params, id).await,
             "list_space_content" => self.list_space_content(params, id).await,
@@ -5518,6 +5652,106 @@ impl RpcMethods {
             .collect();
 
         RpcResponse::success(serde_json::json!(result), id)
+    }
+
+    /// get_space_health (Surf Phase B, decision B1: minimal-honest). Returns
+    /// chain-derived engagement stats per space — no `health_score` (its
+    /// inputs are stubbed for later phases). `params.space_ids` empty/omitted
+    /// means "every space the health fold has seen"; explicit ids not yet
+    /// engaged-with come back as zeroed entries rather than being dropped, so
+    /// callers can tell "known, quiet" from "unknown".
+    async fn get_space_health(&self, params: Value, id: Value) -> RpcResponse {
+        let params: GetSpaceHealthParams = match serde_json::from_value(params) {
+            Ok(p) => p,
+            Err(e) => {
+                return RpcResponse::error(
+                    RpcErrorCode::InvalidParams,
+                    &format!("Invalid params: {}", e),
+                    id,
+                );
+            }
+        };
+
+        let stats = self.resolved_space_health_map();
+
+        let requested_ids: Vec<[u8; 16]> = if params.space_ids.is_empty() {
+            stats.keys().copied().collect()
+        } else {
+            let mut ids = Vec::with_capacity(params.space_ids.len());
+            for raw in &params.space_ids {
+                match decode_space_id(raw) {
+                    Ok(decoded) => ids.push(decoded),
+                    Err(e) => return RpcResponse::error(RpcErrorCode::InvalidParams, &e, id),
+                }
+            }
+            ids
+        };
+
+        let empty_actors = std::collections::HashSet::new();
+        let spaces: Vec<SpaceHealthEntry> = requested_ids
+            .into_iter()
+            .map(|space_id_16| {
+                let (last_engagement_ts, engagements_7d, actors) = stats
+                    .get(&space_id_16)
+                    .map(|(ts, count, actors)| (*ts, *count, actors))
+                    .unwrap_or((None, 0, &empty_actors));
+                SpaceHealthEntry {
+                    space_id: encode_space_id(&space_id_16),
+                    last_engagement_ts,
+                    engagements_7d,
+                    unique_actors_7d: actors.len() as u64,
+                }
+            })
+            .collect();
+
+        let result = GetSpaceHealthResult { spaces };
+        RpcResponse::success(serde_json::to_value(result).unwrap(), id)
+    }
+
+    /// The full per-space engagement-health map behind the same short-TTL
+    /// cache pattern as `resolved_space_list`: a single `iter_content_blocks()`
+    /// scan folded through `fold_space_engage_stats`, cached whole and
+    /// filtered per request by `get_space_health`.
+    #[allow(clippy::type_complexity)]
+    fn resolved_space_health_map(
+        &self,
+    ) -> std::collections::HashMap<[u8; 16], (Option<u64>, u64, std::collections::HashSet<[u8; 32]>)>
+    {
+        const SPACE_HEALTH_TTL: std::time::Duration = std::time::Duration::from_secs(3);
+        {
+            let guard = self.node.space_health_cache.lock().unwrap();
+            if let Some((computed_at, ref map)) = *guard {
+                if computed_at.elapsed() < SPACE_HEALTH_TTL {
+                    return map.clone();
+                }
+            }
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let map = if let Some(ref chain_store) = self.node.chain_store {
+            let rows = chain_store
+                .iter_content_blocks()
+                .filter_map(|result| result.ok())
+                .flat_map(|content_block| {
+                    let mut space_16: [u8; 16] = [0u8; 16];
+                    space_16.copy_from_slice(&content_block.space_id[..16]);
+                    content_block.actions.into_iter().map(move |action| {
+                        (space_16, action.action_type, action.actor, action.timestamp)
+                    })
+                });
+            fold_space_engage_stats(rows, now)
+        } else {
+            std::collections::HashMap::new()
+        };
+
+        *self.node.space_health_cache.lock().unwrap() =
+            Some((std::time::Instant::now(), map.clone()));
+
+        map
     }
 
     /// List all known spaces from blockchain data

@@ -473,6 +473,9 @@ async fn handle_request(
         "list_sponsorship_offers",
         // Read-only content methods - public data, no auth needed
         "list_spaces",
+        // Read-only chain aggregate (Surf Phase B, decision B1), same exposure
+        // class as list_spaces — no per-identity data, just per-space engage counts.
+        "get_space_health",
         "list_posts_for_space",
         "get_replies",
         "get_content",

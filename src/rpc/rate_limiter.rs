@@ -136,6 +136,11 @@ impl MethodCategory {
             // clients for every authenticated RPC call - not actual content creation
             "sign_message" => Self::Read,
 
+            // get_space_health (Surf Phase B, decision B1) is a read-only chain
+            // aggregate, same category as list_spaces. Falls under the default
+            // arm below regardless; listed explicitly for clarity/searchability.
+            "get_space_health" => Self::Read,
+
             // Read methods - everything else (default)
             _ => Self::Read,
         }
