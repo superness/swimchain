@@ -13,6 +13,7 @@ import {
   isInTauri,
 } from '../lib/rpc';
 import { getParentConfig, isInIframe } from './useParentRpcConfig';
+import { isConfigMessageTrusted } from './configTrust';
 import { logger } from '../lib/logger';
 
 import type { Space, Thread, Reply, SyncStatus, StoredIdentity } from '../types';
@@ -353,6 +354,12 @@ export function RpcProvider({ children }: { children: ReactNode }) {
 
       // Listen for parent config via message event
       const messageHandler = (event: MessageEvent) => {
+        // Drop any message that isn't from this frame's real parent at a trusted
+        // origin BEFORE touching the reconnect handler or unregistering — an
+        // untrusted message must not be able to consume the one-time listener.
+        if (!isConfigMessageTrusted(event, { selfOrigin: window.location.origin, parentWindow: window.parent })) {
+          return;
+        }
         if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
           // Parent config hook will have already stored it, just trigger connect
           handleParentConfig();
