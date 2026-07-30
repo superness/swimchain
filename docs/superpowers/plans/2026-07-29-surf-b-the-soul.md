@@ -110,14 +110,14 @@ Extract the aggregation as a free function so it unit-tests without a node. Shap
 /// Iterator yields (space_id_16, action_type, actor, timestamp) tuples the
 /// caller extracts from ContentBlock.actions — Engage actions only are folded.
 fn fold_space_engage_stats(
-    rows: impl Iterator<Item = ([u8; 16], crate::types::ActionType, [u8; 32], u64)>,
+    rows: impl Iterator<Item = ([u8; 16], crate::blocks::action::ActionType, [u8; 32], u64)>,
     now: u64,
 ) -> std::collections::HashMap<[u8; 16], ( Option<u64>, u64, std::collections::HashSet<[u8; 32]> )> {
     let week_ago = now.saturating_sub(7 * 24 * 3600);
     let mut map: std::collections::HashMap<_, (Option<u64>, u64, std::collections::HashSet<[u8; 32]>)> =
         std::collections::HashMap::new();
     for (space, ty, actor, ts) in rows {
-        if ty != crate::types::ActionType::Engage { continue; }
+        if ty != crate::blocks::action::ActionType::Engage { continue; }
         let e = map.entry(space).or_default();
         if e.0.map_or(true, |cur| ts > cur) { e.0 = Some(ts); }
         if ts >= week_ago {
@@ -129,9 +129,11 @@ fn fold_space_engage_stats(
 }
 ```
 
+**NOTE:** Three distinct `ActionType` enums exist — `blocks::action::ActionType` is the one on `Action.action_type` (Engage=0x03; import per precedent at `methods.rs:5733`); `crypto::action_pow::ActionType` is the PoW-challenge byte (Engage=0x04 — that is what the verified-facts PoW-layout row means by `action_type`); `types::identity::ActionType` has no Engage. Match on the enum variant, never a raw discriminant byte.
+
 The async method walks `iter_content_blocks()`, flat-maps each block's actions to those tuples (block's `space_id[..16]` + action fields — copy the access patterns from `:5690-5709`), calls the fold, filters to requested ids (`decode_space_id` handles hex/bech32 — precedent `methods.rs:161-177`), and serializes. Cache: a field alongside the space-list cache (`:547-548`) with the same 3-second TTL pattern (`SPACE_LIST_TTL` at `:5570`) — key the cache on nothing (whole-map cache) and filter per request from the cached map.
 
-- [ ] **Step 3: wiring** — dispatch arm next to `"list_spaces"` (`:1087`); `server.rs` `AUTH_EXEMPT_METHODS` entry beside `list_spaces` (`:475`) with a one-line comment (read-only chain aggregate, same exposure class as list_spaces); `rate_limiter.rs` Read-category entry beside the other reads (`:135-137`).
+- [ ] **Step 3: wiring** — dispatch arm next to `"list_spaces"` (`:1087`); `server.rs` `AUTH_EXEMPT_METHODS` entry beside `list_spaces` (`:475`) with a one-line comment (read-only chain aggregate, same exposure class as list_spaces); `rate_limiter.rs`: no rate_limiter change needed — unlisted methods default to Read (the `_ => Self::Read` arm); optionally add an explicit `"get_space_health" => Self::Read` for clarity.
 
 - [ ] **Step 4: unit tests (TDD on the fold)** — write these FIRST in the `#[cfg(test)]` module, run red (function absent), implement, run green:
   1. engage actions bucket by space; non-Engage actions ignored;
@@ -154,7 +156,7 @@ The async method walks `iter_content_blocks()`, flat-maps each block's actions t
 - Built artifact (gitignored): `surf-app/web/workers/engage.worker.js`
 
 **Interfaces:**
-- Produces: `policy.mjs` exporting every B dial; a same-origin classic-module worker at `/workers/engage.worker.js` that accepts `{challenge: {actionType, contentHashHex, authorPkHex, timestamp, difficulty, nonceSpaceHex}, config: {memoryMiB, iterations, parallelism}}` and posts `{type:'solution', nonce: string(u64), hashHex}` / `{type:'error', message}` (progress optional). Task 3 consumes both.
+- Produces: `policy.mjs` exporting every B dial; a same-origin classic-module worker at `/workers/engage.worker.js` that accepts `{challenge: {actionType, contentHashHex, authorPkHex, timestamp, difficulty, nonceSpaceHex}, config: {memoryMiB, iterations, parallelism}}` and posts `{type:'solution', nonce: string(u64), hashHex}` (nonce is a decimal string for the signature preimage; the submitter converts with Number() for the submit_engagement u64 param — forum-client `action-pow.ts` `solutionToRpcParams` precedent) / `{type:'error', message}` (progress optional). Task 3 consumes both.
 
 - [ ] **Step 1: `surf-app/web/policy.mjs`** (full file):
 
@@ -178,7 +180,7 @@ export function glow(ageSeconds) {
 }
 ```
 
-`policy.test.mjs`: glow(0)=1; glow(7d)≈0.06 floor; monotonically non-increasing across 0.1d..7d sample points; null→0. Mutation: flip the log base → monotonicity/endpoint tests fail. (These constants ARE the level-design of Phase B — the test freezes the curve's shape so a future tweak is deliberate.)
+`policy.test.mjs`: glow(0)=1; mid-curve anchors glow(86400)≈0.6667 and glow(3*86400)≈0.3333 (±0.001 — these freeze the log-8 shape); glow(7d)≈0.06 floor; monotonically non-increasing across 0.1d..7d; null→0. Mutation: change Math.log2(8) to Math.log2(4) → both mid-curve anchors fail; the endpoint/monotonicity tests survive any base>1 and are secondary. (These constants ARE the level-design of Phase B — the test freezes the curve's shape so a future tweak is deliberate.)
 
 - [ ] **Step 2: worker entry** — `surf-app/scripts/worker-src/engage.worker.mjs` (committed source; the BUILD is what lands in web/):
 
@@ -264,15 +266,17 @@ self.onmessage = async (e) => {
 - Consumes: `policy.mjs`; the worker (Task 2); `rpc(method, params)`, `invoke('get_node_address')`, and a `sign(messageHex)` helper the shell adds (wraps `sign_message`); the current channel's listing (reuse the shell's existing `list_space_content` calls from acquisition — Task 3 of A1).
 - Produces (shell calls): `createDwell({ rpc, sign, myPk, onEngaged })` → `{ tuned(channelId, spaces), untuned(), tick() }`. `engage.mjs` exports `mineSignSubmit({ rpc, sign, myPk, contentId }) -> {ok:true} | {ok:false, receiveOnly:boolean}`.
 
-**Design (B2 ruling):** on `tuned`, start a 45s timer bound to the current channel; if the viewer stays 45s continuously (any flip cancels it via `untuned`), select the K=3 most-recent *rendered* items on that channel's spaces, and for each not in the 24h ledger, mine→sign→submit. First sponsorship rejection latches the channel receive-only for the session (silent). The ledger is `localStorage` keyed `engage:{contentId}` → epoch-ms; entries older than 24h are ignored/pruned.
+**Design (B2 ruling):** on `tuned`, start a 45s timer bound to the current channel; if the viewer stays 45s continuously (any flip cancels it via `untuned`), select the K=3 most-recent items — true render telemetry is impossible in B (seam rule + no-client-changes fence: no channel posts a rendered-items message), so "rendered" is approximated as body-present items listed on the channel's spaces AT TUNE TIME — a snapshot, not a fire-time re-fetch (deviation from B2's literal "rendered" wording, noted here for operator awareness) — and for each not in the 24h ledger, mine→sign→submit. First sponsorship rejection latches the channel receive-only for the session (silent). The ledger is `localStorage` keyed `engage:{contentId}` → epoch-ms; entries older than 24h are ignored/pruned.
 
 - [ ] **Step 1: dwell tests first** (`surf-app/test/dwell.test.mjs`, injected clock + fake rpc/sign):
   1. 45s continuous → attempts engage on up to K items; <45s then untuned → no attempt.
   2. re-`tuned` to the same channel resets the timer (no double-fire).
   3. ledger: a content engaged 1h ago is skipped; 25h ago is retried.
-  4. receive-only latch: a rejection on the first item stops attempts on the rest this session and no error propagates.
+  4. receive-only latch: a rejection on the first item stops attempts on the rest this session and no error propagates; after the first rejection, RE-invoke `tuned()` on the same channel, advance the injected timer past 45s, and assert `engageOne` was called zero additional times (proves session persistence, not just the in-fire early return).
   5. K cap: 5 rendered items → at most 3 attempts, newest first.
-  Mutation checks: remove the ledger check → test 3 fails; remove the latch → test 4 fails; drop the `.slice(0, K)` → test 5 fails.
+  6. body:null items are never selected.
+  7. an item first listed AFTER `tuned()` is not engaged.
+  Mutation checks: remove the ledger check → test 3 fails; remove the latch → test 4 fails; delete only the `receiveOnly.add()`/`markReceiveOnly` call → test 4 fails; drop the `.slice(0, K)` → test 5 fails; drop the body filter → test 6 fails; reintroduce the fire-time fetch → test 7 fails.
 
 - [ ] **Step 2: `dwell.mjs`** (pure — no DOM, no real timers; the shell drives `tick()` or injects setTimeout):
 
@@ -287,10 +291,11 @@ export function ledgerHas(store, id, now) {
 }
 export function ledgerMark(store, id, now) { store.setItem(LKEY(id), String(now)); }
 
-// Pure selection: newest-first, ledger-fresh, capped at K.
+// Pure selection: body-present, newest-first, ledger-fresh, capped at K.
 export function selectForEngage(items, store, now) {
   return items
     .slice()
+    .filter((it) => it.body)
     .sort((a, b) => (b.created_ms ?? 0) - (a.created_ms ?? 0)) // DISCOVERY: confirm the item timestamp field
     .filter((it) => !ledgerHas(store, it.content_id, now))
     .slice(0, DWELL_K)
@@ -299,36 +304,42 @@ export function selectForEngage(items, store, now) {
 
 export function createDwell({ rpc, engageOne, store, now = () => Date.now(),
                              setTimer = setTimeout, clearTimer = clearTimeout }) {
-  let handle = null, current = null, receiveOnly = new Set();
-  async function fire(channelId, spaces) {
+  let handle = null, current = null, receiveOnly = new Set(), snapshot = [];
+  async function fire(channelId, items) {
     if (receiveOnly.has(channelId)) return;
-    let items = [];
-    for (const s of spaces) {
-      try { items = items.concat((await rpc('list_space_content', { space_id: s, limit: 5 }))?.items ?? []); }
-      catch { /* keep going */ }
-    }
     const targets = selectForEngage(items, store, now());
     for (const id of targets) {
       const r = await engageOne(id);
-      if (!r.ok && r.receiveOnly) { receiveOnly.add(channelId); return; }
+      if (!r.ok && r.receiveOnly) { receiveOnly.add(channelId); return; } // marks receive-only internally
       if (r.ok) ledgerMark(store, id, now());
     }
   }
   return {
-    tuned(channelId, spaces) {
+    // Snapshot the listing AT TUNE TIME — reuse tuneDriver's already-fetched
+    // list_space_content results if the caller has them, or fetch once here.
+    // fire() consumes this snapshot; it never re-fetches at fire time (M-1: no
+    // fire-time re-fetch — an item first listed after tuned() is not engaged).
+    async tuned(channelId, spaces) {
       if (handle) clearTimer(handle);
       current = channelId;
-      handle = setTimer(() => { if (current === channelId) fire(channelId, spaces); },
+      let items = [];
+      for (const s of spaces) {
+        try { items = items.concat((await rpc('list_space_content', { space_id: s, limit: 5 }))?.items ?? []); }
+        catch { /* keep going */ }
+      }
+      snapshot = items;
+      handle = setTimer(() => { if (current === channelId) fire(channelId, snapshot); },
                         DWELL_SECONDS * 1000);
     },
     untuned() { if (handle) clearTimer(handle); handle = null; current = null; },
+    isReceiveOnly(channelId) { return receiveOnly.has(channelId); },
   };
 }
 ```
 
-- [ ] **Step 3: `engage.mjs`** — the mine→sign→submit pipeline, using the Task 2 worker and node-true params. Builds the challenge (raw content hash from `content_id.slice(7)`, node pubkey, now-ts, difficulty 6, random 8-byte nonce_space), runs the worker, signs `engage:{content_id}:{nonce}:{timestamp}` via `sign` (hex-encode the UTF-8 string for `sign_message`), submits with all PoW fields. Classifies a sponsorship/authorization rejection (`check_identity_sponsored` failure — match the node's error text/code from `methods.rs:3849`) as `{ok:false, receiveOnly:true}`; other errors `{ok:false, receiveOnly:false}`. **DISCOVERY:** confirm the exact `submit_engagement` param names/casing from `src/rpc/types.rs:394-415` and the sponsorship-rejection error shape; adjust the classifier to the real message.
+- [ ] **Step 3: `engage.mjs`** — the mine→sign→submit pipeline, using the Task 2 worker and node-true params. Builds the challenge (raw content hash from `content_id.slice(7)`, node pubkey, now-ts, difficulty 6, random 8-byte nonce_space), runs the worker, signs `engage:{content_id}:{nonce}:{timestamp}` via `sign` (hex-encode the UTF-8 string for `sign_message`), submits with all PoW fields. `pow_nonce` MUST be sent as a JSON number — `pow_nonce: Number(nonce)` (safe: at 6 bits the nonce is ~tens, far below 2^53) — because `SubmitEngagementParams.pow_nonce` is `u64` (`types.rs:400`) and serde rejects a JSON string with `InvalidParams` before any PoW check; the signature preimage keeps the worker's decimal-string nonce (the node rebuilds it from the parsed u64, `methods.rs:3918-3928`). Classifies a sponsorship/authorization rejection (`check_identity_sponsored` failure — match the node's error text/code from `methods.rs:3849`) as `{ok:false, receiveOnly:true}`; other errors `{ok:false, receiveOnly:false}`. Note: A1's `rpc()` throws `new Error(json.error.message)`, discarding `error.code` — so the sponsorship-rejection classifier matches on the message text ("Identity is not sponsored"/"not sponsored") rather than a code, OR `rpc()` could be changed to preserve `code`; this plan picks the text-match (no A1 change). **DISCOVERY:** confirm the exact `submit_engagement` param names/casing from `src/rpc/types.rs:394-415` and the sponsorship-rejection error shape; adjust the classifier to the real message.
 
-- [ ] **Step 4: shell wiring** — add a `sign(hex)` helper (wraps `sign_message`, caches `myPk` from `get_identity_info` already fetched in A1); construct the dwell controller once; call `dwell.tuned(target, byId.get(target).spaces)` inside `settle`'s `onReady` (only when acquired and the channel has spaces and is not receive-only), and `dwell.untuned()` at the top of `flip` and in `powerOff`. Guard: never dwell-engage during acquisition or on a channel with `spaces: []`.
+- [ ] **Step 4: shell wiring** — add a `sign(hex)` helper (wraps `sign_message`, caches `myPk` from `get_identity_info` already fetched in A1); construct the dwell controller once; call `dwell.tuned(target, byId.get(target).spaces)` inside `settle`'s `onReady` (only when acquired, the channel has spaces, and `!dwell.isReceiveOnly(target)`), and call `dwell.untuned()` in `powerOff`, and in `flip` — but NOT at the very top of `flip`: place the `untuned()` call AFTER A1's flip() guard-returns (the `!powered||!acquired` return and the 250ms debounce return), so a debounced/guarded no-op flip cannot fire `untuned()` at all. Dwell is re-armed only by `settle`'s `onReady`, so a guard-skipped no-op flip that still called `untuned()` would permanently disarm dwell on the channel the viewer stays tuned to without a following settle to re-arm it — that's the bug this ordering avoids. Guard: never dwell-engage during acquisition, on a channel with `spaces: []`, or when `dwell.isReceiveOnly(channelId)`.
 
 - [ ] **Step 5: run + live** — `npm test` green; live via CDP: tune a bootstrap channel, wait 45s (or inject a short DWELL for the check), confirm a real engage lands (mempool/`get_chain_engagements`) and the ledger blocks an immediate repeat. Record.
 
@@ -346,7 +357,7 @@ export function createDwell({ rpc, engageOne, store, now = () => Date.now(),
 - Consumes: `policy.mjs`, `get_space_health` (Task 1), the flare's `request_content`+engage (reuse `engage.mjs`).
 - Produces: `classifyDeadAir(lastEngagementTs, now)` → `{state:'alive'|'fading'|'dying', days:number}`; shell shows the SMPTE test card over a channel classified fading/dying, with a RETUNE-style FLARE button.
 
-- [ ] **Step 1: tests first** — boundaries: <2d = alive; exactly 2d and 4d = fading; exactly 5d and 8d = dying; null lastEngagement (never engaged) = dying (honest: a space with zero chain engagements is dead air). Mutation: swap `>=` for `>` at a boundary → the exact-2d/5d tests fail.
+- [ ] **Step 1: tests first** — boundaries: <2d = alive; exactly 2d and 4d and exactly 5d = fading; just over 5d (e.g. 5.5d) and 8d and null = dying (honest: a space with zero chain engagements is dead air). Mutation: `>`→`>=` makes the exactly-5d test fail. (The 2d boundary `>= 2 → fading` stays.) Also: a `freshestTs` test — `[{ts:6d-stale},{ts:1h-fresh},{ts:null}]` → returns the 1h ts; all-null → null; mutation: swap max for min → fails. A guard test — a channel with `spaces: []` → no classification, no card; mutation: remove the guard → this test fails. A flare test — a successful flare re-classifies as alive via the optimistic timestamp; mutation: drop the optimistic override → the stale ts still classifies fading/dying → test fails.
 
 - [ ] **Step 2: `deadair.mjs`**:
 
@@ -355,13 +366,21 @@ import { DEAD_AIR_FADING_DAYS, DEAD_AIR_DYING_DAYS } from './policy.mjs';
 export function classifyDeadAir(lastEngagementTs, now) {
   if (lastEngagementTs == null) return { state: 'dying', days: Infinity };
   const days = (now - lastEngagementTs * 1000) / 86400_000;
-  if (days >= DEAD_AIR_DYING_DAYS) return { state: 'dying', days };
+  if (days > DEAD_AIR_DYING_DAYS) return { state: 'dying', days };
   if (days >= DEAD_AIR_FADING_DAYS) return { state: 'fading', days };
   return { state: 'alive', days };
 }
+
+// Freshest last_engagement_ts across a space's health entries, ignoring nulls.
+// The ONE place this aggregation happens — Task 4 Step 3 (dead-air) and
+// Task 5 Step 3 (healthByChannel) both call this instead of re-deriving it.
+export function freshestTs(entries) {
+  const tss = entries.map((e) => e.last_engagement_ts).filter((ts) => ts != null);
+  return tss.length ? Math.max(...tss) : null;
+}
 ```
 
-- [ ] **Step 3: card + wiring** — in `index.html`, a `#dead-air` overlay (bleached coral SMPTE bars via CSS gradient — reuse the spike's SIGNAL LOST card structure/z-order family; channel name + `LAST SIGNAL: N DAYS AGO` + for dying `THIS CHANNEL IS DYING` + a `FLARE` button). In `shell.mjs`, after a channel reveals (`onReady`), call `get_space_health` for its spaces (cached; cheap), classify by the freshest `last_engagement_ts` across them, and show the card for fading/dying — drawn OVER the channel (which keeps playing beneath per §3.3 "decayed channels are not hidden — you flip through them"), dismissed on the next flip. FLARE = `request_content` for the space's most recent surviving item + one `engage.mjs` engage on arrival; on success, re-classify (card updates/clears); when nothing is retrievable, the card reads the spec's beyond-flares line. Guard the flare behind the same licensed/receive-only check as dwell.
+- [ ] **Step 3: card + wiring** — in `index.html`, a `#dead-air` overlay (bleached coral SMPTE bars via CSS gradient — reuse the spike's SIGNAL LOST card structure/z-order family; channel name + `LAST SIGNAL: N DAYS AGO` + for dying `THIS CHANNEL IS DYING` + a `FLARE` button). In `shell.mjs`, after a channel reveals (`onReady`), call `get_space_health` for its spaces (cached; cheap), classify by the freshest `last_engagement_ts` across them (via the shared `freshestTs` helper — Task 4 Step 2), and show the card for fading/dying — drawn OVER the channel (which keeps playing beneath per §3.3 "decayed channels are not hidden — you flip through them"), dismissed on the next flip. Guard (mirror Task 3 Step 4): a channel with `spaces: []` (wiki, reef today — undriven live clients, not decayed spaces) is UNMETERED — skip the `get_space_health` call entirely and never show the dead-air card. NEVER pass an empty `space_ids` array to `get_space_health`: per Task 1, empty means ALL known spaces, which would credit the busiest space's recency to an unrelated channel. FLARE = `request_content` for the space's most recent surviving item + one `engage.mjs` engage on arrival; on success, clear the card OPTIMISTICALLY — the flare's own engage is the freshest engagement per the chain+mempool law (it counts the moment it is submitted): classify with `lastEngagementTs = now` and update/clear from that, WITHOUT re-calling `get_space_health` (the chain-scan RPC only reflects the engage after block inclusion, ~1-6 min); when nothing is retrievable, the card reads the spec's beyond-flares line. Guard the flare behind the same licensed/receive-only check as dwell — consult `dwell.isReceiveOnly(channelId)` before flaring.
 
 - [ ] **Step 4: run + live** — `npm test` green; live check needs a genuinely stale space, which mainnet may not have — if so, verify the classifier live against a real space's `last_engagement_ts` (assert the state matches the computed age) and drive the CARD render by temporarily injecting an old timestamp via CDP, documenting that the threshold data is real but the stale-state was injected. Record.
 
@@ -383,14 +402,15 @@ export function classifyDeadAir(lastEngagementTs, now) {
 
 - [ ] **Step 1: tests first** (`chart.test.mjs`):
   1. rows come back in canonical dial order (= number order = depth order); band assigned correctly at each boundary (19→surface, 20→mid, 49→mid, 50→reef, 79→reef, 80→trench).
-  2. glowValue wired to the channel's freshest health ts (a 1h-old channel > a 6d-old channel).
+  2. a channel with two spaces (1h-fresh + 6d-stale) has glowValue === glow(1h age) — its freshest space wins, not the stale one. Mutation: swap max for min in freshestTs → fails.
   3. warm channels flagged afterglow; non-warm not.
-  4. moored flag reflects the moored set; a row absent from health → glow 0 (dead/unknown, honest).
+  4. a channel WITH declared spaces but absent from health → glow 0 (dead, honest); a channel with spaces:[] → unmetered:true, glowValue null, never 0. Mutation: collapsing unmetered to glow 0 fails this test.
+  5. moored flag reflects the moored set.
   Mutation: break the band boundary (`<20` → `<=20`) → boundary test fails; drop the afterglow flag → test 3 fails.
 
-- [ ] **Step 2: `chart.mjs`** — pure `chartRows(...)` + `bandOf(number)` (surface/mid/reef/trench per the §3.4 ranges) + a `toggleMoor(moored, id, cap)` helper (returns the new set or the unchanged set if adding past the cap — the shell surfaces a brief "deck full" note). No DOM.
+- [ ] **Step 2: `chart.mjs`** — pure `chartRows(...)` + `bandOf(number)` (surface/mid/reef/trench per the §3.4 ranges) + a `toggleMoor(moored, id, cap)` helper (returns the new set or the unchanged set if adding past the cap — the shell surfaces a brief "deck full" note). For a channel with no declared spaces (`spaces: []`), `chartRows` gives it `glowValue: null` and an `unmetered: true` flag — the shell renders these as a distinct dim 'NO TELEMETRY' row style, never on the decayed-glow 0 scale. No DOM.
 
-- [ ] **Step 3: drawer + wiring** — `index.html`: a `#chart` drawer (full-height, gradient sunlit-surface→trench-black background, `overflow-y:auto`, rows as depth-positioned buoys with a glow style bound to `--glow`), and a top `#chart-strip` (mirror of the flip strip, top edge) whose downward drag opens it. `shell.mjs`: on open, `get_space_health` for all dial spaces (cached), build rows, render; tap row → close + tune; horizontal-flick a row → `toggleMoor` + persist; horizontal-flick on the set (new left-edge gesture or two-finger — pick the one that doesn't collide with the right-edge flip strip; document the choice) cycles the moored buoys. Escape/tap-scrim closes. Guard: the chart is available only once acquired.
+- [ ] **Step 3: drawer + wiring** — `index.html`: a `#chart` drawer (full-height, gradient sunlit-surface→trench-black background, `overflow-y:auto`, rows as depth-positioned buoys with a glow style bound to `--glow`), and a top `#chart-strip` (mirror of the flip strip, top edge) whose downward drag opens it. `shell.mjs`: on open, `get_space_health` for all dial spaces (cached), build `healthByChannel` — per channel, the shared `freshestTs` helper (Task 4 Step 2) over that channel's spaces' entries, so the freshest-across-spaces aggregation exists exactly once; channels with `spaces: []` get the unmetered path (Task 5 Step 2) instead — build rows, render; tap row → close + tune; horizontal-flick a row → `toggleMoor` + persist; horizontal-flick on the set (new left-edge gesture or two-finger — pick the one that doesn't collide with the right-edge flip strip; document the choice) cycles the moored buoys. Escape/tap-scrim closes. Guard: the chart is available only once acquired.
 
 - [ ] **Step 4: run + live** — `npm test` green; live via CDP: pull the chart, confirm rows in band order with brightness tracking real `last_engagement_ts` (the freshest bootstrap space visibly brighter than a stale one), moor a channel and confirm it persists across a reload, cycle moored buoys. Screenshot the column. Record.
 
@@ -406,12 +426,12 @@ export function classifyDeadAir(lastEngagementTs, now) {
 **Interfaces:**
 - Consumes: `list_spaces` (A1 already uses it nowhere; add it here) or `get_space_health` for ranking; the existing acquisition path (A1 Task 3).
 
-- [ ] **Step 1: bootstrap swap (B5)** — in `shell.mjs`'s `acquisitionBoot`, before following the hardcoded set: call `list_spaces {limit:20}`, filter `class === 'social'`, take the top 3 by `last_activity` (or by `get_space_health` recency if you prefer one source of truth — pick one, note it), and use those as the follow+drive set. Keep the hardcoded trio from `channels.json` as the fallback when the listing is empty (true first run pre-sync). Update `channels.json`'s feed `spaces` comment to "fallback only — live bootstrap ranks list_spaces". The acquisition lock (items-with-bodies ≥ N) is unchanged.
-  - Test: a small pure `pickBootstrap(listSpacesResult, fallbackSpaces)` extracted and unit-tested (social filter, top-3 by activity, empty→fallback). Mutation: drop the social filter → a test with a mixed-class list fails.
+- [ ] **Step 1: bootstrap swap (B5)** — in `shell.mjs`'s `acquisitionBoot`, before following the hardcoded set: call `list_spaces {limit:20}`, filter `class === 'social'`, take the top 3 by `last_activity` (or by `get_space_health` recency if you prefer one source of truth — pick one, note it), and adopt the picked set as the feed channel's single source of truth, not a boot-local variable: on a successful pick, set `byId.get(feed).spaces = picked` AND persist to `localStorage['surf.feedSpaces']`; at every shell boot, immediately after `byId` is built, overwrite the feed channel's spaces from `surf.feedSpaces` when present (`channels.json`'s trio remains the fallback when absent or when `list_spaces` is empty). This one mutation routes the live set to every consumer — tuneDriver, the acquisition lock's `localItemCount(byId.get(feed).spaces)`, dwell, dead-air, and the Chart — this session and all later ones. Update `channels.json`'s feed `spaces` comment to "fallback only — live bootstrap ranks list_spaces".
+  - Test: a small pure `pickBootstrap(listSpacesResult, fallbackSpaces)` extracted and unit-tested (social filter, top-3 by activity, empty→fallback); after a successful pick assert `byId.get(feed).spaces === picked`; add an empty-listing case asserting the trio survives untouched. Mutation: drop the social filter → a test with a mixed-class list fails.
 
-- [ ] **Step 2: live** — fresh data dir (or clear `surf.acquired`), power on, confirm acquisition now follows live top spaces and reveals real content; confirm empty-listing fallback by pointing at a fresh regtest node (no spaces) → falls back to the trio (which won't resolve on regtest, so acquisition stays in honest static — that's correct, and proves the fallback path executes). Record.
+- [ ] **Step 2: live** — fresh data dir (or clear `surf.acquired`), power on, confirm acquisition now follows live top spaces and reveals real content; confirm the empty-listing fallback by pointing at a fresh regtest node (no spaces) — the "acquisition stays in static" symptom alone is indistinguishable from a broken bootstrap, so assert an observable only the fallback produces: capture the shell's RPC traffic (CDP network log or node log) and confirm `follow`/`list_space_content` attempts against the three hardcoded `channels.json` trio space ids after the empty `list_spaces` response. Record.
 
-- [ ] **Step 3: README + debt** — add a "Phase B — the soul" section to `surf-app/README.md`: what shipped (get_space_health, dwell-engage, dead air + flare, Chart, health bootstrap), the B dials and where to tune them (`policy.mjs`), the engage worker build step (`npm run build:worker`, folded into `build:channels`). Update the debt table: the A1 bootstrap-decay row is now CLOSED (B5); add any B carry (e.g. get_space_health v2 with a real score = Phase B1(b)/later; node-side engagement rate limiting still deferred). Keep the standing G2-soak note.
+- [ ] **Step 3: README + debt** — add a "Phase B — the soul" section to `surf-app/README.md`: what shipped (get_space_health, dwell-engage, dead air + flare, Chart, health bootstrap), the B dials and where to tune them (`policy.mjs`), the engage worker build step (`npm run build:worker`, folded into `build:channels`). Update the debt table: the A1 bootstrap-decay row is now CLOSED (B5); add any B carry (e.g. get_space_health v2 with a real score = Phase B1(b)/later; node-side engagement rate limiting still deferred; residual gap — dwell's "rendered" approximation is body-present items on `ch.spaces` at tune time, but the channel iframe may actually render a different follow-set than `ch.spaces` — flagged for operator sign-off). Keep the standing G2-soak note.
 
 - [ ] **Step 4: Commit** — `feat(surf): health-driven bootstrap + Phase B README/debt`
 
