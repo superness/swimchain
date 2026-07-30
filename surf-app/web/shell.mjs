@@ -11,6 +11,7 @@ import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './
 import { createDwell, ledgerMark } from './dwell.mjs';
 import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, freshestTs, isMetered, pickFlareTarget } from './deadair.mjs';
+import { chartRows, toggleMoor } from './chart.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -193,6 +194,20 @@ document.getElementById('flare-btn').addEventListener('click', async () => {
   }
 });
 
+// --- the Chart (Task 5, B3, spec §3.4): pull down from the top -> a
+// vertical water column, channels at fixed band depths, glow = engagement
+// recency ("brightness is truth"). Moored set persists in localStorage,
+// toggled via a horizontal flick on a chart row (chart.mjs's toggleMoor, cap
+// MOOR_CAP — the shell never imports MOOR_CAP itself; toggleMoor's own
+// default supplies it). "Numbers persist" (brief wording) falls out for
+// free: only channel ids are stored, and channels.json's number/name for
+// each id never changes underneath a stored id.
+const MOORED_KEY = 'surf.moored';
+let moored = new Set(JSON.parse(localStorage.getItem(MOORED_KEY) ?? '[]'));
+function persistMoored() { localStorage.setItem(MOORED_KEY, JSON.stringify([...moored])); }
+let chartOpen = false;
+let mooredCycleIndex = 0; // which moored buoy is highlighted in the SET strip
+
 // Review fix 4: while a seam is up (acquisition, a cold/warm mount gate, or
 // node-dead), the static must intercept input — its canvas is
 // pointer-events:none by default so flips/taps pass through to whatever's
@@ -353,6 +368,13 @@ function settle(target, tuneResult, from, kindOverride = null) {
 
 function flip(dir) {
   if (!powered || !acquired) return; // the dial exists once there is signal
+  // Task 5 (live-discovered hardening): the vertical dial must not silently
+  // change the channel underneath an open #chart drawer — keyboard/wheel
+  // flip isn't a gesture the drawer's z-index occlusion protects against
+  // (that only blocks #flip-strip's own touch/pointer surface), so without
+  // this guard ArrowDown/wheel while the chart is open would flip the
+  // hidden deck and the viewer would land somewhere unexpected on close.
+  if (chartOpen) return;
   const now = performance.now();
   if (now - lastFlipAt < 250) return;
   lastFlipAt = now;
@@ -420,6 +442,214 @@ document.getElementById('retune').addEventListener('click', () => {
   document.getElementById('signal-lost').hidden = true;
   settle(id, { mounted: [id], evicted: [] }, null);
 });
+
+// --- the Chart: open/close/render + gestures --------------------------------
+// Guard: the chart is available only once acquired (mirrors flip()'s own
+// "the dial exists once there is signal" guard).
+async function openChart() {
+  if (!powered || !acquired || chartOpen) return;
+  chartOpen = true;
+  document.getElementById('chart').hidden = false;
+  await renderChart();
+}
+function closeChart() {
+  chartOpen = false;
+  document.getElementById('chart').hidden = true;
+}
+
+async function renderChart() {
+  const metered = cfg.channels.filter((c) => (c.spaces ?? []).length);
+  // Never pass an empty space_ids array to get_space_health — per Task 1,
+  // empty means ALL known spaces, which would credit an unrelated busy
+  // space's recency to a channel that declared none at all (the `metered`
+  // filter above already excludes any channel with no declared spaces).
+  //
+  // One RPC call PER metered channel, not one combined call across every
+  // metered channel's spaces re-split by id afterward — LIVE-DISCOVERED bug
+  // (task-5-report.md): get_space_health's response `space_id` comes back
+  // BECH32-encoded ("sp1qqq...") regardless of the HEX ids channels.json
+  // declares ("01000f88..."), confirmed against the real running node. A
+  // combined call followed by `ch.spaces.map(s => bySpace.get(s))` looks up
+  // a hex key in a bech32-keyed map and silently matches nothing — every
+  // metered channel's health would collapse to [], and every glowValue would
+  // read as measured-dead (0) regardless of real freshness. Scoping each
+  // request to one channel's own spaces sidesteps the format mismatch
+  // entirely: the response's `.spaces` array already IS that channel's
+  // entries, in whatever id format the node chose to echo — no re-matching
+  // needed. Today there is exactly one metered channel (feed), so this is
+  // the same one RPC call either way; the node's own 3s-TTL cache (Task 1)
+  // still keeps a second open moments later cheap.
+  const healthByChannel = {};
+  for (const ch of metered) {
+    try {
+      const res = await rpc('get_space_health', { space_ids: ch.spaces });
+      healthByChannel[ch.id] = res?.spaces ?? [];
+    } catch { /* best-effort: an RPC failure just leaves this channel's health empty for this open (glow reads as measured-dead, not fabricated) */ }
+  }
+  if (!chartOpen) return; // closed while the fetch was in flight
+  const rows = chartRows(cfg.channels, healthByChannel, new Set(deck.warm), moored, Date.now());
+  paintChart(rows);
+}
+
+const CHART_BAND_ORDER = ['surface', 'mid', 'reef', 'trench'];
+const CHART_BAND_LABELS = { surface: 'SURFACE', mid: 'MID-WATER', reef: 'REEF', trench: 'TRENCH' };
+const ROW_FLICK_PX = 48;
+
+function paintChart(rows) {
+  const rowsEl = document.getElementById('chart-rows');
+  rowsEl.innerHTML = '';
+  for (const band of CHART_BAND_ORDER) {
+    const label = document.createElement('div');
+    label.className = 'chart-band-label';
+    label.textContent = CHART_BAND_LABELS[band];
+    rowsEl.appendChild(label);
+    for (const row of rows.filter((r) => r.band === band)) rowsEl.appendChild(buildChartRow(row));
+  }
+  paintMooredStrip(rows);
+}
+
+function buildChartRow(row) {
+  const el = document.createElement('div');
+  el.className = 'chart-row'
+    + (row.unmetered ? ' unmetered' : '')
+    + (row.afterglow ? ' afterglow' : '')
+    + (row.moored ? ' moored' : '');
+  el.dataset.channelId = row.id;
+  el.style.setProperty('--glow', String(row.unmetered ? 0 : (row.glowValue ?? 0)));
+  const num = document.createElement('span'); num.className = 'cr-num'; num.textContent = `CH ${row.number}`;
+  const name = document.createElement('span'); name.className = 'cr-name'; name.textContent = row.name;
+  const tag = document.createElement('span'); tag.className = 'cr-tag';
+  tag.textContent = row.unmetered ? 'NO TELEMETRY' : (row.moored ? 'MOORED' : '');
+  el.append(num, name, tag);
+  attachChartRowGestures(el, row.id);
+  return el;
+}
+
+// Tap = tune (close + flip to it); horizontal flick = toggleMoor. Pointer
+// events (not touch-only) so a real finger, a mouse drag, or a synthetic
+// pointer sequence all drive the exact same code path. A flick that crosses
+// ROW_FLICK_PX horizontally AND is more horizontal than vertical (so a
+// vertical scroll over #chart-rows is never misread as a flick) suppresses
+// the click that would otherwise follow pointerup, so a flick never also
+// fires a tune.
+function attachChartRowGestures(el, channelId) {
+  let suppressClick = false;
+  el.addEventListener('pointerdown', (e) => {
+    const sx = e.clientX, sy = e.clientY;
+    const onUp = (e2) => {
+      document.removeEventListener('pointerup', onUp);
+      const dx = e2.clientX - sx, dy = e2.clientY - sy;
+      if (Math.abs(dx) > ROW_FLICK_PX && Math.abs(dx) > Math.abs(dy)) {
+        suppressClick = true;
+        toggleRowMoor(channelId);
+      }
+    };
+    document.addEventListener('pointerup', onUp, { once: true });
+  });
+  el.addEventListener('click', () => {
+    if (suppressClick) { suppressClick = false; return; }
+    tuneFromChart(channelId);
+  });
+}
+
+function toggleRowMoor(channelId) {
+  const next = toggleMoor(moored, channelId); // caps at policy.mjs's MOOR_CAP by default
+  if (next === moored) { showDeckFullNote(); return; } // unchanged reference = toggleMoor's own cap signal
+  moored = next;
+  persistMoored();
+  mooredCycleIndex = 0;
+  if (chartOpen) renderChart();
+}
+
+let deckFullTimer = null;
+function showDeckFullNote() {
+  const note = document.getElementById('chart-note');
+  note.textContent = 'DECK FULL';
+  note.classList.add('show');
+  clearTimeout(deckFullTimer);
+  deckFullTimer = setTimeout(() => note.classList.remove('show'), 1400);
+}
+
+// The moored buoys STRIP (#chart-moored) is a DISTINCT DOM zone from
+// individual chart rows, showing only the (<=MOOR_CAP) currently-moored
+// channels. A horizontal flick HERE cycles which buoy is highlighted (tap
+// any buoy to tune to it directly); a horizontal flick on a ROW toggles that
+// row's OWN moored membership instead. Both use the same physical gesture
+// (a horizontal pointer flick) but on two different DOM elements, so there
+// is no ambiguity between "toggle this one" and "cycle the set" — this is
+// the documented gesture choice (see the module-top comment and
+// task-5-report.md's gesture-collision analysis): distinct zones rather than
+// a distinct edge or a two-finger gesture, because the row list and the
+// moored strip are already visually and physically separate regions of the
+// open drawer. It also cannot collide with A1's right-edge #flip-strip:
+// #flip-strip is a separate DOM element pinned to the right edge, and the
+// full-screen #chart drawer (z-index 6600, above #flip-strip's 6500) is
+// opaque and covers it completely while open, so #flip-strip receives zero
+// pointer events for the duration.
+function paintMooredStrip(rows) {
+  const el = document.getElementById('chart-moored');
+  el.innerHTML = '';
+  const mooredRows = rows.filter((r) => r.moored);
+  if (!mooredRows.length) {
+    const empty = document.createElement('span');
+    empty.className = 'chart-moored-empty';
+    empty.textContent = 'no buoys moored';
+    el.appendChild(empty);
+    return;
+  }
+  if (mooredCycleIndex >= mooredRows.length) mooredCycleIndex = 0;
+  mooredRows.forEach((row, i) => {
+    const b = document.createElement('span');
+    b.className = 'buoy' + (i === mooredCycleIndex ? ' cycled' : '');
+    b.dataset.channelId = row.id;
+    b.textContent = `CH ${row.number}`;
+    b.addEventListener('click', () => tuneFromChart(row.id));
+    el.appendChild(b);
+  });
+}
+
+document.getElementById('chart-moored').addEventListener('pointerdown', (e) => {
+  const sx = e.clientX;
+  const onUp = (e2) => {
+    document.removeEventListener('pointerup', onUp);
+    const dx = e2.clientX - sx;
+    if (Math.abs(dx) <= ROW_FLICK_PX) return;
+    const mooredIds = [...moored];
+    if (!mooredIds.length) return;
+    mooredCycleIndex = (mooredCycleIndex + (dx > 0 ? 1 : -1) + mooredIds.length) % mooredIds.length;
+    if (chartOpen) renderChart();
+  };
+  document.addEventListener('pointerup', onUp, { once: true });
+});
+
+// Tap-a-row tuning: mirrors flip()'s own guarded tune sequence (dwell
+// untuned, gate cancelled, deck.tune, settle) but jumps directly to `id`
+// instead of stepping a neighbor.
+function tuneFromChart(id) {
+  closeChart();
+  if (!powered || !acquired) return;
+  if (deck.current === id) return; // already tuned; nothing to settle
+  dwell.untuned();
+  const from = deck.current;
+  gate?.cancel();
+  const r = deck.tune(id);
+  settle(r.current, r, from);
+}
+
+// Top pull strip (mirror of #flip-strip, top edge instead of right edge): a
+// downward drag opens the chart.
+document.getElementById('chart-strip').addEventListener('pointerdown', (e) => {
+  const sy = e.clientY;
+  const onUp = (e2) => {
+    document.removeEventListener('pointerup', onUp);
+    if (e2.clientY - sy > 50) openChart();
+  };
+  document.addEventListener('pointerup', onUp, { once: true });
+});
+// Tap-scrim: the header bar (not a row, not the close button) closes, same
+// as Escape (wired in onKey below).
+document.getElementById('chart-header').addEventListener('click', () => closeChart());
+document.getElementById('chart-close').addEventListener('click', (e) => { e.stopPropagation(); closeChart(); });
 
 // --- D8 shell half: external opens relayed from the CURRENT channel only ---
 // Baked channels post open requests with targetOrigin '*' (feed MainLayout:
@@ -532,6 +762,8 @@ function onKey(e) {
   else if (e.key === 'm') hud.toggle();
   else if (e.key === 'r') hud.drift.reset();
   else if (e.key === 'e') exportResults(timer, hud);
+  else if (e.key === 'c') (chartOpen ? closeChart : openChart)(); // Task 5: keyboard/desktop equivalent of the pull-down
+  else if (e.key === 'Escape' && chartOpen) closeChart();
 }
 window.addEventListener('keydown', onKey);
 document.getElementById('export-btn').addEventListener('click', () => exportResults(timer, hud));

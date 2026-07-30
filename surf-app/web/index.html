@@ -94,6 +94,64 @@
                 background: linear-gradient(270deg, rgba(120,255,180,.06), transparent);
                 touch-action: none; }
 
+  /* Task 5 (B3): the Chart. #chart-strip mirrors #flip-strip on the TOP edge
+     (full width, 56px tall) instead of the right edge — a downward drag opens
+     the water column. z-index 6510, one tier above #flip-strip (6500), so the
+     small top-right 56x56 square where the two strips geometrically overlap
+     belongs to the pull-down, not the flip; #flip-strip still owns the rest
+     of the right edge below that corner untouched. */
+  #chart-strip { position: absolute; top: 0; left: 0; width: 100%; height: 56px; z-index: 6510;
+                 background: linear-gradient(180deg, rgba(140,220,255,.08), transparent);
+                 touch-action: none; }
+
+  /* #chart: full-height drawer, z 6600 — above every channel/card/OSD/strip,
+     below bloom/off-screen/hud (which never coexist with an open chart in
+     practice: off-screen covers the whole screen at z 8000 when unpowered,
+     and the chart itself is gated on `acquired`). Gradient = the water
+     column itself: sunlit surface at the top fading to trench black at the
+     bottom, so the background IS the depth guide even before any row paints. */
+  #chart { position: absolute; inset: 0; z-index: 6600; display: flex; flex-direction: column;
+           background: linear-gradient(180deg, #bfe8ff 0%, #6fb8d8 12%, #2f7fa0 28%, #14506e 46%,
+                       #0a2f42 66%, #041824 84%, #000a10 100%); }
+  #chart .chart-header { flex: 0 0 auto; padding: 14px 16px 6px; display: flex; align-items: center;
+                          justify-content: space-between; color: #eafff5; font: bold 13px/1.2 monospace;
+                          letter-spacing: .1em; cursor: pointer; }
+  #chart .chart-header .chart-title::before { content: '\2193 '; opacity: .6; }
+  #chart .chart-close { font: bold 15px monospace; background: rgba(0,0,0,.35); color: #eafff5;
+                         border: 1px solid rgba(255,255,255,.35); padding: 4px 11px; line-height: 1; }
+  /* moored buoys strip — the SET, distinct from individual rows below. A
+     horizontal flick HERE cycles which moored buoy is highlighted; a
+     horizontal flick on a ROW (below) toggles that row's own moored state.
+     Two different DOM zones for two different horizontal-flick meanings —
+     see chart.mjs / shell.mjs comments for why this doesn't collide with
+     either #flip-strip or the per-row gesture. */
+  #chart .chart-moored { flex: 0 0 auto; display: flex; gap: 8px; padding: 2px 16px 12px; min-height: 20px; }
+  #chart .chart-moored .buoy { padding: 5px 10px; border-radius: 999px; background: rgba(0,0,0,.35);
+                                color: #eafff5; font: 11px monospace; border: 1px solid rgba(255,255,255,.28); }
+  #chart .chart-moored .buoy.cycled { border-color: #ffe27a; box-shadow: 0 0 8px 2px rgba(255,226,122,.55); }
+  #chart .chart-moored .chart-moored-empty { color: rgba(255,255,255,.45); font: 11px monospace; align-self: center; }
+  #chart .chart-rows { flex: 1 1 auto; overflow-y: auto; padding: 6px 0 28px; touch-action: pan-y; }
+  #chart .chart-band-label { padding: 10px 16px 4px; color: rgba(255,255,255,.55); font: 10px monospace;
+                              letter-spacing: .16em; }
+  /* row glow: --glow (0..1, set inline per row from chartRows' glowValue)
+     drives both a background wash and an outer bloom — "brightness is
+     truth": the CSS reads directly off the same number the RPC produced. */
+  #chart .chart-row { margin: 3px 12px; padding: 10px 14px; border-radius: 6px; display: flex;
+                       align-items: center; gap: 10px; touch-action: pan-y; cursor: pointer;
+                       background: rgba(170,255,215, calc(var(--glow, 0) * .85 + .05));
+                       color: rgba(230,255,245, calc(var(--glow, 0) * .65 + .35));
+                       box-shadow: 0 0 calc(var(--glow, 0) * 20px) calc(var(--glow, 0) * 3px) rgba(150,255,195, calc(var(--glow, 0) * .85)); }
+  #chart .chart-row.afterglow { outline: 2px solid rgba(255,208,120,.85); outline-offset: 2px; }
+  #chart .chart-row.unmetered { background: rgba(60,64,72,.55); color: rgba(255,255,255,.4); box-shadow: none; }
+  #chart .chart-row.moored { border: 1px solid rgba(140,220,255,.85); }
+  #chart .chart-row .cr-num { font: 900 15px monospace; min-width: 2.4em; }
+  #chart .chart-row .cr-name { flex: 1; font: 12px monospace; letter-spacing: .04em; }
+  #chart .chart-row .cr-tag { font: 10px monospace; opacity: .9; white-space: nowrap; }
+  #chart .chart-note { position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
+                        color: #ffe; font: 11px monospace; letter-spacing: .06em; opacity: 0;
+                        transition: opacity 200ms; pointer-events: none; }
+  #chart .chart-note.show { opacity: 1; }
+
   /* power-on: phosphor bloom ~700ms (spec §3.1) */
   #bloom { position: absolute; inset: 0; z-index: 7000; background: #000; pointer-events: none; }
   #bloom .dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px;
@@ -160,6 +218,16 @@
     </div>
   </div>
   <div id="flip-strip"></div>
+  <div id="chart-strip"></div>
+  <div id="chart" hidden>
+    <div class="chart-header" id="chart-header">
+      <span class="chart-title">THE CHART</span>
+      <button id="chart-close" aria-label="close chart">&times;</button>
+    </div>
+    <div id="chart-moored" class="chart-moored"></div>
+    <div id="chart-rows" class="chart-rows"></div>
+    <div id="chart-note" class="chart-note"></div>
+  </div>
   <div id="bloom" hidden><div class="dot"></div></div>
   <div id="off-screen" hidden>
     <div class="crt"></div>
