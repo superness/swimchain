@@ -3078,3 +3078,77 @@ h1, h2, h3, p { margin: 0; }
   width: 46px; height: 46px; opacity: .5; pointer-events: none;
 }
 .deep-scoop svg { width: 100%; height: 100%; }
+
+
+/* ── THE BOTTOM OF THE BOWL ────────────────────────────────────────────────
+   A moment, not a page. Colder and quieter than anything else in the game —
+   you are somewhere the shop is not, and it should feel like it. No ember
+   palette here: that belongs to the descent. This is under the descent. */
+.bottom {
+  position: fixed; inset: 0; z-index: 70;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; text-align: center;
+  background: rgba(3, 4, 6, .97);
+}
+.bottom-bed {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 0%, rgba(60, 78, 96, .35), transparent 65%);
+}
+.bottom-words { position: relative; z-index: 1; width: min(460px, 100%); }
+.bottom-small {
+  display: block; font-family: var(--chalk); font-size: 11px;
+  letter-spacing: .1em; color: #6f7f8d;
+}
+.bottom-words > strong {
+  display: block; font-family: var(--sign); font-size: clamp(22px, 5vw, 34px);
+  color: #dfe8ef; margin: 3px 0 16px;
+}
+.bottom-line {
+  margin: 0 0 10px; font-family: var(--chalk); font-size: 12px; color: #8b9bab;
+}
+
+.bottom-wall {
+  display: flex; flex-direction: column; gap: 3px;
+  max-height: 38vh; overflow-y: auto;
+  padding: 10px 12px; margin: 0 0 14px;
+  background: rgba(255, 255, 255, .03);
+  border: 1px solid rgba(150, 175, 195, .2);
+  border-radius: 10px;
+}
+.bottom-wall li {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-family: var(--chalk); font-size: 12px; color: #c6d3de;
+}
+.bottom-who { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bottom-times { flex: none; color: #7f90a0; font-variant-numeric: tabular-nums; }
+.bottom-waiting { justify-content: center; color: #6f7f8d; font-style: normal; }
+
+.bottom-sign { display: flex; gap: 8px; margin-bottom: 12px; }
+.bottom-sign input {
+  flex: 1 1 auto; min-width: 0;
+  font-family: var(--chalk); font-size: 12px; color: #dfe8ef;
+  background: rgba(0, 0, 0, .4);
+  border: 1px solid rgba(150, 175, 195, .3);
+  border-radius: 999px; padding: 7px 13px;
+}
+.bottom-sign input::placeholder { color: #5d6c79; }
+.bottom-sign button {
+  flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #06121c; background: #a9c6dc;
+  border-radius: 999px; padding: 7px 15px;
+}
+.bottom-sign button:disabled { opacity: .35; cursor: default; }
+.bottom-done {
+  margin: 0 0 12px; font-family: var(--chalk); font-size: 12px; color: #a9c6dc;
+}
+.bottom-close {
+  font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #7f90a0; border: 1px solid rgba(127, 144, 160, .4);
+  border-radius: 999px; padding: 6px 14px;
+}
+.bottom-close:hover { color: #dfe8ef; border-color: rgba(223, 232, 239, .6); }
+.bottom-scoop {
+  position: absolute; bottom: 16px; left: 18px;
+  width: 42px; height: 42px; opacity: .35; pointer-events: none;
+}
+.bottom-scoop svg { width: 100%; height: 100%; }
