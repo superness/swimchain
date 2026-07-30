@@ -85,10 +85,21 @@ async fn get_node_address(state: tauri::State<'_, AppState>) -> Result<Option<St
 fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
     // Spec section 2.2 (D8): https only, validated here in Rust — mobile-app's
     // unchecked pass-through is deliberately not inherited.
-    if !url.starts_with("https://") {
+    // Final-review fix 2: trim first (leading/trailing whitespace from a
+    // channel's textarea/link markup must not smuggle past the prefix
+    // check), and compare the scheme ASCII-case-insensitively ("HTTPS://"
+    // is still https). Compare raw bytes rather than slicing the &str
+    // directly — a str slice at a fixed byte index panics if that index
+    // isn't a UTF-8 char boundary (e.g. a multibyte char straddling byte
+    // 8), which a hostile channel could trigger; `&[u8]` has no such
+    // constraint. Still fails closed on everything else, and the opener
+    // gets the TRIMMED url, not the original.
+    let u = url.trim();
+    let is_https = u.len() >= 8 && u.as_bytes()[..8].eq_ignore_ascii_case(b"https://");
+    if !is_https {
         return Err(format!("refused non-https external open: {url}"));
     }
-    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    app.opener().open_url(u, None::<&str>).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

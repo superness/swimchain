@@ -281,6 +281,11 @@ function powerOn() {
 
 function powerOff() {
   powered = false;
+  // Final-review fix 4: advisory-only — the node/foreground-service keeps
+  // broadcasting regardless (that's the whole point of "Still broadcasting."),
+  // this just lets the current channel know it's no longer visible so it can
+  // do battery-courtesy things (pause polling/animation) behind the off screen.
+  if (deck.current) advisory(deck.current, 'SWIMCHAIN_CHANNEL_HIDDEN');
   gate?.cancel();
   staticCtl.stop();
   const off = document.getElementById('off-screen');
@@ -355,19 +360,36 @@ document.getElementById('hud-toggle').addEventListener('click', () => hud.toggle
 document.getElementById('off-screen').addEventListener('click', () => { if (!powered) powerOn(); });
 
 const strip = document.getElementById('flip-strip');
+let touchX = null;
 let touchY = null;
 let pressTimer = null;
+// Final-review fix 1: a raw finger held for 800ms drifts a few px — the old
+// touchmove handler cleared the power timer on ANY movement, making touch
+// power-off practically impossible. Only cancel once the finger has moved
+// past a small slop radius from the touchstart point (Euclidean, since
+// jitter isn't purely vertical); below that it's still a hold. This is
+// independent of the 60px flip-swipe threshold in touchend below, which
+// always measures from the original touchstart Y regardless of what
+// touchmove does — unchanged.
+const LONG_PRESS_SLOP_PX = 10;
 strip.addEventListener('touchstart', (e) => {
+  touchX = e.touches[0].clientX;
   touchY = e.touches[0].clientY;
   pressTimer = setTimeout(() => { pressTimer = null; (powered ? powerOff : powerOn)(); touchY = null; }, 800);
 }, { passive: true });
-strip.addEventListener('touchmove', () => { clearTimeout(pressTimer); pressTimer = null; }, { passive: true });
+strip.addEventListener('touchmove', (e) => {
+  if (touchX == null || touchY == null || pressTimer == null) return;
+  const dx = e.touches[0].clientX - touchX;
+  const dy = e.touches[0].clientY - touchY;
+  if (Math.hypot(dx, dy) > LONG_PRESS_SLOP_PX) { clearTimeout(pressTimer); pressTimer = null; }
+}, { passive: true });
 strip.addEventListener('touchend', (e) => {
   clearTimeout(pressTimer);
   if (pressTimer === null && touchY == null) return; // long-press already fired
   pressTimer = null;
   if (touchY == null) return;
   const dy = e.changedTouches[0].clientY - touchY;
+  touchX = null;
   touchY = null;
   if (Math.abs(dy) > 60) flip(dy < 0 ? +1 : -1);
 });

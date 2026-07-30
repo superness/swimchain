@@ -315,6 +315,7 @@ disabled until the set has acquired its first signal (`acquired` in
 | The dial: channel registry, capability tokens, purpose-scoped signing | D |
 | `get_space_health` integration, dead-air/flare/dwell-engage mechanics, Chart, Interference, Night Swim | B |
 | Node-side follow-and-fetch while the app is fully closed (§2.3 names this a separate, unscheduled work item — liveness today only happens while the app/foreground-service is actually running the tuner driver) | named, unscheduled |
+| First-run acquisition (`localItemCount`/`tuneDriver` in `shell.mjs`) depends on the `/browse` keeper keeping the three bootstrap feed spaces body-bearing; there is no fallback if they decay (content half-life is 7 days) — a keeper outage or a decayed space stalls acquisition indefinitely with no other source to pull from. Phase B answer: `get_space_health`-driven bootstrap selection, or an any-space body-count lock instead of three fixed spaces. Note also: `localItemCount` counts a post toward the N=3 lock only if `item.body` is truthy — a media-only post (image/video with an empty text body) does not count, so an all-media bootstrap space can look perpetually empty to the lock even once its content is fully fetched. | B |
 
 ### Open items (not yet closed, need follow-up before calling A1 fully done)
 
@@ -331,5 +332,14 @@ disabled until the set has acquired its first signal (`acquired` in
   hold cancels it, since `touchmove` unconditionally clears the timer).
   Task 5 attempted to confirm/refute this on the Pixel but was interrupted
   when the physical device (shared with a concurrent session) was reclaimed
-  mid-check. Still open — either confirm it's fine as-is or add a small
-  (~10px) movement threshold before treating this as settled.
+  mid-check. The final-review fix wave landed a 10px Euclidean movement
+  threshold in `touchmove` (`shell.mjs`, `LONG_PRESS_SLOP_PX`) so touchmove
+  only cancels the power timer once the finger has actually moved off the
+  touchstart point; the flip-swipe threshold in `touchend` is untouched. A
+  DOM-harness simulation of the real `touchstart`/`touchmove`/`touchend`
+  handlers (not on-device, no Tauri runtime — see
+  `.superpowers/sdd/2026-07-29-surf-a1-the-set/final-review-fixes.md` for the
+  harness and results) confirms the branch logic: jitter under 10px held
+  900ms toggles power, jitter over 10px does not. Real-finger confirmation on
+  a physical device is still open — fold it into the next device session
+  alongside the G2 soak above.
