@@ -248,6 +248,116 @@ label {
   color: var(--foam);
 }
 
+/* ── Wall ──────────────────────────────────────────────────────────────── */
+
+textarea {
+  display: block;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--foam);
+  border-radius: 3px;
+  padding: 11px 12px;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+}
+textarea::placeholder {
+  color: var(--muted);
+}
+textarea:disabled {
+  opacity: 0.6;
+}
+
+.wall-composer {
+  max-width: none;
+  margin: 20px 0 8px;
+}
+.wall-composer .btn {
+  margin-top: 10px;
+}
+
+.wall-mining {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--shallow);
+  margin: 10px 0 0;
+  line-height: 1.6;
+}
+.wall-mining-stats {
+  color: var(--muted);
+}
+
+.wall-empty {
+  margin-top: 24px;
+}
+
+.wall-posts {
+  margin-top: 12px;
+}
+
+.wall-post {
+  border-top: 1px solid var(--line);
+  padding: 22px 0;
+}
+.wall-post:first-child {
+  border-top: none;
+}
+
+.wall-post-meta,
+.wall-reply-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.wall-author {
+  color: var(--shallow);
+}
+
+.wall-post-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.wall-post-body,
+.wall-reply-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.wall-post-replies-block {
+  margin-top: 14px;
+}
+
+.wall-replies-toggle {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.wall-replies {
+  margin-top: 12px;
+  padding-left: 16px;
+  border-left: 2px solid var(--line);
+}
+
+.wall-reply {
+  margin-bottom: 14px;
+}
+
+.wall-reply-form {
+  max-width: none;
+  margin-top: 10px;
+}
+.wall-reply-form .btn {
+  margin-top: 8px;
+}
+
 .boot {
   min-height: 100vh;
   display: flex;
