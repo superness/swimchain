@@ -4,6 +4,11 @@
  * This is the bug the ⚑ report caught on 2026-07-29 and the reason every
  * check here folds the SAME move twice on purpose.
  *
+ * Two real bugs (dip, broke) and one that only looked like one (tip — safe by
+ * accident; see the note at section 3). Sections 6-7 are two MEASURED cases
+ * from the live mainnet table on 2026-07-30: the node serving one reply twice
+ * under one content id, and two real dips that collided on a single ms.
+ *
  * The settling design (chipsSettling.ts) deliberately keeps an acked move in
  * the queue until its confirmed twin arrives, so for that window both copies
  * are in the fold input. Its header argues this is safe because the second
@@ -128,6 +133,60 @@ const fold = (replies: ChipsReply[]) => {
   check('a buy is charged once', once.owned.has('season1'), [...once.owned]);
   check('and folding it twice charges once', both.crumbs === once.crumbs,
     { once: once.crumbs, both: both.crumbs });
+}
+
+/* ── 6) THE NODE'S OWN DUPLICATE. Measured on the live mainnet table
+       2026-07-30: get_replies returned `dip 54750#1785375989160~`
+       (sha256:2d4606d6a3ce9, height 1264) TWICE — the SAME content id as two
+       separate entries. Content is content-addressed, so that is one move
+       listed twice, and it was a PERMANENT overcount: every confirmed-only
+       fold paid it twice, forever, with no optimistic copy involved. ──────── */
+{
+  const body = dipBody(54_750, 1785375989160);
+  const one = rep(body, 1264);
+  // The SAME object twice, exactly as the node served it — not a second copy
+  // with its own id, which is the settling case section 1 covers.
+  const twice = fold([one, one]);
+  const once = fold([one]);
+  check('a reply listed twice under ONE content id credits once',
+    twice.crumbs === once.crumbs && once.crumbs === 54_750,
+    { once: once.crumbs, twice: twice.crumbs });
+  check('and does not inflate lifetime either',
+    twice.lifetimeChips === once.lifetimeChips, { once: once.lifetimeChips, twice: twice.lifetimeChips });
+  // Dropped BEFORE folding, not folded and rejected: a duplicate content id is
+  // not a move that happened and was refused.
+  check('the duplicate is dropped, not recorded as a move',
+    twice.moves.length === once.moves.length, twice.moves.map((m) => m.outcome));
+
+  // The guard may not collapse DISTINCT replies that merely look similar.
+  const distinct = fold([
+    rep(dipBody(1000, 1785375989160), 1264),
+    rep(dipBody(1000, 1785375989161), 1264),
+  ]);
+  check('two distinct content ids both count', distinct.crumbs === 2000, distinct.crumbs);
+}
+
+/* ── 7) THE ms COLLISION, measured on the live table 2026-07-30:
+       `dip 60300#1785381545497~` AND `dip 6030#1785381545497~` — two DIFFERENT
+       dips sharing one ms (two allocators; chipsQueue's known two-tab gap).
+       Keying dedup on ms alone would have destroyed one real dip, so the amount
+       is part of the key. ────────────────────────────────────────────────── */
+{
+  const both = fold([
+    rep(dipBody(60_300, 1785381545497), 1274),
+    rep(dipBody(6_030, 1785381545497), 1274),
+  ]);
+  check('two real dips that collided on ms BOTH count',
+    both.crumbs === 66_330, both.crumbs);
+  check('and neither is written off as a duplicate',
+    both.moves.filter((m) => m.outcome === 'rejected-duplicate').length === 0,
+    both.moves.map((m) => m.outcome));
+
+  // While the settling copy — same ms AND same amount, different content id —
+  // is still caught. This is the pair that must not both count.
+  const settling = fold([rep(dipBody(60_300, 1785381545497), 1274), rep(dipBody(60_300, 1785381545497))]);
+  check('but a settling copy of the same dip still counts once',
+    settling.crumbs === 60_300, settling.crumbs);
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
