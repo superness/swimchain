@@ -139,6 +139,17 @@ function from(v: { x: number; y: number }, spawn: { x: number; y: number }): boo
 async function main(): Promise<void> {
   const room = await roomContentId();
   const { observe } = await buildHarness(false);
+  /**
+   * THE ONE WINDOW THAT IS REFUSED AND THEN LET IN — built once in section 6
+   * and read again in section 7.
+   *
+   * Shared rather than re-run because it is the most expensive scenario in the
+   * suite (26 s of real emit cadence and real mining) and because the two
+   * sections are asking about the SAME run: section 6 asks what left the
+   * window, section 7 asks what the player saw and what the window left behind.
+   * Two runs would answer those about two different windows.
+   */
+  let crossed: Observation | null = null;
 
   // =======================================================================
   console.log('\n1. the release shape of the component is what is being driven');
@@ -422,7 +433,7 @@ async function main(): Promise<void> {
     // the shallows because `knockOn` re-stamps it. So consecutive writes are
     // comparable straight through the transition they straddle.
     {
-      const crossed = await observe({ refuseFirst: 2, awaitWrite: true, settleMs: 26_000 });
+      crossed = await observe({ refuseFirst: 2, awaitWrite: true, settleMs: 26_000 });
       const ts = vectorsOf(crossed).map((v) => v.t);
       const gaps = ts.slice(1).map((t, i) => t - ts[i]);
       check('a window that is refused and then let in really crosses over',
@@ -468,6 +479,195 @@ async function main(): Promise<void> {
     check('...and asks about sponsorship no more than the refused one did',
       accepted.rpcCalls.filter((m) => m.includes('sponsor')).length === 0,
       accepted.rpcCalls);
+  }
+
+  // =======================================================================
+  console.log('\n7. BEING LET THROUGH — what opens the door, and what provably\n'
+    + '   does not');
+  // =======================================================================
+  //
+  // The client is never told it has been let in. It finds out because a write
+  // it was going to make anyway stops being refused, and this section is about
+  // the exactness of that: an ACCEPTED write, and nothing else that could be
+  // mistaken for one.
+  //
+  // `classifySendFailure` produces three kinds and only one of them is the
+  // refusal. If the boundary lifted on "not refused" rather than on "accepted",
+  // then a laptop that dropped its wifi for one write, or a node that answered
+  // `PowInvalid` once, would open the door: the player is dropped into water
+  // that still will not carry them, and the only thing on screen that said so
+  // has just been taken away. That is why both of the other two kinds are
+  // driven end to end below, on the wire, through the real classifier, rather
+  // than being left to `wayIn.test.ts`'s unit rows.
+  {
+    const c = crossed;
+    if (c === null) throw new Error('section 6 did not run');
+
+    // (a) THE MOMENT ITSELF. One boundary, one lift, and the player is on the
+    //     far side of it. `liftAppearances` counts how many times the lifting
+    //     class ENTERED the DOM over the whole 26 s run — sampled throughout,
+    //     not read at the end — so it can see a welcome that never played and a
+    //     welcome that played twice, neither of which is visible in a final
+    //     state.
+    check('a window that is refused and then let in shows the boundary exactly once',
+      c.edgeAppearances === 1, c.edgeAppearances);
+    check('...and the boundary LIFTS — the moment is played, not skipped',
+      c.liftAppearances === 1, c.liftAppearances);
+    // NOT TWICE, AND THIS IS THE HALF THE COUNT ABOVE IS FOR. After the vouch
+    // lands, every remaining write in the run is also accepted — at the 8 s
+    // keep-alive, that is two or three more inside this settle, and each of
+    // them arrives as an `onWrite(null)` identical to the one that opened the
+    // door. A welcome that replayed on any of them would read 3 or 4 here.
+    check('...and it is not played again by any of the accepted writes that follow',
+      c.liftAppearances === 1 && c.submitted.length >= 4,
+      { lifts: c.liftAppearances, writes: c.submitted.length });
+    check('...and the boundary is gone by the end — the moment ends on its own',
+      c.edgeAtEnd === false, c.edgeAtEnd);
+
+    // (b) THE ANSWER IS ACTED ON, NOT NOTICED LATER. Plan 4b's failure was a
+    //     180 s client deadline against a 200 s answer; the opposite failure —
+    //     a client that polls, or waits for the next refetch, or lifts on the
+    //     write AFTER the accepted one — would show up as a gap of seconds
+    //     here. The bar is derived: `MIN_EMIT_GAP_MS` is the soonest this
+    //     window could possibly write again, so anything at or over it means
+    //     the yes was not what did this.
+    check('...within a moment of the node saying yes, not on some later write',
+      c.msFromAcceptToLift >= 0 && c.msFromAcceptToLift < MIN_EMIT_GAP_MS,
+      { msFromAcceptToLift: c.msFromAcceptToLift, MIN_EMIT_GAP_MS });
+
+    // (c) THE SECOND SOCKET IS NOT A LEAK — reported as an open question by
+    //     Task 1 and judged either way by nobody. A window whose standing
+    //     changes rebuilds its sea, so two sockets are opened in this run and
+    //     that number alone says nothing. What settles it is that they were
+    //     never both alive: React's effect cleanup stops the old sea before the
+    //     next effect builds the new one, so the peak is one. A client that let
+    //     the old one run would hold two live subscriptions on the player's
+    //     node for the rest of the session.
+    //     THE NUMBER IS THREE, NOT TWO, AND I EXPECTED TWO. A sea is rebuilt on
+    //     every change of the effect's deps, and this window has three: the
+    //     shell configuration arriving, the edge going up, the edge coming
+    //     down. Task 1 measured two for a window that was refused and stayed
+    //     refused, which is the same rule with one fewer change. Written down
+    //     rather than smoothed over, because the count is only interesting
+    //     beside the two checks under it.
+    check('the crossing rebuilds the sea — three sockets over the run',
+      c.sockets === 3, c.sockets);
+    check('...but never two at once: the old one is shut before the new one opens',
+      c.maxSocketsOpen === 1, c.maxSocketsOpen);
+    check('...and every socket this window opened was closed',
+      c.socketsClosed === c.sockets, { opened: c.sockets, closed: c.socketsClosed });
+    // NON-DEGENERACY: a window that never crossed opens one and closes one, so
+    // the numbers above are about the rebuild rather than about teardown.
+    const plain = await observe({ awaitWrite: true, settleMs: 800 });
+    check('NON-DEGENERACY: a window that never crossed opens one socket and closes it',
+      plain.sockets === 1 && plain.socketsClosed === 1 && plain.maxSocketsOpen === 1, plain);
+
+    // =====================================================================
+    // (d) NOT ON `unreachable`. The player is refused once — really, with
+    //     -32015 — and then the node is gone: every call rejects at the
+    //     transport, the way a dropped wifi does. The window keeps writing and
+    //     keeps failing, and the boundary must still be there at the end.
+    //
+    //     THE NON-DEGENERACY IS THE POINT OF THE SCENARIO. "The edge is still
+    //     up" is trivially true for a window that never got past its first
+    //     refusal, so the run has to be shown to have ATTEMPTED writes after
+    //     the node stopped answering — those attempts are what a broadened
+    //     trigger would have swallowed, one welcome each.
+    const gone = await observe({ thenUnreachable: 1, awaitWrite: true, settleMs: 22_000 });
+    check('NON-DEGENERACY: the unreachable window really wrote again after the refusal',
+      gone.submitted.length >= 3, gone.submitted.length);
+    check('a node that vanishes is NOT a welcome — the boundary is still up',
+      gone.edgeAtEnd === true, gone.edgeAtEnd);
+    check('...and the moment never played at all', gone.liftAppearances === 0, gone.liftAppearances);
+    check('...and the player is still swimming the shallows, not the open water',
+      vectorsOf(gone).some((v) => from(v, SHALLOWS_SPAWN)), vectorsOf(gone));
+
+    // (e) NOR ON `unknown`. A second, independent shape: the node answers
+    //     perfectly well and says no to a different question (-32010
+    //     PowInvalid). A client that had special-cased transport failures alone
+    //     would pass (d) and fail here.
+    const wrong = await observe({ thenUnknown: 1, awaitWrite: true, settleMs: 22_000 });
+    check('NON-DEGENERACY: the PowInvalid window really wrote again after the refusal',
+      wrong.submitted.length >= 3, wrong.submitted.length);
+    check('a write that failed for another reason is NOT a welcome either',
+      wrong.edgeAtEnd === true, wrong.edgeAtEnd);
+    check('...and the moment never played at all', wrong.liftAppearances === 0, wrong.liftAppearances);
+  }
+
+  // =======================================================================
+  console.log('\n8. THE KNOCK: it neither spins nor sleeps, and it survives\n'
+    + '   being closed');
+  // =======================================================================
+  {
+    // (a) THE CADENCE, over a window that is refused for its whole life.
+    //
+    // Two failures are possible here and they are opposite. A client that
+    // backed OFF — the obvious reaction to a node saying no over and over —
+    // would let a player who was vouched for sit at the boundary for however
+    // long the back-off had grown to, which is precisely plan 4b's 200-second
+    // answer arriving after everyone stopped listening. A client that sped UP
+    // would crowd a per-space mempool budget that every swimmer shares, at the
+    // one moment the node has said it wants fewer writes from us.
+    //
+    // So the claim is that the cadence is UNCHANGED by being refused, and it is
+    // measured against the two constants that define it, imported rather than
+    // typed. Neither bound is a number read back out of the client.
+    //
+    // MEASURED ON `vec.t`, the instants the writes themselves carry, because
+    // every write is mined before it is sent and arrival times are a check
+    // against Argon2id's mood. The settle is long enough for four gaps, so a
+    // back-off would have to be visible as growth rather than inferred from one
+    // interval.
+    const long = await observe({ writesRefused: true, awaitWrite: true, settleMs: 34_000 });
+    const ts = vectorsOf(long).map((v) => v.t);
+    const gaps = ts.slice(1).map((t, i) => t - ts[i]);
+    check('NON-DEGENERACY: a whole session of refusal produced enough writes to have a cadence',
+      gaps.length >= 4, { writes: ts.length, gaps });
+    check('IT DOES NOT SLEEP: refused every time, it still never goes quiet for '
+      + 'longer than the keep-alive',
+      gaps.length > 0 && Math.max(...gaps) <= MAX_EMIT_GAP_MS + MIN_EMIT_GAP_MS,
+      { gaps, MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS });
+    check('IT DOES NOT SPIN: nor does it write faster than the floor every other '
+      + 'swimmer is held to',
+      gaps.length > 0 && Math.min(...gaps) >= MIN_EMIT_GAP_MS, { gaps, MIN_EMIT_GAP_MS });
+    // AND IT IS THE SAME CADENCE AN ACCEPTED PLAYER KEEPS. The two claims above
+    // are bounds; this is the equality, and it is what says the knock costs the
+    // network and the player's machine exactly what playing costs. Compared
+    // against the accepted window from section 6 rather than against a number.
+    const accepted = await observe({ awaitWrite: true, settleMs: 34_000 });
+    const acceptedTs = vectorsOf(accepted).map((v) => v.t);
+    const acceptedGaps = acceptedTs.slice(1).map((t, i) => t - acceptedTs[i]);
+    check('...and it is the cadence a player the water accepted keeps, write for write',
+      Math.abs(acceptedTs.length - ts.length) <= 1,
+      { refused: ts.length, accepted: acceptedTs.length, refusedGaps: gaps, acceptedGaps });
+
+    // (b) A SLOW YES SURVIVES THE APP BEING CLOSED.
+    //
+    // Two windows, one after the other, which is what a restart is: the first
+    // is refused for its whole life and ends at the boundary; the vouch lands
+    // while nothing is running; the second opens against a node that accepts.
+    //
+    // NOTHING IS CARRIED BETWEEN THEM AND THAT IS THE MECHANISM, not a gap in
+    // it. The standing is never written down, so the second window claims
+    // nothing, writes on its first frame and is simply in the water. What would
+    // fail here is a client that cached "at the edge" — it would show the
+    // boundary to a player who was let in an hour ago, and go on showing it
+    // until a write happened to correct it.
+    const before = await observe({ writesRefused: true, awaitWrite: true, settleMs: 1_500 });
+    check('CONTROL: the window that was closed really was at the boundary',
+      before.edgeAppearances === 1 && before.edgeAtEnd === true, before.edgeAppearances);
+    const after = await observe({ awaitWrite: true, settleMs: 1_500 });
+    check('...and the one that opens after the vouch is in the water from the first frame',
+      after.edgeAppearances === 0, after.edgeAppearances);
+    check('...never seeing the boundary at all, not even for a frame',
+      after.edgeAtEnd === false && after.edgeLine === null, after);
+    // AND NO CEREMONY. A player who never waited is not shown a welcome; the
+    // moment belongs to the wait it ends.
+    check('...and no moment is played for a wait that happened while they were away',
+      after.liftAppearances === 0, after.liftAppearances);
+    check('...and they swim the open water, never the shallows',
+      vectorsOf(after).some((v) => from(v, SEA_SPAWN))
+      && vectorsOf(after).every((v) => !from(v, SHALLOWS_SPAWN)), vectorsOf(after));
   }
 
 

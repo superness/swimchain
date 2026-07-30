@@ -176,6 +176,47 @@ export function chooseWater(hasChain: boolean, atTheEdge: boolean): PlayedWater 
  * sea's bloom map, judged against where everybody else in THAT sea has been —
  * and in the real water this swimmer has never been anywhere. Knocking it
  * would be asking to be credited for a bite taken somewhere else.
+ *
+ * ## THE CADENCE IS THE PLAYING CADENCE, DELIBERATELY, AND HERE IS WHAT IT COSTS
+ *
+ * A knock is a real write: mined, signed and sent. Measured on this machine at
+ * the profile a mainnet or testnet node verifies against (Argon2id 8 MiB, 1
+ * iteration, parallelism 2, `difficultyFor` -> 8 bits, so ~247 hashes a write):
+ *
+ *     n=25   mean 2924 ms   median 1618 ms   min 278 ms   max 10155 ms
+ *
+ * At one write per `MAX_EMIT_GAP_MS` that is ~36% of one core, continuously,
+ * for as long as the window is open. That number looks alarming until it is
+ * put beside the one that matters: IT IS THE SAME NUMBER FOR A PLAYER THE
+ * WATER HAS ACCEPTED. The keep-alive is 8 s for everybody, one emitter decides
+ * it, and this function does not add a write — it redirects one. So the knock
+ * is not a background process burning a refused player's laptop; it is the
+ * cost of being in this game at all, paid by someone who is in it.
+ *
+ * THE TWO WAYS TO GET THIS WRONG PULL IN OPPOSITE DIRECTIONS, and both are
+ * worse than leaving it alone:
+ *
+ *   - BACK OFF, which is the instinctive answer to a node saying no over and
+ *     over. Every second of back-off is a second a player who has already been
+ *     vouched for goes on sitting outside — and that is plan 4b's own defect
+ *     with the sign flipped: a real sponsorship took 200 s while the client had
+ *     stopped listening at 180. There is no deadline here and there must not be
+ *     a growing silence either.
+ *   - SPEED UP, to hear the yes sooner. `MIN_EMIT_GAP_MS` is the only thing
+ *     keeping one window from crowding a per-space mempool budget every swimmer
+ *     shares, and it is not suspended because the node is refusing us.
+ *
+ * Both bounds are asserted on the wire in `App.test.ts` §8, against those two
+ * constants imported rather than typed, and against an accepted window's own
+ * gaps — a back-off of one knock in three fails them at [16065] and [24077].
+ *
+ * WHAT CANNOT BE SAVED, STATED RATHER THAN GLOSSED: the node refuses at
+ * ingestion, before it verifies anything (`check_identity_sponsored` is the
+ * first thing `submit_reply` does), so every one of those mines is work nobody
+ * ever checks. The client cannot know that in advance without asking the node
+ * about this swimmer's standing, and asking is the one thing this client is not
+ * allowed to do (spec §2.16's RESOLVED block). Wasted work is the price of not
+ * asking, and it is the right way round.
  */
 /**
  * MAY A WRITE LEAVE THIS WINDOW FOR THE NODE AT `wallMs`, given when the last

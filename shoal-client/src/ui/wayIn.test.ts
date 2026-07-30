@@ -26,7 +26,9 @@
  */
 import { rpcCall, type RpcAuth } from '../lib/shoalRpc';
 import { classifySendFailure, type SendFailure } from '../lib/shoalSend';
-import { afterWrite, AT_THE_EDGE, EDGE_BODY, EDGE_TITLE, OPEN_WATER } from './wayIn';
+import {
+  afterWrite, AT_THE_EDGE, CROSSING, CROSSING_MS, EDGE_BODY, EDGE_TITLE, OPEN_WATER, settled,
+} from './wayIn';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -151,6 +153,26 @@ async function anUnrelatedFailureDoesNotRaiseTheEdge(): Promise<void> {
     afterWrite(AT_THE_EDGE, offline).atTheEdge === true, afterWrite(AT_THE_EDGE, offline));
   check('...and when a write is rejected for some other reason entirely',
     afterWrite(AT_THE_EDGE, pow).atTheEdge === true, afterWrite(AT_THE_EDGE, pow));
+
+  // AND — the check the whole moment turns on — NEITHER OF THEM IS A WELCOME.
+  //
+  // The two lines above only say the player is still at the edge. That is not
+  // the same claim: a rule that lifted the boundary on "the write was not
+  // refused" would leave `atTheEdge` raised (it never had cause to lower it)
+  // and STILL play the crossing, which is a flaky node faking a welcome. The
+  // crossing is a separate flag and has to be separately false.
+  check('a dropped connection is not the water taking you in',
+    afterWrite(AT_THE_EDGE, offline).crossing === false, afterWrite(AT_THE_EDGE, offline));
+  check('...nor is a write that failed for some other reason entirely',
+    afterWrite(AT_THE_EDGE, pow).crossing === false, afterWrite(AT_THE_EDGE, pow));
+  check('...nor a 502 from something in front of the water',
+    afterWrite(AT_THE_EDGE, gateway).crossing === false, afterWrite(AT_THE_EDGE, gateway));
+  check('...nor invalid params', afterWrite(AT_THE_EDGE, params).crossing === false,
+    afterWrite(AT_THE_EDGE, params));
+  // Each of those four came back UNCHANGED — the same object, so a window
+  // holding this in React state does not even re-render on a flapping node.
+  check('...and every one of them leaves the standing untouched, object and all',
+    [offline, pow, gateway, params].every((f) => afterWrite(AT_THE_EDGE, f) === AT_THE_EDGE));
 }
 
 // ---------------------------------------------------------------------------
@@ -162,8 +184,55 @@ function anAcceptedWriteLiftsTheEdge(): void {
   const letIn = afterWrite(AT_THE_EDGE, null);
   check('a player at the edge whose write is accepted is in the water',
     letIn.atTheEdge === false, letIn);
+  check('...and the boundary is drawn LIFTING rather than switched off',
+    letIn.crossing === true, letIn);
   check('...and a player already in the water stays in it, unchanged',
     afterWrite(OPEN_WATER, null) === OPEN_WATER, afterWrite(OPEN_WATER, null));
+
+  // ONCE. The keep-alive puts a write on the wire every few seconds forever,
+  // and every one of them after this is also accepted; if any of them could
+  // re-enter the crossing the welcome would replay for as long as the player
+  // kept playing. It cannot, and the reason is structural rather than a guard:
+  // only a standing with the edge UP can enter it, and entering puts the edge
+  // down.
+  check('the next accepted write does not play the moment again — it changes nothing at all',
+    afterWrite(letIn, null) === letIn, afterWrite(letIn, null));
+  check('...nor does the one after that, or any of the next hundred',
+    Array.from({ length: 100 }).reduce<typeof letIn>((s) => afterWrite(s, null), letIn) === letIn);
+
+  // THE THREE STATES ARE EXCLUSIVE. `chooseWater` reads `atTheEdge` and
+  // `TheEdge` reads `crossing`, so a standing with both raised would put a
+  // player in the tutorial water with the boundary lifting off it — the one
+  // combination that means nothing.
+  for (const [name, s] of [['open water', OPEN_WATER], ['at the edge', AT_THE_EDGE],
+    ['crossing', CROSSING]] as const) {
+    check(`${name} never has both flags up`, !(s.atTheEdge && s.crossing), s);
+  }
+  check('NON-DEGENERACY: and they really are three different standings',
+    new Set([OPEN_WATER, AT_THE_EDGE, CROSSING]).size === 3);
+
+  // THE END OF THE MOMENT is the clock's business, not the node's.
+  check('once the moment has played out the player is simply in the water',
+    settled(CROSSING) === OPEN_WATER, settled(CROSSING));
+  check('...and a timer that fires with nothing to end changes nothing',
+    settled(OPEN_WATER) === OPEN_WATER && settled(AT_THE_EDGE) === AT_THE_EDGE);
+
+  // THE RACE, and the reason `settled` is a fold rather than `setStanding(OPEN_WATER)`:
+  // the water can refuse this swimmer AGAIN while the lift is still playing (a
+  // vouch that lands and is then withdrawn, a node that flaps). The boundary has
+  // to come straight back — and the timer, firing a moment later, must not put
+  // them back in water that has just said no to them a second time.
+  const refusedAgain = afterWrite(CROSSING, { kind: 'not-sponsored', cause: new Error('x') });
+  check('refused again mid-lift, the player is back at the edge',
+    refusedAgain === AT_THE_EDGE, refusedAgain);
+  check('...and the moment\'s own timer, arriving late, leaves them there',
+    settled(refusedAgain) === AT_THE_EDGE, settled(refusedAgain));
+
+  // The one number this module and `theEdge.css` share. Held against the
+  // EMITTED stylesheet in `shippedStyles.test.ts`; here it is only held to
+  // being a moment rather than a wait, hand-picked bounds either side.
+  check('the moment is long enough to be seen and short enough not to be a wait',
+    CROSSING_MS >= 1_000 && CROSSING_MS <= 5_000, CROSSING_MS);
 }
 
 // ---------------------------------------------------------------------------

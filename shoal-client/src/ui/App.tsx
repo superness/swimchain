@@ -24,9 +24,16 @@
  * a player who cannot reach the shoal must see A PLACE, NOT AN ERROR, and a
  * place with no way of saying what would change it is a dead end. The words
  * live in `wayIn.ts` and are held to the diegetic rule by name in
- * `wayIn.test.ts`; the surface itself is water, a boundary, and one small fish
- * circling on the wrong side of it. It appears for one classified failure and
- * for nothing else — see `wayIn.afterWrite`.
+ * `wayIn.test.ts`; the surface itself is water and a boundary, and nothing on
+ * it stands in for the player any more (`TheEdge.tsx`, on the fish that used
+ * to). It appears for one classified failure and for nothing else — see
+ * `wayIn.afterWrite`.
+ *
+ * IT LEAVES WITHOUT A WORD, TOO. When a write is accepted the boundary lifts —
+ * a picture, not a sentence, per spec 2.18 — and this component's only part in
+ * that is to keep `TheEdge` in the tree for `CROSSING_MS` while it plays. The
+ * player is in real water from the instant the node said yes; nothing waits for
+ * the animation, and no copy is added anywhere.
  *
  * AND THE WATER UNDER IT IS A SEA THEY CAN PLAY. A refused swimmer is put in
  * the shallows (`seaChoice.chooseWater`) rather than left standing in water
@@ -128,7 +135,7 @@ import { type ChainSea } from './chainSea';
 import { chooseSeaSource, chooseWater, knockOn, nodeWriteDue, retryDelayMs, seaFrom } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
 import { TheEdge } from './TheEdge';
-import { afterWrite, OPEN_WATER, type Standing } from './wayIn';
+import { afterWrite, CROSSING_MS, OPEN_WATER, settled, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
 import { paintFrame, type ScatterPaint, type Swimmer } from './seaPaint';
 import { fitBodies, fitScale, followCamera, reckonSmooth, screenToWorld, type Camera, type Viewport } from './render';
@@ -440,6 +447,14 @@ export function App() {
    *
    * `afterWrite` returns the SAME object when nothing changed, so the accepted
    * write every few seconds does not re-render the tree.
+   *
+   * IT STARTS AT `OPEN_WATER` EVERY TIME AND IS NEVER PERSISTED, and that is
+   * the whole of how a slow yes survives a restart. A player vouched for while
+   * this app was closed opens claiming nothing, writes on the first frame, is
+   * accepted, and is simply in the water — no boundary, no ceremony, nothing
+   * to reconcile. A standing cached on disk could only ever be a stale copy of
+   * a decision made somewhere else, and the state it would get wrong is the
+   * good one.
    */
   const [standing, setStanding] = useState<Standing>(OPEN_WATER);
   /**
@@ -543,6 +558,31 @@ export function App() {
       if (timer !== undefined) clearTimeout(timer);
     };
   }, []);
+
+  /**
+   * THE END OF THE MOMENT, and the only timer in this component.
+   *
+   * `crossing` is raised by the write the node accepted and is lowered here,
+   * `CROSSING_MS` later, purely so the boundary can be seen leaving instead of
+   * vanishing. NOTHING IS BEING WAITED FOR: the standing's other flag is
+   * already down, so the frame effect below has already rebuilt on the real
+   * water and the player has been swimming it since the instant the yes
+   * arrived.
+   *
+   * `settled` is idempotent and returns the SAME object when there is nothing
+   * to lower, so a timer that fires after a second refusal put the player back
+   * at the edge changes nothing and re-renders nothing — the one race this can
+   * have, answered in `wayIn.ts` rather than by a flag here.
+   *
+   * Keyed on `standing.crossing` alone: a re-render for any other reason must
+   * not restart the clock, or a busy window could hold the boundary on screen
+   * indefinitely.
+   */
+  useEffect(() => {
+    if (!standing.crossing) return;
+    const t = setTimeout(() => { setStanding(settled); }, CROSSING_MS);
+    return () => { clearTimeout(t); };
+  }, [standing.crossing]);
 
   /**
    * The queue between the DOM's event handlers and the frame loop.
@@ -1072,8 +1112,16 @@ export function App() {
       <canvas ref={canvasRef} style={S.canvas} />
       {/* THE EDGE OF THE WATER (spec §2.16). Over the live canvas, never
           instead of it: the sea keeps folding and drawing underneath, because
-          a player who cannot get in has to see a place, not an error. */}
-      {standing.atTheEdge && <TheEdge />}
+          a player who cannot get in has to see a place, not an error.
+
+          IT OUTLASTS ITS OWN TRUTH BY `CROSSING_MS`, on purpose. `crossing` is
+          raised for the one moment the water takes this swimmer in, and while
+          it is up the player is ALREADY in the real water — `chooseWater` reads
+          `atTheEdge`, which is down by then — so this is a boundary being drawn
+          going, not a gate still shut. One `<TheEdge>` across both, never two,
+          so React keeps the element and the lift happens to the boundary the
+          player has been looking at rather than to a fresh copy of it. */}
+      {(standing.atTheEdge || standing.crossing) && <TheEdge lifting={standing.crossing} />}
       {typing !== null && (
         // A bare line with a caret. No label, no placeholder, no send button —
         // the diegetic rule holds here too, and there is nothing to say about
