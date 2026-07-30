@@ -44,8 +44,11 @@ WorkingDirectory=/opt/defcon-gate
 Environment=RPC_URL=http://127.0.0.1:9736
 Environment=COOKIE_FILE=/var/lib/swimchain-mainnet/.cookie
 # SET AT GO-LIVE: pick with `pwgen`/similar, format WORD-####, never commit
-# the real value anywhere. This placeholder fails codeMatches for everyone,
-# so the keeper is safe (rejects only, never approves) until it's replaced.
+# the real value anywhere. This placeholder is committed and public, so it
+# is NOT a safe stand-in code (anyone could submit the literal string
+# "SET-AT-GO-LIVE" and pass codeMatches's case-insensitive equality check) —
+# defcon-gate.mjs refuses to start at all while GATE_CODE equals this
+# placeholder (exit code 2), rather than starting in some falsely-safe mode.
 Environment=GATE_CODE=SET-AT-GO-LIVE
 # Midnight Pacific after the con's last day (docs/superpowers/plans/2026-07-29-defcon34-onboarding.md).
 # Offers themselves use expires_days=1 as a coarse backstop; this is the

@@ -51,17 +51,51 @@ function required(name) {
   return v;
 }
 
+// Bare `Number(...)` on a malformed env (typo'd digit, e.g. TOTAL_CAP=5OO)
+// silently produces NaN. NaN is corrosive here in ways that don't throw:
+// gate-logic's `totalApproved >= totalCap` and
+// `hourlyCount(...) >= hourlyCap` comparisons are ALWAYS false against NaN,
+// which means a bad TOTAL_CAP/HOURLY_CAP doesn't fail loudly — it silently
+// removes the cap entirely (every correctly-coded claim gets approved, no
+// limit). A NaN POLL_MS also turns `setTimeout(r, NaN)` into a ~0ms retry
+// loop against the RPC. So every numeric env gets the same fail-closed
+// treatment END_AT/DEFCON_SPACE_HEX already get: parse once at startup,
+// exit(2) on anything that isn't a finite integer.
+function intEnv(name, def) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    console.error(`${name} must be an integer, got "${raw}"`);
+    process.exit(2);
+  }
+  return n;
+}
+
 const RPC_URL = required('RPC_URL');
 const COOKIE_FILE = required('COOKIE_FILE');
 const GATE_CODE = required('GATE_CODE');
+// Refuse to run with the placeholder shipped in deploy/defcon-gate-mainnet.service:
+// it's committed (public), and codeMatches() is a case-insensitive equality
+// check, so anyone submitting the literal string "SET-AT-GO-LIVE" as their
+// application text would pass and be globally sponsored. This is not a
+// theoretical gap — the placeholder must be actively refused, not just
+// documented as unsafe.
+if (GATE_CODE === 'SET-AT-GO-LIVE') {
+  console.error(
+    'GATE_CODE is still the shipped placeholder "SET-AT-GO-LIVE" — anyone could submit that ' +
+      'literal string and be approved. Set the real code before starting.'
+  );
+  process.exit(2);
+}
 const END_AT = required('END_AT');
 const DEFCON_SPACE_HEX = required('DEFCON_SPACE_HEX').toLowerCase();
-const TOTAL_CAP = Number(process.env.TOTAL_CAP ?? 500);
-const HOURLY_CAP = Number(process.env.HOURLY_CAP ?? 60);
-const OFFER_SLOTS = Number(process.env.OFFER_SLOTS ?? 10);
-const OFFER_EXPIRES_DAYS = Number(process.env.OFFER_EXPIRES_DAYS ?? 1);
-const MIN_POW = Number(process.env.MIN_POW ?? 8);
-const POLL_MS = Number(process.env.POLL_MS ?? 5000);
+const TOTAL_CAP = intEnv('TOTAL_CAP', 500);
+const HOURLY_CAP = intEnv('HOURLY_CAP', 60);
+const OFFER_SLOTS = intEnv('OFFER_SLOTS', 10);
+const OFFER_EXPIRES_DAYS = intEnv('OFFER_EXPIRES_DAYS', 1);
+const MIN_POW = intEnv('MIN_POW', 8);
+const POLL_MS = intEnv('POLL_MS', 5000);
 const STATE_FILE = process.env.STATE_FILE || './defcon-gate-state.json';
 
 const END_AT_MS = Date.parse(END_AT);
@@ -370,14 +404,27 @@ async function cancelAll(offers) {
 
 async function myOffers(myPubkeyHex) {
   // list_sponsorship_offers has no sponsor filter and clamps limit to 100
-  // server-side (src/rpc/methods.rs:16967); has_more would mean this
-  // undercounts our own offers, which is worth a loud warning.
-  const listed = await rpc('list_sponsorship_offers', { limit: 100 });
-  if (listed?.has_more) {
-    log('WARNING: list_sponsorship_offers reported has_more — raise pagination, offer health may be undercounted');
+  // server-side (src/rpc/methods.rs:16967), paginating via offset/has_more
+  // (:16986-17000). Offers gossip network-wide, so with >100 active offers
+  // on the network ours could sit on page 2+ — missing them means missed
+  // pending claims AND offerPlan wrongly concluding we have no live offer,
+  // which mints a fresh one every tick (runaway minting). Page through until
+  // has_more is false, with a safety valve in case a server bug reports
+  // has_more forever.
+  const all = [];
+  let offset = 0;
+  const MAX_PAGES = 50; // 5000 offers: pathological, not a real ceiling
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const listed = await rpc('list_sponsorship_offers', { limit: 100, offset });
+    const offers = listed?.offers ?? [];
+    all.push(...offers);
+    if (!listed?.has_more || offers.length === 0) break;
+    offset += offers.length;
+    if (page === MAX_PAGES - 1) {
+      log(`WARNING: list_sponsorship_offers still has_more after ${MAX_PAGES} pages — giving up, offer health may be undercounted`);
+    }
   }
-  const offers = listed?.offers ?? [];
-  return offers.filter((o) => String(o.sponsor_pubkey || '').toLowerCase() === myPubkeyHex.toLowerCase());
+  return all.filter((o) => String(o.sponsor_pubkey || '').toLowerCase() === myPubkeyHex.toLowerCase());
 }
 
 // ── tick ─────────────────────────────────────────────────────────────────
@@ -417,10 +464,32 @@ async function tick(state) {
       totalCap: TOTAL_CAP,
     });
     log(`tier ${tier.scope ?? 'global'}: ${tierOffers.length} offer(s); ${plan.needNew ? 'needNew' : 'ok'} (${plan.reason})`);
-    if (plan.needNew && !process.env.DRY_RUN) await createOffer(me.public_key, tier.scope);
+    if (plan.needNew && !process.env.DRY_RUN) {
+      // Same isolation reasoning as the claim loop below: a failed mint on
+      // one tier (e.g. transient RPC error) must not skip claim processing
+      // for offers already open on this or the other tier for the rest of
+      // this tick.
+      try {
+        await createOffer(me.public_key, tier.scope);
+      } catch (e) {
+        log(`createOffer (${tier.scope ?? 'global'}) failed: ${e.message}`);
+      }
+    }
 
     for (const offer of tierOffers.filter((o) => o.expires_at > nowSec)) {
-      const detail = await rpc('get_sponsorship_offer', { offer_id: offer.offer_id, caller_pubkey: me.public_key });
+      // Per-offer isolation: one offer's get_sponsorship_offer failing (RPC
+      // hiccup, offer since cancelled) must not abandon every other offer in
+      // this tick — without a try/catch here, any throw unwinds all the way
+      // to main()'s catch, skipping every remaining offer AND claim for the
+      // rest of this tick, every tick, for as long as the one offer keeps
+      // failing.
+      let detail;
+      try {
+        detail = await rpc('get_sponsorship_offer', { offer_id: offer.offer_id, caller_pubkey: me.public_key });
+      } catch (e) {
+        log(`get_sponsorship_offer ${offer.offer_id.slice(0, 8)} failed: ${e.message}`);
+        continue;
+      }
       for (const claim of detail.pending_claims ?? []) {
         const d = gateDecision({
           applicationText: claim.application_text,
@@ -434,13 +503,23 @@ async function tick(state) {
         });
         log(`claim ${claim.claimant_pubkey.slice(0, 8)} on ${offer.offer_id.slice(0, 8)} -> ${d.action} (${d.reason})`);
         if (process.env.DRY_RUN) continue;
-        if (d.action === 'approve') {
-          await approveClaim(offer, claim, me.public_key);
-          state.totalApproved++;
-          state.approvedAtMs.push(nowMs);
-          saveState(state);
-        } else if (d.action === 'reject') {
-          await rejectClaim(offer, claim, me.public_key);
+        // Per-claim isolation, same reasoning as above: approve can
+        // legitimately fail mid-run (e.g. PermissionDenied on a
+        // sponsor-restricted claim, or a slot-race NoSlots — both real,
+        // documented failure modes of execute_claim_approval,
+        // src/rpc/methods.rs:17971-18010) and must not wedge the rest of
+        // the claims in this offer, or the rest of the tiers, forever.
+        try {
+          if (d.action === 'approve') {
+            await approveClaim(offer, claim, me.public_key);
+            state.totalApproved++;
+            state.approvedAtMs.push(nowMs);
+            saveState(state);
+          } else if (d.action === 'reject') {
+            await rejectClaim(offer, claim, me.public_key);
+          }
+        } catch (e) {
+          log(`${d.action} ${claim.claimant_pubkey.slice(0, 8)} on ${offer.offer_id.slice(0, 8)} failed: ${e.message}`);
         }
       }
     }
