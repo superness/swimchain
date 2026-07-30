@@ -39,6 +39,10 @@ test('gateDecision skips everything after END_AT even with a good code', () => {
   const d = gateDecision({ ...baseArgs, applicationText: 'TEST-CODE-1234', nowMs: 3_000_000_000 });
   assert.deepEqual([d.action, d.reason], ['skip', 'ended']);
 });
+test('gateDecision after END_AT with a BAD code still skips — never signs a reject after end', () => {
+  const d = gateDecision({ ...baseArgs, applicationText: 'wrong-code', nowMs: 3_000_000_000 });
+  assert.deepEqual([d.action, d.reason], ['skip', 'ended']);
+});
 
 test('offerPlan wants a new offer only when the tier has no live capacity', () => {
   const live = { slots_remaining: 3, expires_at: 2_000_000 };
