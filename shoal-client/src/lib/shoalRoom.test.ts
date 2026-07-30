@@ -597,6 +597,32 @@ function result(replies: NodeReply[]): GetRepliesResult {
     const twice = await roomIdFor(MAIN, E);
     check('called twice with the same arguments, byte-identical both times', once === twice, { once, twice });
     check('...and still the pinned literal', twice === PINNED_EPOCH_495936, twice);
+
+    // NOT a source scan of this file — the other half of this module legitimately
+    // talks to a node, so a whole-file grep for `fetch` would be meaningless here.
+    // The globals themselves are replaced with throwing stubs for the duration of
+    // one call instead, which no future refactor or renamed helper can slip past.
+    // A `Date.now()` that crept into the derivation would make the room depend on
+    // the READING client's clock rather than on the instant it was handed — the
+    // same silent fork as a wrong grammar, arriving only when two clients' clocks
+    // differ, which is to say in production and never in a test.
+    const realNow = Date.now;
+    const realRandom = Math.random;
+    Date.now = () => { throw new Error('the room derivation read the wall clock'); };
+    Math.random = () => { throw new Error('the room derivation rolled dice'); };
+    let threw: unknown = null;
+    let clockless = '';
+    try {
+      clockless = await roomIdAtMs(MAIN, epochStartMs(E) + 12_345);
+    } catch (e) {
+      threw = e;
+    } finally {
+      Date.now = realNow;
+      Math.random = realRandom;
+    }
+    check('the derivation reads neither Date.now nor Math.random', threw === null, threw);
+    check('...and with both of them disabled still returns the pinned room',
+      clockless === PINNED_EPOCH_495936, clockless);
   }
 }
 
