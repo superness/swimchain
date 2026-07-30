@@ -34,6 +34,31 @@
   #signal-lost button { font: bold 16px monospace; padding: 10px 26px; background: #041;
                         color: #9fb; border: 2px solid #9fb; }
 
+  /* Task 4 (B6): DEAD AIR test card — same bleached coral SMPTE structure as
+     #signal-lost (both are "no-programme" test cards), reused verbatim, but a
+     DIFFERENT id/z-index and a different reason to be up: unlike signal-lost
+     (shown INSTEAD of a channel, pre-reveal, on a mount timeout) dead-air is
+     drawn OVER an already-revealed, still-playing channel (§3.3: "decayed
+     channels are not hidden — you flip through them"), so it must sit above
+     deck channel frames (z 1..N) yet stay inside the signal-lost/node-dead
+     z-order family (5500/5600) — placed at 5550, between the two, since the
+     two cards never show at once (signal-lost is pre-reveal; dead-air is
+     post-reveal) and it stays clear of OSD (6000) and the flip strip (6500),
+     so flipping through a dying channel still works. Dismissed explicitly on
+     the next flip (settle() hides it, mirroring signal-lost's own
+     hide-on-settle line). */
+  #dead-air { position: absolute; inset: 0; z-index: 5550; display: flex;
+              flex-direction: column; align-items: center; justify-content: center; gap: 16px;
+              background: repeating-linear-gradient(90deg,
+                #9aa89b 0 14.2%, #a8a173 14.2% 28.4%, #7d9c8e 28.4% 42.6%, #7f8f6f 42.6% 56.8%,
+                #9d7f88 56.8% 71%, #8d7a92 71% 85.2%, #6f7f8c 85.2% 100%); }
+  #dead-air .sl-card { background: rgba(0,0,0,.82); color: #cfe; padding: 24px 32px;
+                       font: bold 18px/1.6 monospace; text-align: center; }
+  #dead-air .da-dying { color: #f88; }
+  #dead-air button { font: bold 16px monospace; padding: 10px 26px; background: #041;
+                     color: #9fb; border: 2px solid #9fb; margin-top: 4px; }
+  #dead-air button:disabled { opacity: .45; }
+
   /* section 6: node-failure card, above signal-lost */
   #node-dead { position: absolute; inset: 0; z-index: 5600; display: flex;
                flex-direction: column; align-items: center; justify-content: center; gap: 16px;
@@ -115,6 +140,14 @@
       <div class="sl-name">CH —</div>
       <div>SIGNAL LOST</div>
       <button id="retune">RETUNE</button>
+    </div>
+  </div>
+  <div id="dead-air" hidden>
+    <div class="sl-card">
+      <div class="da-name">CH —</div>
+      <div class="da-last-signal">LAST SIGNAL: — DAYS AGO</div>
+      <div class="da-dying" hidden>THIS CHANNEL IS DYING</div>
+      <button id="flare-btn">FLARE</button>
     </div>
   </div>
   <div id="osd"></div>

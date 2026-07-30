@@ -8,8 +8,9 @@ import { Deck } from './deck.mjs';
 import { buildConfigMessage, watchReadiness } from './handover.mjs';
 import { createStatic } from './static-shader.mjs';
 import { createFlipTimer, attachFrameProbes, createHud, exportResults } from './measure.mjs';
-import { createDwell } from './dwell.mjs';
+import { createDwell, ledgerMark } from './dwell.mjs';
 import { mineSignSubmit } from './engage.mjs';
+import { classifyChannelDeadAir, classifyAfterFlare, freshestTs, isMetered, pickFlareTarget } from './deadair.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -61,6 +62,128 @@ const dwell = createDwell({
   engageOne,
   store: localStorage,
   onEngaged: (contentId) => hud.note(`dwell engaged ${contentId}`),
+});
+
+// --- dead air + the flare (Task 4, B6): decayed channels are not hidden —
+// you flip through them and hit a bleached SMPTE test card over the
+// still-playing channel; a FLARE revives it by fetching + engaging its
+// newest surviving item. deadAirState tracks the card currently on screen
+// (or null); flareLatched mirrors dwell's per-channel receive-only Set
+// specifically for the flare button — dwell.mjs exposes only
+// isReceiveOnly() (a getter, no setter) and Task 4's file list doesn't
+// include dwell.mjs, so a flare's OWN rejection is tracked here rather than
+// reaching into dwell's private internals. Checked (OR'd with
+// dwell.isReceiveOnly) before every flare attempt, giving "one try then
+// silent" per §2.5 even for a channel dwell itself never got to latch.
+let deadAirState = null; // { channelId, lastEngagementTs } while a card is up
+const flareLatched = new Set();
+
+function hideDeadAirCard() {
+  document.getElementById('dead-air').hidden = true;
+  deadAirState = null;
+}
+
+function showDeadAirCard(ch, classification, lastEngagementTs, beyondFlares = false) {
+  deadAirState = { channelId: ch.id, lastEngagementTs };
+  const el = document.getElementById('dead-air');
+  el.querySelector('.da-name').textContent = `CH ${ch.number} ${ch.name}`;
+  const signalLine = el.querySelector('.da-last-signal');
+  const dyingLine = el.querySelector('.da-dying');
+  if (beyondFlares) {
+    // spec §3.3's defined fallback when the flare has nothing to fetch.
+    signalLine.textContent = 'THIS CHANNEL IS BEYOND FLARES';
+    dyingLine.hidden = true;
+  } else if (Number.isFinite(classification.days)) {
+    const n = Math.floor(classification.days);
+    signalLine.textContent = `LAST SIGNAL: ${n} DAY${n === 1 ? '' : 'S'} AGO`;
+    dyingLine.hidden = classification.state !== 'dying';
+  } else {
+    // null last_engagement_ts (days: Infinity) — known-but-never-engaged;
+    // honest, not "no data" (deadair.mjs's own framing).
+    signalLine.textContent = 'NO SIGNAL ON RECORD';
+    dyingLine.hidden = classification.state !== 'dying';
+  }
+  el.hidden = false;
+}
+
+// Called from settle()'s onReady, after the channel is revealed. Best-effort
+// and race-safe: if the viewer flips away while get_space_health is still in
+// flight, the result is discarded (deck.current !== target) rather than
+// popping a card over whatever channel is now showing.
+async function checkDeadAir(target) {
+  const ch = byId.get(target);
+  // Unmetered guard (THE review-caught blocker): a channel with no declared
+  // spaces (wiki, reef today — undriven live clients, not decayed spaces)
+  // never calls get_space_health at all, and never shows a card. Passing an
+  // empty space_ids array would mean "all known spaces" per Task 1's RPC
+  // contract, crediting an unrelated busy space's recency to this channel.
+  if (!isMetered(ch)) return;
+  let entries;
+  try {
+    entries = (await rpc('get_space_health', { space_ids: ch.spaces }))?.spaces ?? [];
+  } catch {
+    return; // best-effort; a transient RPC failure just means no card this reveal
+  }
+  if (deck.current !== target) return; // flipped away while this was in flight
+  const classification = classifyChannelDeadAir(ch, entries, Date.now());
+  if (classification) showDeadAirCard(ch, classification, freshestTs(entries));
+}
+
+document.getElementById('flare-btn').addEventListener('click', async () => {
+  if (!deadAirState) return;
+  const { channelId } = deadAirState;
+  // Guard the flare behind the same licensed/receive-only check as dwell —
+  // an unsponsored identity must not re-mine a doomed PoW on every FLARE
+  // press. One try then silent (§2.5): no error surface, the button just
+  // does nothing on a latched channel.
+  if (dwell.isReceiveOnly(channelId) || flareLatched.has(channelId)) return;
+  const btn = document.getElementById('flare-btn');
+  btn.disabled = true;
+  try {
+    const ch = byId.get(channelId);
+    let items = [];
+    for (const space of ch.spaces) {
+      try {
+        const listed = await rpc('list_space_content', { space_id: space, limit: 5 });
+        items = items.concat(listed?.items ?? []);
+      } catch { /* keep going with whichever spaces answered */ }
+    }
+    const targetId = pickFlareTarget(items);
+    if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return; // flipped away
+    if (!targetId) {
+      // spec §3.3's defined fallback: nothing retrievable across any of this
+      // channel's spaces — the card says the channel is beyond flares.
+      showDeadAirCard(ch, { state: 'dying', days: Infinity }, deadAirState.lastEngagementTs, true);
+      return;
+    }
+    // Flare = request_content on the newest surviving item + one engage via
+    // the same signing path dwell uses (engageOne, closed over rpc/sign/myPk).
+    rpc('request_content', { content_id: targetId }).catch(() => {});
+    const r = await engageOne(targetId);
+    if (deck.current !== channelId || !deadAirState || deadAirState.channelId !== channelId) return; // flipped away
+    if (r.ok) {
+      // Not brief-required, but cheap and correct: mark dwell's own 24h
+      // ledger for the just-flared item (dwell.mjs already exports
+      // ledgerMark, unmodified) so dwell's next 45s cycle on this channel
+      // doesn't immediately re-mine + re-submit the same content the flare
+      // just landed.
+      ledgerMark(localStorage, targetId, Date.now());
+      // Clear OPTIMISTICALLY: the flare's own engage counts as the freshest
+      // engagement the moment it's submitted (chain+mempool law) — classify
+      // with lastEngagementTs = now, WITHOUT re-calling get_space_health
+      // (that RPC only reflects it after block inclusion, ~1-6 min).
+      const reclass = classifyAfterFlare(deadAirState.lastEngagementTs, Date.now(), true);
+      hud.note(`flare revived ${channelId}`);
+      if (reclass.state === 'alive') hideDeadAirCard();
+      else showDeadAirCard(ch, reclass, deadAirState.lastEngagementTs); // defensive; unreachable given classifyAfterFlare(..., true)'s contract
+    } else if (r.receiveOnly) {
+      flareLatched.add(channelId); // one try then silent; card stays up unchanged
+    }
+    // non-latching failure (mining/RPC error): leave the card up as-is; a
+    // later FLARE press may retry.
+  } finally {
+    btn.disabled = false;
+  }
 });
 
 // Review fix 4: while a seam is up (acquisition, a cold/warm mount gate, or
@@ -178,6 +301,7 @@ function settle(target, tuneResult, from, kindOverride = null) {
   timer.start(target, kindOverride ?? (cold ? 'cold' : 'warm'));
   seamOn();
   document.getElementById('signal-lost').hidden = true;
+  hideDeadAirCard(); // Task 4: dismissed on next flip, mirrored from signal-lost's own hide-on-settle line
   for (const id of tuneResult.evicted) unmount(id);
   const frame = frames.get(target) ?? mount(target);
   gate = watchReadiness(frame, {
@@ -205,6 +329,10 @@ function settle(target, tuneResult, from, kindOverride = null) {
       if (acquired && dwellSpaces.length && !dwell.isReceiveOnly(target)) {
         dwell.tuned(target, dwellSpaces);
       }
+      // Task 4 (B6): dead-air classification on every reveal — checkDeadAir
+      // owns its own unmetered guard (skips the RPC entirely for wiki/reef),
+      // so no extra condition needed here.
+      checkDeadAir(target);
     },
     onTimeout: () => {
       timer.abort();
