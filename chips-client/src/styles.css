@@ -2965,3 +2965,116 @@ h1, h2, h3, p { margin: 0; }
   mix-blend-mode: screen;
   transition: opacity .4s ease-out;
 }
+
+
+/* ── A DEEP BOSS ───────────────────────────────────────────────────────────
+   The porcelain gets spectacle: cracks spreading, one enormous moment. This is
+   the opposite fight and gets the opposite screen — a bar you come back to.
+   Deliberately calmer, because you will see it many times. */
+.deep-call {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  order: 0; width: 100%;
+  background: rgba(16, 11, 9, .95);
+  border: 1px solid rgba(200, 150, 110, .4);
+  border-radius: 12px; padding: 9px 14px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .55);
+}
+.deep-go {
+  flex: none; font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #e6c8a4; border: 1px solid rgba(220, 170, 120, .55);
+  border-radius: 999px; padding: 5px 13px;
+  transition: color .2s, border-color .2s, background .2s;
+}
+.deep-go:hover { color: #fff; border-color: rgba(255, 200, 150, .9); background: rgba(60, 34, 18, .6); }
+
+.deep {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  padding: 20px; text-align: center;
+  background: rgba(6, 4, 3, .93);
+}
+.deep-bed {
+  position: absolute; inset: 0; pointer-events: none;
+  background: radial-gradient(120% 90% at 50% 110%, rgba(90, 50, 24, .55), transparent 70%);
+  transition: opacity .8s;
+}
+.deep-bed.through { opacity: .25; }
+
+/* WIDTH, not max-width: `.deep` centres a flex child, so a max-width alone let
+   the column collapse to the widest line — measured at 232px on a 1707px
+   viewport, which made the healthbar look like a progress dash. */
+/* `100%`, NOT `92vw`: `.deep` carries 20px padding, so at a 390px viewport the
+   content box is 350px while 92vw resolves to 358.8 — a 9px overflow on a phone,
+   which vw units cannot see because they do not know about the padding. */
+.deep-words { position: relative; z-index: 1; width: min(520px, 100%); }
+.deep-small {
+  display: block; font-family: var(--chalk); font-size: 11px;
+  letter-spacing: .08em; color: #a8846a;
+}
+.deep-words > strong {
+  display: block; font-family: var(--sign); font-size: clamp(26px, 6vw, 44px);
+  color: #f2ddc4; margin: 2px 0 14px;
+}
+.deep-through {
+  display: block; font-family: var(--sign); font-size: clamp(28px, 7vw, 50px);
+  color: #ffd9a8; text-shadow: 0 0 24px rgba(255, 170, 90, .6);
+}
+.deep-line {
+  display: block; margin-top: 10px; font-family: var(--chalk);
+  font-size: 12.5px; line-height: 1.5; color: #c3a487;
+}
+
+/* the bar. `width` is the damage done, straight from the fold's own number. */
+.deep-hp {
+  position: relative; height: 18px; border-radius: 999px; overflow: hidden;
+  background: rgba(0, 0, 0, .55);
+  border: 1px solid rgba(220, 170, 120, .35);
+}
+.deep-hp-fill {
+  position: absolute; inset: 0 auto 0 0;
+  background: linear-gradient(90deg, #8a4a1e, #e08b3c 70%, #ffc27a);
+  box-shadow: 0 0 14px rgba(255, 150, 70, .5);
+  transition: width .5s ease-out;
+}
+.deep-hp-notches { position: absolute; inset: 0; display: flex; }
+.deep-hp-notches i {
+  flex: 1 1 0; border-right: 1px solid rgba(0, 0, 0, .35);
+}
+.deep-hp-notches i:last-child { border-right: 0; }
+
+.deep-tally {
+  margin: 8px 0 0; font-family: var(--chalk); font-size: 12px; color: #c3a487;
+}
+.deep-tally b { color: #ffd9a8; font-weight: 400; font-variant-numeric: tabular-nums; }
+.deep-tally em {
+  display: block; font-style: normal; font-size: 10.5px; color: #8d6a52; margin-top: 3px;
+}
+
+.deep-best { margin: 14px 0 0; font-family: var(--chalk); font-size: 12px; color: #c3a487; }
+.deep-best b { color: #f2ddc4; font-weight: 400; font-variant-numeric: tabular-nums; }
+.deep-best em {
+  display: block; font-style: normal; font-size: 11px; color: #a8846a; margin-top: 4px;
+}
+.deep-best .deep-enough { color: #ffc27a; }
+
+.deep-acts { margin-top: 18px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+.deep-hit {
+  font-family: var(--sign); font-size: 16px; letter-spacing: .04em;
+  color: #241207; background: #ffc27a;
+  border-radius: 999px; padding: 9px 22px;
+  box-shadow: 0 0 22px rgba(255, 170, 90, .45);
+}
+.deep-hit:hover { background: #ffd9a8; }
+.deep-leave {
+  font-family: var(--chalk); font-size: 11px; letter-spacing: .06em;
+  color: #a8846a; border: 1px solid rgba(168, 132, 106, .45);
+  border-radius: 999px; padding: 7px 15px;
+}
+.deep-leave:hover { color: #f2ddc4; border-color: rgba(242, 221, 196, .6); }
+.deep-cold { font-family: var(--chalk); font-size: 11.5px; color: #8d6a52; margin: 0; }
+
+.deep-scoop {
+  position: absolute; bottom: 14px; right: 16px;
+  width: 46px; height: 46px; opacity: .5; pointer-events: none;
+}
+.deep-scoop svg { width: 100%; height: 100%; }
