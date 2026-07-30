@@ -5,6 +5,7 @@
   "scripts": {
     "tauri": "tauri",
     "build:channels": "node scripts/build-channels.cjs",
+    "build:worker": "node scripts/build-worker.cjs",
     "test": "node --test \"test/*.test.mjs\""
   },
   "devDependencies": {

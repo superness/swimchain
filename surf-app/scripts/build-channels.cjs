@@ -71,3 +71,8 @@ const js = walkJsFiles(path.join(OUT, 'reef')).map((f) => fs.readFileSync(f, 'ut
 if (!js.includes('127.0.0.1:9736')) throw new Error('reef: loopback endpoint not baked');
 if (js.includes('swimchain.io/rpc')) throw new Error('reef: PRODUCTION GATEWAY LEAKED INTO THE BAKE');
 console.log('\nall channels baked and verified');
+
+// B: the engage PoW worker is a separate bundle (not a vite channel), but one
+// bake command should produce everything the shell needs.
+console.log('\n=== engage worker ===');
+require('./build-worker.cjs').buildWorker();

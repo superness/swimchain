@@ -119,6 +119,94 @@ during Task 5's own device testing; see the port-conflict warning in the
 build recipe below. D6's G2 background re-check is still pending; see "Open
 items" below.*
 
+## Phase B — the soul
+
+A1 was a deck of live channels; Phase B gives the set a pulse. Six tasks
+(Task 1-6), all reviewed and merged. Full design: spec
+`docs/superpowers/specs/2026-07-28-surf-channel-app-design.md` §2.5/§3.1-§3.4;
+the six operator-ruled dials: `docs/superpowers/specs/2026-07-29-surf-b-decision-sheet.md`
+(B1-B6); the implementation plan: `docs/superpowers/plans/2026-07-29-surf-b-the-soul.md`.
+
+**What shipped:**
+
+- **`get_space_health` (B1, Task 1)** — a new, auth-exempt RPC returning only
+  fields the chain genuinely supports today: `{ space_id, last_engagement_ts,
+  engagements_7d, unique_actors_7d }` per requested space, behind the same
+  3s-TTL cache `list_spaces` uses. Deliberately **not** the spec's full
+  `health_score` — `compute.rs`'s score has two hardcoded-stub inputs
+  (`posts_at_risk`, `last_sync_age`) and an unwired manager; exposing it as-is
+  would have made the Chart's "brightness is truth" a lie on day one. A real
+  score is future work (B1(b) below).
+- **Dwell-engage (B2, Task 3)** — "watching is feeding": a channel tuned
+  continuously for `DWELL_SECONDS` (45s) mines and submits one minimum-weight
+  engage against its `K` (3) most-recently-rendered items, rate-limited to
+  one engage per content per `ENGAGE_LEDGER_HOURS` (24h, a shell-side
+  `localStorage` ledger — there is no node-side rate limit to lean on). PoW
+  runs in a dedicated Worker (`web/workers/engage.worker.js`, built from
+  `scripts/worker-src/engage.worker.mjs`) so hash-wasm's synchronous mining
+  loop can't starve the event loop. A receive-only (unsponsored) identity
+  tries once, then goes silent on that channel for the session (§2.5) — no
+  error surfaced, no repeated doomed mining.
+- **Dead air + the flare (B6, Task 4)** — a channel whose freshest engagement
+  is 2-5 days old shows a bleached SMPTE test card (`LAST SIGNAL: N DAYS
+  AGO`) over the still-playing channel; past 5 days it reads `THIS CHANNEL IS
+  DYING`. A FLARE fetches + engages the channel's newest surviving item to
+  revive it, sharing dwell's own receive-only latch (one Set, not two,
+  closing a real cross-latch gap a review caught). A channel with no declared
+  spaces (wiki, reef today) is **unmetered** — it never calls
+  `get_space_health` and never shows a card; this is distinct from a metered
+  channel that's measured-and-confirmed dead.
+- **The Chart (B3, Task 5)** — pull down from the top edge (or press `c`) for
+  a vertical water column: every dial channel at its fixed §3.4 band depth
+  (surface/mid/reef/trench), glowing by engagement recency
+  (`policy.mjs`'s `glow()`, log-scaled against the 7-day content half-life —
+  full phosphor under 6h, the 0.06 floor past 7d). Warm-deck channels carry
+  an afterglow. A horizontal flick on a row moors it (cap `MOOR_CAP` = 3,
+  `localStorage`-persisted); a flick on the moored-buoys strip cycles which
+  one is highlighted; tap any row or buoy to tune straight to it.
+- **Health-driven bootstrap (B5, Task 6)** — closes A1's hardcoded-space
+  debt. See below.
+
+**The B dials, and where to tune them:** every Phase B constant lives in
+`surf-app/web/policy.mjs` — `DWELL_SECONDS`, `DWELL_K`, `ENGAGE_LEDGER_HOURS`,
+`ENGAGE_DIFFICULTY_BITS`/`ARGON2` (node-truth PoW params, not really tunable
+— they must match what the node actually accepts), `DEAD_AIR_FADING_DAYS`,
+`DEAD_AIR_DYING_DAYS`, `MOOR_CAP`, and the `glow()` curve itself. All client
+policy per the fold-rules law (nothing here is consensus) — change a value,
+reload, done; no chain implications.
+
+**Health-driven bootstrap (B5):** A1's first-run acquisition always followed
+three hardcoded `channels.json` spaces, with no fallback if they ever decayed
+(content half-life is 7 days) — a keeper outage or three quietly-dying spaces
+would have stalled acquisition forever with nothing else to pull from. Task 6
+replaces this: `acquisitionBoot` now calls `list_spaces {limit:20}`, filters
+to `class === 'social'`, and takes the top 3 by `list_spaces`' own
+`last_activity` field (`bootstrap.mjs`'s pure `pickBootstrap` — the ranking
+source is `list_spaces`' own recency field, not a second `get_space_health`
+round-trip, since `last_activity` is populated from the same content-block
+scan `get_space_health` itself draws from; the decision sheet left this
+choice open and this is the one made, noted here per the brief). The picked
+set becomes the feed channel's spaces via a single mutation
+(`byId.get(FEED_ID).spaces = picked`) and is persisted to
+`localStorage['surf.feedSpaces']`; every later boot re-applies the persisted
+pick immediately after `byId` is built, before anything else reads it — so
+`tuneDriver`, the acquisition lock's `localItemCount`, dwell, dead-air, and
+the Chart all see the live set for this session and all later ones, with no
+per-consumer changes needed. `channels.json`'s original trio is the fallback
+only: an empty `list_spaces` response, or a response with no `'social'`-classed
+space at all. Live-verified against the real running app, both directions —
+see `.superpowers/sdd/2026-07-29-surf-b-the-soul/task-6-report.md`.
+
+**Engage worker build step:** `npm run build:worker` bundles
+`scripts/worker-src/engage.worker.mjs` (dwell/flare's PoW miner) into
+`web/workers/engage.worker.js` via esbuild (resolved from `feed-client`'s
+`node_modules`), verifying the bundled output actually contains
+`argon2id` (catches a silently-broken import) and stays under a ~2MB budget.
+This is **folded into `npm run build:channels`** — the channel bake already
+runs it as its last step, so the existing "run `build:channels` before any
+APK build" rule (below) covers the worker too; there is no separate step to
+remember.
+
 ## Build recipe
 
 ### Desktop dev (fastest loop for shell/RPC work)
@@ -313,9 +401,13 @@ disabled until the set has acquired its first signal (`acquired` in
 | Config-handover hardening (§2.4 — origin/signature hardening beyond the current exact-origin `postMessage`; no client source changes in A1) | C |
 | Release signing, APK size gate, sourcemap stripping, store distribution (A1 ships a debug APK only) | C |
 | The dial: channel registry, capability tokens, purpose-scoped signing | D |
-| `get_space_health` integration, dead-air/flare/dwell-engage mechanics, Chart, Interference, Night Swim | B |
+| Interference (§3.6), Night Swim + Channel 0 (§3.5) — neither was ever in B's task list (decision sheet's own "Not in B" fence); `get_space_health`, dead-air/flare/dwell-engage, and the Chart all shipped in B, see "Phase B — the soul" above | unscheduled |
 | Node-side follow-and-fetch while the app is fully closed (§2.3 names this a separate, unscheduled work item — liveness today only happens while the app/foreground-service is actually running the tuner driver) | named, unscheduled |
-| First-run acquisition (`localItemCount`/`tuneDriver` in `shell.mjs`) depends on the `/browse` keeper keeping the three bootstrap feed spaces body-bearing; there is no fallback if they decay (content half-life is 7 days) — a keeper outage or a decayed space stalls acquisition indefinitely with no other source to pull from. Phase B answer: `get_space_health`-driven bootstrap selection, or an any-space body-count lock instead of three fixed spaces. Note also: `localItemCount` counts a post toward the N=3 lock only if `item.body` is truthy — a media-only post (image/video with an empty text body) does not count, so an all-media bootstrap space can look perpetually empty to the lock even once its content is fully fetched. | B |
+| **CLOSED (B5, Task 6).** ~~First-run acquisition (`localItemCount`/`tuneDriver` in `shell.mjs`) depends on the `/browse` keeper keeping the three bootstrap feed spaces body-bearing; there is no fallback if they decay (content half-life is 7 days) — a keeper outage or a decayed space stalls acquisition indefinitely with no other source to pull from.~~ `acquisitionBoot` now ranks the node's own live `list_spaces` (top-3 `class==='social'` by `last_activity`) and adopts the pick as the feed channel's spaces, persisted across boots; `channels.json`'s trio is fallback-only now (empty listing, or a first-ever run). Live-verified both directions — see `task-6-report.md`. Note also: `localItemCount` still counts a post toward the N=3 lock only if `item.body` is truthy — a media-only post (image/video, empty text body) does not count; this half of the original note is unchanged, not part of what B5 closed. | closed |
+| `get_space_health` v2 with a REAL `health_score` (`posts_at_risk`/`last_sync_age` are still hardcoded stubs, the manager still unwired) — B1's option (b), deferred at B1's own ruling | future |
+| Node-side engagement rate limiting — the 24h one-per-content rule is enforced only by a shell-side `localStorage` ledger (`dwell.mjs`'s `ledgerHas`/`ledgerMark`); there is still no node-side backstop. Deliberately deferred (B2's own ruling: "policy stays client-side until someone abused it") | deferred |
+| Dwell's "rendered" is an **approximation**: `dwell.mjs`'s `tuned()` snapshots `list_space_content` over `ch.spaces` at tune time and treats body-present items from that snapshot as "what's on screen" — but the channel's own iframe (feed-client) may apply its own follow-preferences/sorting/blocklist filtering and actually render a different set than a raw `list_space_content` call over `ch.spaces` would suggest. Flagged for operator sign-off, not fixed in B | flagged, operator sign-off |
+| Task 3's dwell ledger is write-only: `localStorage`'s `engage:<content_id>` keys accumulate forever (slow growth, no stale-key sweep), and `ledgerMark` has no `try`/`catch` around `setItem` (a quota-full rejection would reject `fire()`'s timer promise unhandled). Minor, deferred at Task 3's own review | minor, deferred |
 
 ### Open items (not yet closed, need follow-up before calling A1 fully done)
 

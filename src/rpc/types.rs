@@ -790,6 +790,29 @@ pub struct ListSpacesResult {
     pub total: usize,
 }
 
+/// Params for get_space_health (Surf Phase B — decision B1: minimal-honest).
+#[derive(Debug, Deserialize)]
+pub struct GetSpaceHealthParams {
+    /// Hex or bech32 space ids; empty/omitted = all known spaces.
+    #[serde(default)]
+    pub space_ids: Vec<String>,
+}
+
+/// Per-space engagement-derived health. Every field is chain-derived truth;
+/// deliberately NO health_score (its inputs are stubbed — see decision B1).
+#[derive(Debug, Serialize)]
+pub struct SpaceHealthEntry {
+    pub space_id: String,
+    pub last_engagement_ts: Option<u64>,
+    pub engagements_7d: u64,
+    pub unique_actors_7d: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GetSpaceHealthResult {
+    pub spaces: Vec<SpaceHealthEntry>,
+}
+
 /// Content item summary for list_space_content
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentSummary {
