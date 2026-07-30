@@ -90,10 +90,12 @@ async function buildHarness(dev: boolean): Promise<{ observe: (s: Scenario) => P
   }>;
 }
 
-/** The room every window in this file joins, derived the way the node derives
- *  it — `roomContentId` is not reachable from here without importing the module
- *  under test's neighbour, so it is imported directly. */
-import { roomContentId } from './shellConfig';
+/** The water every window in this file joins. The ROOM is no longer a constant
+ *  — it is a function of the hour (plan 4d) — so what is imported is the water,
+ *  and `roomsFor` below derives the hours a run can legally have written into. */
+import { shellWater } from './shellConfig';
+import { roomIdIn } from '../lib/water';
+import { epochOf } from '../lib/epoch';
 /** The copy, imported rather than retyped — it has exactly one home, and this
  *  file compares the rendered DOM against it. */
 import { EDGE_BODY } from './wayIn';
@@ -109,8 +111,8 @@ const NODE_PUBKEY = 'c7'.repeat(32);
 
 /** Did this window reach real water? A reply authored by the node, into the
  *  room the shell resolved, is the only evidence that counts. */
-function reachedWater(o: Observation, room: string): boolean {
-  return o.submitted.some((w) => w.author === NODE_PUBKEY && w.parent === room);
+function reachedWater(o: Observation, rooms: ReadonlySet<string>): boolean {
+  return o.submitted.some((w) => w.author === NODE_PUBKEY && rooms.has(w.parent));
 }
 
 /**
@@ -137,7 +139,21 @@ function from(v: { x: number; y: number }, spawn: { x: number; y: number }): boo
 }
 
 async function main(): Promise<void> {
-  const room = await roomContentId();
+  // THE ROOMS A RUN COULD LEGALLY HAVE WRITTEN INTO. The room rotates hourly,
+  // so a single constant would be wrong the moment a run straddled a boundary —
+  // which is not hypothetical for a suite that takes tens of seconds and can be
+  // started at any instant. Three hours are admitted (the previous, the current
+  // and the next) and NOTHING WIDER: a write to any other room is a write into
+  // a sea nobody else is in, which is precisely what these checks are for.
+  //
+  // Section 5's own check is the sharp one — it re-derives the room from the
+  // AUTHORING instant inside each body and requires an exact match — so this
+  // set is deliberately the loose gate and that one is the tight one.
+  const water = await shellWater();
+  const nowEpoch = epochOf(Date.now());
+  const rooms = new Set(await Promise.all(
+    [nowEpoch - 1, nowEpoch, nowEpoch + 1].map((e) => roomIdIn(water, e)),
+  ));
   const { observe } = await buildHarness(false);
   /**
    * THE ONE WINDOW THAT IS REFUSED AND THEN LET IN — built once in section 6
@@ -183,7 +199,7 @@ async function main(): Promise<void> {
   {
     const o = await observe({ awaitWrite: true, settleMs: 200 });
     check('the window asks the shell', o.askedShell, o);
-    check('POSITIVE CONTROL: a warm start reaches real water', reachedWater(o, room), o.submitted);
+    check('POSITIVE CONTROL: a warm start reaches real water', reachedWater(o, rooms), o.submitted);
     check('...through exactly one live socket', o.sockets === 1, o.sockets);
   }
 
@@ -206,13 +222,13 @@ async function main(): Promise<void> {
   // not, and never would again.
   {
     const cold = await observe({ coldStart: true, awaitWrite: true, settleMs: 200 });
-    check('a cold start on its own still reaches real water', reachedWater(cold, room), cold.submitted);
+    check('a cold start on its own still reaches real water', reachedWater(cold, rooms), cold.submitted);
 
     const pressed2 = await observe({
       coldStart: true, press: { key: '2', when: 'duringColdStart' }, awaitWrite: true, settleMs: 200,
     });
     check('pressing 2 during the cold start does NOT lock the player out',
-      reachedWater(pressed2, room), pressed2.submitted);
+      reachedWater(pressed2, rooms), pressed2.submitted);
 
     // THERE IS NO `1` CHECK HERE, AND ITS ABSENCE IS DELIBERATE.
     //
@@ -239,7 +255,7 @@ async function main(): Promise<void> {
     // comment on `devParam`.
     const at = await observe({ coldStart: true, search: '?at=1000', awaitWrite: true, settleMs: 200 });
     check('nor does ?at=, which selects the same sea from the address bar',
-      reachedWater(at, room), at.submitted);
+      reachedWater(at, rooms), at.submitted);
   }
 
   // =======================================================================
@@ -263,7 +279,7 @@ async function main(): Promise<void> {
       awaitWrite: true, press: { key: '2', when: 'afterFirstWrite' }, settleMs: 600,
     });
     check('pressing 2 after joining leaves the sea alone', o.sockets === 1, o.sockets);
-    check('...and the window is still in the water it joined', reachedWater(o, room), o.submitted);
+    check('...and the window is still in the water it joined', reachedWater(o, rooms), o.submitted);
   }
 
   // =======================================================================
@@ -278,40 +294,72 @@ async function main(): Promise<void> {
   // Both scenarios below have a node that is up and healthy the whole time.
   // Neither would ever reach water without a retry.
   {
-    // The commonest case by far, and it is not a failure at all: a fresh
-    // install's node holds the room's content BLOCK but not its BODY, because
-    // content on this network arrives only when something asks. Task 4 watched
-    // exactly this for 3 m 18 s on a real mainnet install. `shellConfig` is right
-    // to return `null`; the window is wrong to stop asking, and wrong to wait
-    // without asking.
+    // THE COMMONEST CASE BY FAR USED TO BE A THREE-MINUTE WAIT, AND IS NOW A
+    // WRITE. A fresh install's node holds no room post, because content on this
+    // network arrives only when something asks; plan 4b's live run watched
+    // exactly that for 3 m 18 s while `shellConfig.roomReady` returned `null`
+    // and `request_content` hunted for a peer. There is no fixed room now and
+    // nothing waits for one: the client MINTS the hour it needs (plan 4d Task
+    // 2's decision 3), which is instant on its own node.
+    //
+    // `roomArrivesAfterAsks: 1` makes `get_content` fail the first time it is
+    // asked — the old gate's trigger — so this scenario is the one that used to
+    // need a retry to get in at all.
     const late = await observe({ roomArrivesAfterAsks: 1, awaitWrite: true, settleMs: 200 });
-    check('a node that has not got the room body yet is asked again, and the player gets in',
-      reachedWater(late, room), late.submitted);
-    check('...having really looked more than once',
-      late.rpcCalls.filter((m) => m === 'get_content').length >= 2,
-      late.rpcCalls.filter((m) => m === 'get_content').length);
-    // THE DRIVER. Retrying a local-only read forever would never have produced
-    // the body: `get_content` never fetches. Something has to ask the network,
-    // and this is the check that says the window does.
-    check('...and it ASKED THE NETWORK for it rather than only waiting',
-      late.rpcCalls.includes('request_content'), late.rpcCalls);
+    check('a node holding NO room post still gets the player into the water',
+      reachedWater(late, rooms), late.submitted);
+    check('...because the window MINTED the room itself rather than waiting for one',
+      late.minted.length >= 1, late.minted);
+    check('...and it never asked the network for a room post at all',
+      !late.rpcCalls.includes('request_content'), late.rpcCalls);
+
+    // WHAT WAS MINTED IS THE ROOM GRAMMAR, not something this file spells. The
+    // title is the constant and the body names the water and an hour, in the
+    // space the water derives — the binding, on the wire.
+    const first = late.minted[0];
+    check('...the minted post is a room of THIS water, in THIS water\'s space',
+      first !== undefined && first.title === 'The Shoal'
+      && /^room:shoal:v1:main:-?\d+$/.test(first.body)
+      && first.space === water.spaceId,
+      first);
+
+    // AND EVERY WRITE WENT TO THE ROOM OF ITS OWN AUTHORING INSTANT. This is
+    // decision 2 asserted on the wire, and it is the tight version of the
+    // `rooms` set above: the body is decoded with the shipping decoder, its
+    // `ms` is turned into an epoch, and the parent must be exactly that hour's
+    // room. A client that placed writes by the wall clock at SUBMIT time would
+    // fail this on any write that straddled a boundary; a client that placed
+    // them all in one fixed room would fail it on every write after one.
+    let allPlaced = true;
+    const misplaced: unknown[] = [];
+    for (const w of late.submitted) {
+      const decoded = decodeBody(w.body, NODE_PUBKEY, 'sha256:' + 'ab'.repeat(32));
+      if (decoded === null) continue; // a checkpoint, not a move
+      const want = await roomIdIn(water, epochOf(decoded.ms));
+      if (w.parent !== want) { allPlaced = false; misplaced.push({ ms: decoded.ms, got: w.parent, want }); }
+    }
+    check('EVERY write went to the room of the hour it was AUTHORED in',
+      allPlaced && late.submitted.length > 0, { misplaced, writes: late.submitted.length });
 
     // And a plain transient failure, on the very first call the assembly makes
     // after the endpoint: one -32603 and the old code was done for good.
     const hiccup = await observe({ identityFailsTimes: 1, awaitWrite: true, settleMs: 200 });
     check('one failed identity read does not cost the player the game',
-      reachedWater(hiccup, room), hiccup.submitted);
+      reachedWater(hiccup, rooms), hiccup.submitted);
 
-    // NON-DEGENERACY: the retry must not have quietly become a second, always-on
-    // poll. A window that got in on the first ask looks for the room ONCE.
+    // NON-DEGENERACY: minting must not have become a per-frame Argon2id loop.
+    // A window plays one hour, mints that hour and the next, and stops.
     const clean = await observe({ awaitWrite: true, settleMs: 200 });
-    check('NON-DEGENERACY: a node that was ready is asked exactly once',
-      clean.rpcCalls.filter((m) => m === 'get_content').length === 1,
-      clean.rpcCalls.filter((m) => m === 'get_content').length);
-    // ...and having found it locally, it must NOT have nudged the network. A
-    // driver that fired unconditionally would be a broadcast on every launch.
-    check('NON-DEGENERACY: a room that was already here is not asked for over the network',
-      !clean.rpcCalls.includes('request_content'), clean.rpcCalls);
+    check('NON-DEGENERACY: a window mints the hour it is in and the next one, and no more',
+      clean.minted.length >= 1 && clean.minted.length <= 2, clean.minted.map((m) => m.body));
+    check('NON-DEGENERACY: the two minted rooms are two DIFFERENT hours',
+      new Set(clean.minted.map((m) => m.body)).size === clean.minted.length,
+      clean.minted.map((m) => m.body));
+
+    // THE LOCAL READ IS GONE TOO. `roomReady` asked `get_content` on every
+    // attempt; nothing on this path does now, which is why the wait went away.
+    check('the shell path makes no local room lookup any more',
+      !clean.rpcCalls.includes('get_content'), clean.rpcCalls);
 
     // THE LISTING IS GONE. The space id is derived, so a fresh install no longer
     // depends on a name only a peer could supply — which on mainnet no peer ever
@@ -351,7 +399,7 @@ async function main(): Promise<void> {
     const refused = await observe({ writesRefused: true, awaitWrite: true, settleMs: 12_000 });
     const ended = Date.now();
     check('a refused swimmer still reaches real water and still writes into it',
-      reachedWater(refused, room), refused.submitted);
+      reachedWater(refused, rooms), refused.submitted);
     // NOT "it wrote once". A window that gave up after the first refusal would
     // pass the check above and would be a game that stops. The sea publishes a
     // vector every few seconds forever, refused or not.

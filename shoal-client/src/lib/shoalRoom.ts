@@ -89,10 +89,11 @@
  * A room's direct replies accumulate for the life of that room, and nothing in
  * THIS half of the module ever ends one. (The other half — "the room is a
  * function of the hour", below — is the answer to that, and this ceiling is why
- * it exists. It derives which room an hour uses; the crossing from one to the
- * next is the next task's. Until that crossing is wired up, the shipped build
- * still joins `shellConfig.ts`'s single never-rotating room and everything in
- * this section applies to it verbatim.) `limit` is NOT clamped
+ * it exists. A room now lives one hour, which at the emitter's own rate is
+ * 11_250-30_000 replies against a 100_000 ceiling, so the throw below should
+ * never fire again. It stays because a ceiling that cannot be reached costs
+ * nothing and a truncated log is still catastrophically silent if the rotation
+ * ever stops rotating.) `limit` is NOT clamped
  * by the node (methods.rs:9358-9363 takes it verbatim), and
  * `get_replies_for_content` returns direct children OLDEST FIRST: its index key
  * is `parent || timestamp || hash` and it is a plain forward `scan_prefix`
@@ -446,13 +447,68 @@ export async function fetchRoomLog(
 export async function fetchRoom(
   auth: RpcAuth, _spaceId: string, roomContentId: string,
 ): Promise<{ log: LogEntry[]; checkpoints: CheckpointEntry[] }> {
+  return splitRoomReplies(await fetchRoomReplies(auth, roomContentId));
+}
+
+/**
+ * One room's raw direct replies. Split out from `fetchRoom` so `fetchRooms`
+ * below can concatenate several rooms' replies and hand the WHOLE union to a
+ * SINGLE `splitRoomReplies` — see that function on why one pass matters.
+ *
+ * A room that has never been minted comes back EMPTY rather than failing:
+ * `get_replies` never checks that the parent exists, it just asks the chain
+ * store's parent index for children and returns whatever that yields
+ * (methods.rs:9628-9640). That is what makes "nobody played last hour" cost
+ * nothing — the previous hour's room is simply a room with no replies in it.
+ */
+async function fetchRoomReplies(auth: RpcAuth, roomContentId: string): Promise<RawReply[]> {
   const result = await rpcCall<GetRepliesResult>(auth, 'get_replies', {
     content_id: roomContentId,
     limit: ROOM_FETCH_LIMIT, // the node defaults to 1000 and clamps nothing
     depth_limit: 0, // direct replies only — see the module header
   });
 
-  return splitRoomReplies(narrowRoomReplies(result, roomContentId, ROOM_FETCH_LIMIT));
+  return narrowRoomReplies(result, roomContentId, ROOM_FETCH_LIMIT);
+}
+
+/**
+ * SEVERAL rooms, folded into one log and one checkpoint set — the crossing.
+ *
+ * `roomContentIds` is what `water.roomEpochsFor` chose, mapped to ids: the
+ * epoch being folded and the one before it. That function carries the whole
+ * argument for why it is two and why it stays two for a full hour; this one is
+ * the mechanism.
+ *
+ * ## ONE `splitRoomReplies` OVER THE CONCATENATION, NOT ONE PER ROOM
+ *
+ * Merging two already-ordered logs would need a second ordering rule, and a
+ * second ordering rule is a second place two clients can disagree — the exact
+ * hazard `splitRoomReplies` cites for not sorting checkpoints. Concatenating
+ * the RAW replies and splitting once means `orderLog`'s (ms, hash) total order
+ * runs exactly once over the union, and the dedupe runs once across all of it.
+ *
+ * ## THE FETCHES ARE CONCURRENT, AND THE SNAPSHOT IS STILL HONEST
+ *
+ * `Promise.all`, so the crossing costs one round trip's latency rather than
+ * two. The two responses are therefore from very slightly different instants —
+ * which is harmless in a way that a split log/checkpoint fetch would not have
+ * been: the rooms are DISJOINT by construction (a reply has exactly one
+ * parent), so no entry can be seen twice or missed between them, and the fold
+ * is a pure function of the SET it is handed (shoalLoop.ts section 2). A late
+ * arrival is absorbed by the next poll exactly as one from a single room is.
+ *
+ * THROWS if ANY room has outgrown `ROOM_FETCH_LIMIT` — see the module header.
+ * With a room per hour that is the emitter's rate for a full hour against a
+ * 100_000 ceiling, i.e. it should now never fire; if it does, the rotation has
+ * stopped rotating and folding a truncated log would be worse than stopping.
+ */
+export async function fetchRooms(
+  auth: RpcAuth, roomContentIds: readonly string[],
+): Promise<{ log: LogEntry[]; checkpoints: CheckpointEntry[] }> {
+  const perRoom = await Promise.all(
+    roomContentIds.map((id) => fetchRoomReplies(auth, id)),
+  );
+  return splitRoomReplies(perRoom.flat());
 }
 
 // ===================================================================================
@@ -515,7 +571,7 @@ export async function fetchRoom(
  *
  * **Why `room:shoal:v1:` mirrors the space id's shape.** The water's own id is
  * `sha256("app:shoal:v1:main")[..15]` under a class byte — a frozen tag, a
- * version, and the name (`shellConfig.waterSpaceId`, src/types/space_class.rs:70-73).
+ * version, and the name (`water.waterNamed`, src/types/space_class.rs:70-73).
  * The room uses the same discipline for the same reason: the tag says what kind
  * of thing this preimage names so it can never be confused with another one, and
  * the `v1` is where a future change to the grammar goes instead of into these
@@ -536,7 +592,7 @@ export async function fetchRoom(
  * content addressing working correctly, not a node bug, and "fixing" it by
  * salting the preimage with a space id would re-score every content id ever
  * minted. The obligation is ours: a room that must stay separate needs separate
- * TEXT. `shellConfig.ts` records the near miss — the regtest smoke's moves would
+ * TEXT. `scripts/regtest-smoke.ts` records the near miss — its moves would
  * have landed in the water people play in. So the water name is in the body, and
  * it is a parameter rather than a constant because the smoke scripts
  * (`@shoal:smoke`, `@shoal:two`, `@shoal:cp`) are exactly the callers that must
@@ -565,15 +621,20 @@ export async function fetchRoom(
  *
  * It does not read a clock: `roomIdAtMs` takes the instant as an argument, the
  * way every other function in `src/lib/` does. It does not decide WHEN to cross
- * from one room to the next, or who publishes the room post for an hour that
- * nobody has minted yet — `submit_reply` rejects an unknown parent outright
- * (src/rpc/methods.rs:3070-3084), so an hour's post has to exist before its
- * first move can land. That crossing is the next task's, and it has this
- * derivation to build on.
+ * from one room to the next (`water.roomEpochsFor` — two rooms, always, and it
+ * says why), nor who publishes the room post for an hour nobody has minted yet
+ * — `submit_reply` rejects an unknown parent outright
+ * (src/rpc/methods.rs:3204-3218), so an hour's post has to exist before its
+ * first move can land. Minting is `chainSea.ts`'s: every client mints every
+ * hour's room idempotently, so no client waits on any other.
  *
- * `shellConfig.ts`'s fixed `ROOM_TITLE`/`ROOM_BODY`/`roomContentId` are the
- * single never-rotating room this replaces. They are still what the shipped
- * build joins today; the crossing task is what retires them.
+ * It also does not bind this water name to the SPACE the writes go into. That
+ * is `water.ts`'s whole reason for existing — see its header. Prefer
+ * `water.roomIdIn(water, epoch)` over `roomIdFor(name, epoch)` everywhere in
+ * the app.
+ *
+ * `shellConfig.ts`'s fixed `ROOM_TITLE`/`ROOM_BODY`/`roomContentId` were the
+ * single never-rotating room this replaced, and they are gone.
  */
 
 /**
@@ -600,14 +661,91 @@ export interface RoomText {
 }
 
 /**
+ * The longest a water's display name may be. Not a node limit — a limit on how
+ * much of a permanent consensus preimage one field may occupy, and a bound on
+ * anything that could be pasted in by accident.
+ */
+const MAX_WATER_NAME_LEN = 32;
+
+/**
+ * The whole grammar of a water name: lowercase alphanumerics in hyphen-joined
+ * groups. No leading, trailing or doubled hyphen, and no other character at
+ * all.
+ */
+const WATER_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Refuse anything that is not a water name, before it can reach a hash
+ * preimage. Used by `roomTextFor` below and by `water.waterNamed` (which
+ * re-exports it), so the room body and the space id cannot disagree about what
+ * a legal name is.
+ *
+ * ## WHY THIS IS AN ALLOWLIST, WHEN TASK 1 SHIPPED A DENYLIST
+ *
+ * Task 1 rejected `''`, `:` and `\n` — the three ways anyone had thought of to
+ * spell a room nobody shares. A denylist over a PERMANENT CONSENSUS PREIMAGE is
+ * a list of the mistakes somebody happened to think of, and the review found
+ * four more within a minute of looking:
+ *
+ *  - `roomTextFor(['main:x'] as any, 1)` passed the colon guard and spelled
+ *    `room:shoal:v1:main:x:1`. `Array.prototype.includes(':')` asks whether any
+ *    ELEMENT equals `':'`, not whether the text contains one — a guard written
+ *    for strings simply does not run on a value that is not one. This is why
+ *    the `typeof` check below is first and is the load-bearing one.
+ *  - `'main '`, `'main\r'`, `'main\t'` and `'main\0'` are four more waters, and
+ *    no rendering of any of them differs from `main`.
+ *  - `'máin'` in NFC (U+00E1) and in NFD (`a` + U+0301) are two different byte
+ *    strings that are pixel-identical in every font, so a player told to join
+ *    "máin" lands in one or the other depending on which keyboard, editor or
+ *    clipboard produced the string — and the two never see each other.
+ *  - `'Main'` is not `'main'`. Case is a different preimage, not a hint.
+ *
+ * The allowlist answers all of those at once, and every case nobody has thought
+ * of yet, which is the point of an allowlist. It NARROWS what is accepted and
+ * changes no accepted name's bytes, so no room id that has ever been derived
+ * moves — the pinned literals below are the proof of that and they are
+ * unchanged.
+ */
+export function assertWaterName(water: unknown): asserts water is string {
+  if (typeof water !== 'string') {
+    throw new RangeError(
+      `assertWaterName: a water name must be a string, got ${Object.prototype.toString.call(water)} `
+      + `(${JSON.stringify(water)}). A non-string reaches template interpolation intact and spells `
+      + 'a room body of its own — an array bypassed the colon guard this replaces.',
+    );
+  }
+  if (water.length > MAX_WATER_NAME_LEN) {
+    throw new RangeError(
+      `assertWaterName: a water name may be at most ${MAX_WATER_NAME_LEN} characters, got `
+      + `${water.length} (${JSON.stringify(water)}).`,
+    );
+  }
+  if (!WATER_NAME_RE.test(water)) {
+    throw new RangeError(
+      'assertWaterName: a water name must be lowercase alphanumerics in hyphen-joined groups '
+      + `(${WATER_NAME_RE.source}), got ${JSON.stringify(water)}. This string goes into two `
+      + 'permanent hash preimages, and every near-miss it could carry — a trailing space, a CR '
+      + 'or TAB or NUL, an NFD-decomposed accent, a capital letter, the marker form '
+      + '`@shoal:main` — derives a space and a room that are real, healthy, reply-able and '
+      + 'shared with nobody. Pass the DISPLAY name (`main`), never the marker form.',
+    );
+  }
+}
+
+/**
  * The identifying text of the room for `epoch` in the water named `water`.
  * Pure, integer-only, and the whole of the derivation — everything else in this
  * section is hashing or composition.
  *
  * `water` is the space's DISPLAY name (`main`), never the marker form
- * (`@shoal:main`); a colon in it throws rather than deriving a room nobody else
- * shares. `epoch` must be a safe integer, for the same reason. See the section
- * header for both.
+ * (`@shoal:main`); anything that is not a plain lowercase name throws rather
+ * than deriving a room nobody else shares (`assertWaterName`). `epoch` must be
+ * a safe integer, for the same reason. See the section header for both.
+ *
+ * PREFER `water.roomTextIn(water, epoch)`, which takes the `Water` whose space
+ * id was derived from this same name. This string form is the pinned primitive;
+ * calling it directly from app code is what unbinds the room from the space, and
+ * a source scan in shoalRoom.test.ts fails if anything but `water.ts` does.
  */
 export function roomTextFor(water: string, epoch: number): RoomText {
   if (!Number.isSafeInteger(epoch)) {
@@ -618,15 +756,7 @@ export function roomTextFor(water: string, epoch: number): RoomText {
       'epochOf(ms), which floors.',
     );
   }
-  if (water === '' || water.includes(':') || water.includes('\n')) {
-    throw new RangeError(
-      `roomTextFor: water must be a space's DISPLAY name with no colon or newline, got ` +
-      `${JSON.stringify(water)}. The marker form (@shoal:main) is the likely mistake here and ` +
-      'it is a silent one: it derives a real, healthy, reply-able room shared with nobody. ' +
-      'Pass WATER_NAME (`main`), not WATER_SPACE_NAME. The colon is also the grammar\'s field ' +
-      'delimiter, so allowing one would let two different waters spell the same room.',
-    );
-  }
+  assertWaterName(water);
   return { title: ROOM_TITLE, body: `${ROOM_BODY_TAG}:${water}:${epoch}` };
 }
 

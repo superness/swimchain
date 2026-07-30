@@ -30,9 +30,12 @@ import { createHash } from 'node:crypto';
 import { isWireSpaceId } from '../lib/shoalRpc';
 
 import {
-  ROOM_BODY, ROOM_TITLE, WATER_APP, WATER_NAME, WATER_SPACE_NAME,
-  roomContentId, shellConfig, shellSurface, waterSpaceId, type InvokeFn,
+  WATER_APP, WATER_NAME, WATER_SPACE_NAME,
+  shellConfig, shellSurface, shellWater, waterSpaceId, type InvokeFn,
 } from './shellConfig';
+import { encodeWireSpaceId } from '../lib/shoalRpc';
+import { roomIdIn, roomTextIn } from '../lib/water';
+import { epochOf } from '../lib/epoch';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -101,8 +104,11 @@ function fakeNode(b: NodeBehaviour): { fetch: typeof fetch; seen: SeenCall[] } {
         return ok({ spaces: page, total: pages.reduce((n, p) => n + p.length, 0) });
       }
       case 'get_content':
+        // KEPT, ANSWERING CORRECTLY, THOUGH NOTHING SHOULD REACH IT. `roomReady`
+        // is gone (there is no fixed room to be ready), so a check counting
+        // `get_content` at zero is measuring the module and not a missing fake.
         return (b.roomPresent ?? true)
-          ? ok({ content_id: req.params.content_id, body: ROOM_BODY })
+          ? ok({ content_id: req.params.content_id, body: 'a room' })
           : err(-32004, 'Content not found');
       case 'request_content':
         return ok({ status: 'discovering', content_id: req.params.content_id });
@@ -175,17 +181,17 @@ const GOOD_SPACES = [[
 async function theWaterIsDerived(): Promise<void> {
   console.log('\n1. the water is derived from its own text');
 
-  // Independent of the module: node:crypto over the exact bytes `submit_post`
-  // hashes (`${title}\n\n${body}`).
-  const expected = 'sha256:' + createHash('sha256')
-    .update(`${ROOM_TITLE}\n\n${ROOM_BODY}`, 'utf8')
-    .digest('hex');
-
-  check('the room id is sha256(title + blank line + body), agreed by a second implementation',
-    (await roomContentId()) === expected, { got: await roomContentId(), expected });
-
-  check('and it is a content id the node would accept in parent_id',
-    /^sha256:[0-9a-f]{64}$/.test(await roomContentId()), await roomContentId());
+  // Independent of the module: node:crypto over the same one string
+  // `create_space` name-addresses an app space by. THE ROOM IS NO LONGER PART
+  // OF THIS — it is a function of the hour (`shoalRoom.ts`) and there is no
+  // fixed `roomContentId` to derive; section 6 checks the rooms this water
+  // derives instead, and checks them against this same name.
+  const digest = createHash('sha256').update(`app:${WATER_APP}:v1:${WATER_NAME}`, 'utf8').digest();
+  const id16 = new Uint8Array(16);
+  id16[0] = 0x05;
+  id16.set(digest.subarray(0, 15), 1);
+  check('the space id is sha256(app:shoal:v1:main) under the App class byte, by a second implementation',
+    (await waterSpaceId()) === encodeWireSpaceId(id16), await waterSpaceId());
 
   // The marker form and the listing form are DIFFERENT strings, and confusing
   // them is the defect this constant exists to avoid (see WATER_NAME).
@@ -225,8 +231,20 @@ async function aCompleteConfigurationAgainst(node: { seen: SeenCall[] }): Promis
   check('the node\'s address comes along for anything that must show a human one',
     cfg.address === NODE_ADDRESS, cfg.address);
   check('the space is the derived one, not whatever the listing offered',
-    cfg.spaceId === LIVE_MAINNET_WATER, cfg.spaceId);
-  check('the room is the derived one', cfg.roomContentId === (await roomContentId()), cfg.roomContentId);
+    cfg.water.spaceId === LIVE_MAINNET_WATER, cfg.water.spaceId);
+  // THE BINDING (plan 4d Task 2). The configuration no longer carries a space
+  // beside a room string that nothing joined; it carries the WATER, and the
+  // name in it is the name that derived the space id.
+  check('the water carries the name its space id was derived from',
+    cfg.water.name === WATER_NAME && cfg.water.spaceName === WATER_SPACE_NAME,
+    { name: cfg.water.name, spaceName: cfg.water.spaceName });
+  check('...and every room it derives is a room of THAT name, by construction',
+    roomTextIn(cfg.water, 495_936).body === 'room:shoal:v1:' + cfg.water.name + ':495936',
+    roomTextIn(cfg.water, 495_936).body);
+  // NO SINGLE ROOM IS CARRIED ANY MORE. The room is a function of the hour, so
+  // a `roomContentId` field would have been a lie by the next boundary.
+  check('the configuration names no fixed room at all',
+    !('roomContentId' in (cfg as unknown as Record<string, unknown>)), Object.keys(cfg));
 
   // NOT a URL: nothing in the assembled configuration came from a query string,
   // and the one credential in it is the header the shell produced.
@@ -313,7 +331,7 @@ async function findingTheWater(): Promise<void> {
   const node = fakeNode({ spacePages: GOOD_SPACES });
   const cfg = await withNode(node, () => shellConfig(fakeShell({ endpoint: ENDPOINT, auth: COOKIE_HEADER })));
   check('a listing offering a different id for @shoal:main is ignored',
-    cfg !== null && cfg.spaceId === derived, cfg?.spaceId ?? null);
+    cfg !== null && cfg.water.spaceId === derived, cfg?.water.spaceId ?? null);
   check('...because list_spaces is never called at all',
     !node.seen.some((c) => c.method === 'list_spaces'), node.seen.map((c) => c.method));
 }
@@ -396,13 +414,12 @@ async function halfAConfigurationIsNeverReturned(): Promise<void> {
         () => shellConfig(shellSaysEndpoint),
       ),
     },
-    {
-      name: 'the room post\'s body has not arrived yet',
-      run: () => withNode(
-        fakeNode({ spacePages: GOOD_SPACES, roomPresent: false }),
-        () => shellConfig(shellSaysEndpoint),
-      ),
-    },
+    // "THE ROOM POST'S BODY HAS NOT ARRIVED YET" WAS THE SIXTH CASE HERE AND IS
+    // GONE. There is no fixed room to wait for any more: the room is a function
+    // of the hour and `chainSea` MINTS the one it needs. The positive check
+    // further down requires the opposite of what this case did — a node holding
+    // no room post must now yield a complete configuration — and leaving this
+    // here would have pinned plan 4b's measured 3 m 18 s wait in place forever.
   ];
 
   for (const c of cases) {
@@ -419,26 +436,91 @@ async function halfAConfigurationIsNeverReturned(): Promise<void> {
   const noListing = fakeNode({ spacePages: [[]] });
   const stillFine = await withNode(noListing, () => shellConfig(shellSaysEndpoint));
   check('an empty listing is no longer a reason to fail — the id was never in it',
-    stillFine !== null && stillFine.spaceId === (await waterSpaceId()), stillFine?.spaceId ?? null);
+    stillFine !== null && stillFine.water.spaceId === (await waterSpaceId()),
+    stillFine?.water.spaceId ?? null);
 
-  // AND THE ONE REMAINING REASON DRIVES A FETCH. Returning `null` and waiting
-  // would wait forever: `get_content` is local-only and never pulls. Task 4's
-  // room body arrived 3 m 18 s AFTER something finally asked, and nothing in
-  // this client had been asking.
-  const absent = fakeNode({ spacePages: GOOD_SPACES, roomPresent: false });
-  await quietly(() => withNode(absent, () => shellConfig(shellSaysEndpoint)));
-  check('a missing room body is ASKED FOR over the network, not merely waited on',
-    absent.seen.some((c) => c.method === 'request_content'), absent.seen.map((c) => c.method));
-  check('...for the room this client is actually trying to join',
-    absent.seen.find((c) => c.method === 'request_content')?.params.content_id === (await roomContentId()),
-    absent.seen.find((c) => c.method === 'request_content')?.params.content_id);
+  // AND NEITHER IS A ROOM THAT HAS NOT ARRIVED — plan 4d Task 2 removed the
+  // last reason this path ever waited on the network.
+  //
+  // `roomReady` used to ask `get_content` whether ONE fixed room post was here
+  // and return `null` until it was. `get_content` is local-only and never
+  // pulls, so a fresh install sat in the shallows while `request_content`
+  // hunted for a peer — measured at 3 m 18 s in plan 4b's live run. There is no
+  // fixed room now, and `chainSea` mints the hour's room itself rather than
+  // waiting for anyone, so a node that has never heard of any room must hand
+  // back a complete configuration immediately.
+  const noRoom = fakeNode({ spacePages: GOOD_SPACES, roomPresent: false });
+  const joined = await withNode(noRoom, () => shellConfig(shellSaysEndpoint));
+  check('a node holding NO room post is no longer a reason to fail',
+    joined !== null && joined.water.spaceId === (await waterSpaceId()),
+    joined?.water.spaceId ?? null);
+  check('...and this path asks for no content at all any more — no get_content, no request_content',
+    !noRoom.seen.some((c) => c.method === 'get_content' || c.method === 'request_content'),
+    noRoom.seen.map((c) => c.method));
 
-  // NON-DEGENERACY: a room that IS here must not be asked for. An unconditional
-  // driver would broadcast a WHO_HAS on every launch, forever.
-  const present = fakeNode({ spacePages: GOOD_SPACES });
-  await withNode(present, () => shellConfig(shellSaysEndpoint));
-  check('NON-DEGENERACY: a room already here is not asked for over the network',
-    !present.seen.some((c) => c.method === 'request_content'), present.seen.map((c) => c.method));
+  // NON-DEGENERACY for the pair above: the fake node IS being driven. Without
+  // this, "no get_content" would pass just as well for a `shellConfig` that had
+  // stopped making any calls at all.
+  check('NON-DEGENERACY: the configuration was assembled from real RPC on that node',
+    noRoom.seen.some((c) => c.method === 'get_identity_info'), noRoom.seen.map((c) => c.method));
+}
+
+/**
+ * The water's rooms are bound to the water's space — plan 4d Task 2's MEDIUM,
+ * carried in from Task 1's review.
+ *
+ * The finding: nothing joined the name passed to `roomIdFor` to the space
+ * `waterSpaceId` derived. Both were correct; neither knew about the other, so a
+ * caller could hold a room of one water and the space of another, and every
+ * write would be accepted, every read would answer, and the sea would be shared
+ * with nobody. There is one value now and one function that makes it.
+ */
+async function theRoomsBelongToTheSpace(): Promise<void> {
+  console.log('\n--- the rooms are bound to the space ---');
+
+  const water = await shellWater();
+
+  // ONE NAME, BOTH DERIVATIONS. Re-derived with node:crypto from `water.name`
+  // ALONE — deliberately not from `WATER_NAME` — so this fails if `waterNamed`
+  // ever returned a space derived from one string beside a name that is
+  // another.
+  const bySameRecipe = (app: string, name: string): string => {
+    const digest = createHash('sha256').update('app:' + app + ':v1:' + name, 'utf8').digest();
+    const id16 = new Uint8Array(16);
+    id16[0] = 0x05;
+    id16.set(digest.subarray(0, 15), 1);
+    return encodeWireSpaceId(id16);
+  };
+  check('the space id is sha256 over the water\'s OWN name, not over some other string',
+    water.spaceId === bySameRecipe(water.app, water.name), water.spaceId);
+
+  // NON-DEGENERACY: the check above would pass for any two agreeing constants,
+  // so prove the recipe actually discriminates on the name.
+  check('NON-DEGENERACY: another name derives another space',
+    water.spaceId !== bySameRecipe(water.app, 'smoke'));
+
+  // AND THE ROOM CARRIES THAT SAME NAME. A room body is
+  // `room:shoal:v1:<name>:<epoch>`, so this reads the name back OUT of the room
+  // and requires it to be the one the space was derived from — the two halves
+  // of the binding, joined, rather than each checked against a constant.
+  const body = roomTextIn(water, 495_936).body;
+  const nameInRoom = body.split(':')[3];
+  check('the name inside the room body is the name that derived the space',
+    nameInRoom === water.name && water.spaceId === bySameRecipe(water.app, nameInRoom),
+    { nameInRoom, water: water.name });
+  check('...and the room id follows from that body, under a second SHA-256',
+    (await roomIdIn(water, 495_936))
+      === 'sha256:' + createHash('sha256')
+        .update('The Shoal\n\nroom:shoal:v1:' + water.name + ':495936', 'utf8').digest('hex'),
+    await roomIdIn(water, 495_936));
+
+  // Every hour of this water is an hour of this water — sampled, not argued.
+  const e = epochOf(1_785_369_600_000);
+  let allNamed = true;
+  for (let i = -3; i <= 3; i++) {
+    if (roomTextIn(water, e + i).body !== 'room:shoal:v1:' + water.name + ':' + (e + i)) allNamed = false;
+  }
+  check('seven consecutive hours all name this water and no other', allNamed);
 }
 
 async function main(): Promise<void> {
@@ -447,6 +529,7 @@ async function main(): Promise<void> {
   await findingTheWater();
   await aBrowserBuildIsUnaffected();
   await halfAConfigurationIsNeverReturned();
+  await theRoomsBelongToTheSpace();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

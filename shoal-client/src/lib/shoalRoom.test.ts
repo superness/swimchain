@@ -14,6 +14,9 @@
  * `orderLog` twice and comparing the result to itself.
  */
 import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   repliesToLog, splitRoomReplies, narrowRoomReplies, ROOM_FETCH_LIMIT,
@@ -544,15 +547,77 @@ function result(replies: NodeReply[]): GetRepliesResult {
   // Passing `@shoal:main` (WATER_SPACE_NAME) where `main` (WATER_NAME) belongs would
   // derive a room that is real, healthy, reply-able and shared with nobody. A colon
   // is also what makes the grammar's fields unambiguous, so banning it does both jobs.
+  //
+  // TASK 1 SHIPPED A DENYLIST — `''`, `:` and `\n` — and Task 2's review found
+  // four more ways past it in a minute of looking. A denylist over a permanent
+  // consensus preimage is a list of the mistakes somebody happened to think of,
+  // so it is an ALLOWLIST now (`assertWaterName`). Every case below is a string
+  // that used to derive a real, healthy, reply-able room shared with nobody.
   {
-    const threwFor = async (water: string): Promise<boolean> => {
-      try { await roomIdFor(water, E); return false; } catch { return true; }
+    const threwFor = async (water: unknown): Promise<boolean> => {
+      try { await roomIdFor(water as string, E); return false; } catch { return true; }
     };
     check('the marker form `@shoal:main` is REJECTED, not silently accepted',
       await threwFor('@shoal:main'));
     check('an empty water is rejected', await threwFor(''));
     check('a water containing a newline is rejected', await threwFor('ma\nin'));
     check('a plain water name is accepted', !(await threwFor('main')));
+
+    // 1. A NON-STRING. `['main:x'].includes(':')` asks whether any ELEMENT
+    // equals ':' — it does not — so an array sailed through Task 1's colon
+    // guard and interpolated as `room:shoal:v1:main:x:1`. This is why the
+    // typeof check is first and is the load-bearing one.
+    check('an ARRAY is rejected — it bypassed the colon guard and spelled its own room',
+      await threwFor(['main:x']));
+    check('a number is rejected', await threwFor(123));
+    check('null and undefined are rejected',
+      (await threwFor(null)) && (await threwFor(undefined)));
+
+    // 2. INVISIBLE CHARACTERS. Every one of these renders identically to
+    // `main` in every font and terminal, and derives a different room.
+    for (const [name, water] of [
+      ['a trailing space', 'main '],
+      ['a leading space', ' main'],
+      ['an inner space', 'ma in'],
+      ['a carriage return', 'main\r'],
+      ['a tab', 'main\t'],
+      ['a NUL', 'main\0'],
+    ] as [string, string][]) {
+      check(`${name} is rejected`, await threwFor(water), JSON.stringify(water));
+    }
+
+    // 3. UNICODE, NORMALIZED OR NOT. `máin` (NFC) and `máin` (NFD)
+    // are two different byte strings that are pixel-identical in every font, so
+    // a player told to join "máin" would land in one or the other depending on
+    // which keyboard, editor or clipboard produced the string — and the two
+    // would never see each other. Both are refused, which is the only answer
+    // that does not require picking a normalization form and defending it
+    // forever.
+    const NFC: string = 'máin';       // U+00E1, one code point
+    const NFD: string = 'máin';      // 'a' + U+0301 combining acute
+    check('an NFC accented name is rejected', await threwFor(NFC));
+    check('...and its NFD twin is rejected too', await threwFor(NFD));
+    check('...and they really were two different strings that render identically',
+      NFC !== NFD && NFD.normalize('NFC') === NFC, { NFC, NFD });
+    check('a zero-width joiner is rejected', await threwFor('ma‍in'));
+
+    // 4. CASE. `Main` is a different preimage, not a hint.
+    check('a capital letter is rejected', await threwFor('Main'));
+
+    // 5. LENGTH, and the shape of a hyphenated name.
+    check('a 32-character name is accepted', !(await threwFor('a'.repeat(32))));
+    check('a 33-character name is rejected', await threwFor('a'.repeat(33)));
+    check('hyphen-joined groups are accepted', !(await threwFor('deep-blue-2')));
+    check('a leading hyphen is rejected', await threwFor('-main'));
+    check('a trailing hyphen is rejected', await threwFor('main-'));
+    check('a doubled hyphen is rejected', await threwFor('ma--in'));
+
+    // 6. THE ALLOWLIST NARROWED WHAT IS ACCEPTED AND MOVED NOTHING. Every water
+    // this game has ever had still derives exactly the room it derived before,
+    // which is what makes this a safe change rather than a hard fork.
+    check('every water this game has ever used is still accepted, unchanged',
+      (await roomIdFor('main', E)) === PINNED_EPOCH_495936
+      && !(await threwFor('smoke')) && !(await threwFor('two')) && !(await threwFor('cp')));
   }
 
   // --- The epoch is checked too ----------------------------------------------------
@@ -606,10 +671,37 @@ function result(replies: NodeReply[]): GetRepliesResult {
     // the READING client's clock rather than on the instant it was handed — the
     // same silent fork as a wrong grammar, arriving only when two clients' clocks
     // differ, which is to say in production and never in a test.
-    const realNow = Date.now;
+    //
+    // FOUR GLOBALS, NOT TWO. Task 2's review mutation-tested this and found the
+    // tripwire had two holes: `new Date()` and `performance.now()` are both
+    // wall clocks, neither goes through `Date.now`, and BOTH MUTATIONS SURVIVED
+    // — a derivation that read either would have passed this check unchanged.
+    // The whole `Date` binding and `performance.now` are replaced here as well,
+    // so there is no way left to ask this process what time it is.
+    const g = globalThis as unknown as Record<string, unknown>;
+    const realDate = g.Date as DateConstructor;
     const realRandom = Math.random;
-    Date.now = () => { throw new Error('the room derivation read the wall clock'); };
-    Math.random = () => { throw new Error('the room derivation rolled dice'); };
+    const realPerf = (g.performance as { now?: () => number } | undefined)?.now;
+
+    const boom = (why: string) => () => { throw new Error(why); };
+    // A `Date` that throws for BOTH spellings: `Date.now()` and `new Date()`.
+    // Subclassing rather than replacing wholesale, so anything that merely
+    // MENTIONS the type still typechecks and only a CALL trips it.
+    class TrippedDate extends realDate {
+      constructor(...args: unknown[]) {
+        super(...(args as []));
+        throw new Error('the room derivation constructed a Date');
+      }
+      static override now(): number {
+        throw new Error('the room derivation read Date.now');
+      }
+    }
+    g.Date = TrippedDate;
+    Math.random = boom('the room derivation rolled dice');
+    if (realPerf !== undefined) {
+      (g.performance as { now: () => number }).now = boom('the room derivation read performance.now');
+    }
+
     let threw: unknown = null;
     let clockless = '';
     try {
@@ -617,13 +709,93 @@ function result(replies: NodeReply[]): GetRepliesResult {
     } catch (e) {
       threw = e;
     } finally {
-      Date.now = realNow;
+      g.Date = realDate;
       Math.random = realRandom;
+      if (realPerf !== undefined) (g.performance as { now: () => number }).now = realPerf;
     }
-    check('the derivation reads neither Date.now nor Math.random', threw === null, threw);
-    check('...and with both of them disabled still returns the pinned room',
+    check('the derivation reads no clock and rolls no dice — Date.now, new Date, '
+      + 'performance.now and Math.random are ALL disabled', threw === null, threw);
+    check('...and with all four disabled still returns the pinned room',
       clockless === PINNED_EPOCH_495936, clockless);
+
+    // THE TRIPWIRE IS ITSELF TRIPPED, because a stub that did not throw would
+    // make the two checks above pass for any implementation at all — which is
+    // exactly how the two holes survived. Each of the four is proved to fire.
+    {
+      const fired: string[] = [];
+      const trip = (what: string, run: () => unknown) => {
+        g.Date = TrippedDate;
+        Math.random = boom('dice');
+        if (realPerf !== undefined) (g.performance as { now: () => number }).now = boom('perf');
+        try { run(); } catch { fired.push(what); } finally {
+          g.Date = realDate;
+          Math.random = realRandom;
+          if (realPerf !== undefined) (g.performance as { now: () => number }).now = realPerf;
+        }
+      };
+      trip('Date.now', () => Date.now());
+      trip('new Date', () => new Date());
+      trip('Math.random', () => Math.random());
+      if (realPerf !== undefined) trip('performance.now', () => performance.now());
+      const want = realPerf === undefined
+        ? ['Date.now', 'new Date', 'Math.random']
+        : ['Date.now', 'new Date', 'Math.random', 'performance.now'];
+      check('MUTATION CHECK: every one of the disabled globals really does throw',
+        fired.length === want.length && want.every((w) => fired.includes(w)), fired);
+    }
   }
+}
+
+
+// ---------------------------------------------------------------------------
+// NOTHING BUT `water.ts` DERIVES A ROOM FROM A BARE NAME
+//
+// Task 2's review, on Task 1: *"nothing binds the water name passed to
+// `roomIdFor` to the space actually written into — correct for Task 1, but it's
+// where the next symptomless fork lives."* `water.ts` is the binding: one
+// function derives the space id and every room id from ONE name, and everything
+// downstream takes the resulting `Water`.
+//
+// That binding is only worth anything while nothing goes around it. `roomIdFor`
+// and `roomTextFor` still exist — they are the PINNED primitives above, and
+// pinning them is the defence — so this is a source scan rather than an
+// argument: any module that calls either with a bare string is a place a room
+// and a space can drift apart again, silently.
+//
+// It scans REAL SOURCE, not this file's opinion of it, and it is deliberately
+// not a lint rule: a lint rule would live in a config nobody reads at review
+// time, and this failure has no symptom to find it by afterwards.
+// ---------------------------------------------------------------------------
+{
+  console.log('\n--- the string form of the derivation has exactly one caller ---');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const roots = [join(here, '..', 'lib'), join(here, '..', 'ui')];
+  const scriptsDir = join(here, '..', '..', 'scripts');
+  const files: string[] = [];
+  for (const root of [...roots, scriptsDir]) {
+    for (const name of readdirSync(root)) {
+      if (!name.endsWith('.ts') && !name.endsWith('.tsx')) continue;
+      if (name.endsWith('.test.ts')) continue;      // tests may call the primitive
+      if (name === 'water.ts') continue;            // the one legal caller
+      if (name === 'shoalRoom.ts') continue;        // where it is defined
+      files.push(join(root, name));
+    }
+  }
+  check('NON-DEGENERACY: the scan found the real source tree',
+    files.length > 25 && files.some((f) => f.endsWith('chainSea.ts')), files.length);
+
+  const offenders: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f, 'utf8');
+    // Calls only. A mention inside a comment or a doc block is how this
+    // codebase explains itself and must not fail a scan.
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    if (/\broomIdFor\s*\(|\broomTextFor\s*\(|\broomIdAtMs\s*\(|\broomTextAtMs\s*\(/.test(code)) {
+      offenders.push(f.slice(f.lastIndexOf('\\') + 1).replace(/^.*\//, ''));
+    }
+  }
+  check('no module but `water.ts` derives a room from a bare name', offenders.length === 0,
+    offenders);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

@@ -38,20 +38,30 @@
  * Expected values are derived by hand in comments from the consensus constants
  * and stated before the code is run.
  */
+import { createHash } from 'node:crypto';
+
 import { chainSea, type ChainSea } from './chainSea';
 import { wildSeedFrom } from './demoSea';
 import { afterWrite, AT_THE_EDGE, OPEN_WATER, type Standing } from './wayIn';
 import type { SendFailure } from '../lib/shoalSend';
 import { encodeCheckpoint, encodeEat, encodePresence } from '../lib/shoalWire';
 import { cellCentre, cellIndex } from '../lib/bloom';
-import { epochEndMs, epochStartMs, epochOf } from '../lib/epoch';
+import { epochEndMs, epochStartMs, epochOf, epochWarmStartMs } from '../lib/epoch';
+import { roomEpochsFor, roomFamilyKey, roomIdIn, waterNamed } from '../lib/water';
+import { admitFloorMs } from '../lib/shoalLoop';
+import { foldShoal } from '../lib/shoalEngine';
+import { repliesToLog } from '../lib/shoalRoom';
 import { bodiesOf } from '../lib/shoalEngine';
 import { shelterOf } from '../lib/shelter';
 import { fingerprint } from '../lib/shoalFixtures';
 import {
-  EAT_R2, PRESENCE_TTL_MS, SHELTER_R2, SHELTER_THRESHOLD, TICK_MS,
+  BLOOM_VISIT_R2, EAT_R2, PRESENCE_TTL_MS, SHELTER_R2, SHELTER_THRESHOLD, TICK_MS,
 } from '../lib/shoalConst';
 import type { NodeReply } from '../lib/shoalRoom';
+/** `chainSea`'s mint cooldown is DERIVED from `PRESENCE_TTL_MS` and not
+ *  exported; re-derived here from the same constant rather than typed, so a
+ *  change to one moves both. */
+const MINT_RETRY_MS = PRESENCE_TTL_MS;
 import type { Checkpoint, ShoalState, Vec } from '../lib/shoalTypes';
 
 let failures = 0;
@@ -66,9 +76,16 @@ function check(name: string, cond: boolean, extra?: unknown) {
 
 /** 64 lowercase hex — the shape `repliesToLog`'s AUTHOR_ID_RE demands. */
 const ID = 'a1'.repeat(32);
-/** 37 chars, `sp1` + bech32 charset: what `assertWireSpaceId` demands. */
-const SPACE = 'sp1' + 'q'.repeat(34);
-const ROOM = 'sha256:' + 'ab'.repeat(32);
+/**
+ * THE WATER, and it is a real derived one rather than a hand-typed `sp1qqq…`.
+ *
+ * `waterNamed` derives the space id from the name that every room id is also
+ * derived from, so a fixture built this way cannot hold a room of one water
+ * beside the space of another — which is the whole point of plan 4d Task 2's
+ * binding, and would be quietly undone by a fixture that typed both.
+ */
+const WATER = await waterNamed('main');
+const SPACE = WATER.spaceId;
 const ENDPOINT = 'http://127.0.0.1:29736';
 
 // An epoch chosen once, and every instant placed a few seconds into it so a
@@ -76,6 +93,11 @@ const ENDPOINT = 'http://127.0.0.1:29736';
 // do not depend on WHICH epoch, only on the offsets within it.
 const EPOCH = epochOf(1_800_000_000_000);
 const EPOCH_START = epochStartMs(EPOCH);
+/** The room for that epoch, and the one before it — the pair every fold of
+ *  `EPOCH` reads (`roomEpochsFor`). Derived, never typed. */
+const ROOM = await roomIdIn(WATER, EPOCH);
+const PREV_ROOM = await roomIdIn(WATER, EPOCH - 1);
+const NEXT_ROOM = await roomIdIn(WATER, EPOCH + 1);
 /** The landed presence that puts the swimmer on a bloom cell. */
 const T0 = EPOCH_START + 1_000;
 /** The instant a vector and an eat claim are BOTH authored — the collision. */
@@ -94,12 +116,12 @@ function vecAt(t: number, heading: number): Vec {
  *  real one, which matters: `orderLog` breaks an `ms` tie on the hash, and a
  *  pending row's synthetic `pending-N` sorts BEFORE `sha256:…` ('p' < 's'), so
  *  faking a friendlier id here would fake away a real ordering fact. */
-function landed(n: number, body: string, createdAt: number): NodeReply {
+function landed(n: number, body: string, createdAt: number, parent: string = ROOM): NodeReply {
   return {
     content_id: `sha256:${n.toString(16).padStart(64, '0')}`,
     author_id: ID,
     body,
-    parent_id: ROOM,
+    parent_id: parent,
     block_height: null,
     created_at: createdAt,
   };
@@ -110,6 +132,10 @@ interface Stub {
   replies: NodeReply[];
   /** When true, `submit_reply` answers with a JSON-RPC error. */
   rejectSubmit: boolean;
+  /** When true, `submit_post` answers with a JSON-RPC error — the shape a
+   *  node takes when this identity is not sponsored, or when the space is
+   *  not one it will accept a post into. */
+  rejectMint: boolean;
   /**
    * The JSON-RPC `code` that rejection carries. Default -32000 is the shape of
    * open item 2's failure on a network that enforces the space gate at
@@ -117,8 +143,15 @@ interface Stub {
    * src/rpc/error.rs:31) to exercise the way-in classification instead.
    */
   submitErrorCode: number;
-  /** Every body the sea submitted, in order, with the author it claimed. */
-  submitted: { body: string; author: string }[];
+  /** Every body the sea submitted, in order, with the author it claimed AND
+   *  the room it went into — the latter is what plan 4d Task 2's decision 2 is
+   *  asserted on. */
+  submitted: { body: string; author: string; parent: string }[];
+  /** Every room post the sea MINTED (`submit_post`), in order. */
+  minted: { title: string; body: string; space: string }[];
+  /** Every `content_id` `get_replies` was asked for, in order. The crossing is
+   *  visible here: a fold of epoch E asks for E-1's room and E's, every time. */
+  roomsRead: string[];
   /**
    * When true, an accepted `submit_reply` is APPENDED to `replies`, so the
    * next `get_replies` hands it back the way a real node does once the write
@@ -126,7 +159,7 @@ interface Stub {
    * never coming back.
    */
   landSubmissions: boolean;
-  calls: { getReplies: number; submit: number; getInfo: number };
+  calls: { getReplies: number; submit: number; submitPost: number; getInfo: number };
 }
 
 function installStub(): { stub: Stub; restore: () => void } {
@@ -137,10 +170,13 @@ function installStub(): { stub: Stub; restore: () => void } {
   const stub: Stub = {
     replies: [],
     rejectSubmit: false,
+    rejectMint: false,
     submitErrorCode: -32_000,
     submitted: [],
+    minted: [],
+    roomsRead: [],
     landSubmissions: false,
-    calls: { getReplies: 0, submit: 0, getInfo: 0 },
+    calls: { getReplies: 0, submit: 0, submitPost: 0, getInfo: 0 },
   };
 
   const json = (body: unknown) => ({
@@ -153,7 +189,11 @@ function installStub(): { stub: Stub; restore: () => void } {
 
   g.fetch = async (_url: unknown, init: { body: string }) => {
     const req = JSON.parse(init.body) as {
-      method: string; id: number; params?: { body?: string; author_id?: string };
+      method: string; id: number;
+      params?: {
+        body?: string; author_id?: string; parent_id?: string;
+        content_id?: string; title?: string; space_id?: string;
+      };
     };
     if (req.method === 'get_info') {
       stub.calls.getInfo++;
@@ -161,10 +201,42 @@ function installStub(): { stub: Stub; restore: () => void } {
     }
     if (req.method === 'get_replies') {
       stub.calls.getReplies++;
+      // FILTERED BY PARENT, the way the node's own parent index is. A stub that
+      // handed every room the whole list would make the crossing tests pass for
+      // a client that read one room, which is the mutation they exist to catch.
+      const parent = req.params?.content_id ?? '';
+      stub.roomsRead.push(parent);
+      const mine = stub.replies.filter((r) => r.parent_id === parent);
       return json({
         jsonrpc: '2.0',
         id: req.id,
-        result: { parent_id: ROOM, replies: [...stub.replies], total_count: stub.replies.length },
+        result: { parent_id: parent, replies: mine, total_count: mine.length },
+      });
+    }
+    if (req.method === 'submit_post') {
+      stub.calls.submitPost++;
+      if (stub.rejectMint) {
+        return json({
+          jsonrpc: '2.0', id: req.id,
+          error: { code: -32_015, message: 'Identity is not sponsored' },
+        });
+      }
+      // MINTING AN HOUR'S ROOM. Answered exactly as the node answers it —
+      // `content_id = "sha256:" + hex(sha256(title + "\n\n" + body))`
+      // (methods.rs:2221-2223) — because `ensureRoom` compares the answer with
+      // its own derivation and throws on a mismatch.
+      stub.minted.push({
+        title: req.params?.title ?? '', body: req.params?.body ?? '',
+        space: req.params?.space_id ?? '',
+      });
+      return json({
+        jsonrpc: '2.0',
+        id: req.id,
+        result: {
+          content_id: 'sha256:' + createHash('sha256')
+            .update(`${req.params?.title ?? ''}\n\n${req.params?.body ?? ''}`, 'utf8')
+            .digest('hex'),
+        },
       });
     }
     if (req.method === 'submit_reply') {
@@ -181,14 +253,15 @@ function installStub(): { stub: Stub; restore: () => void } {
       }
       const body = req.params?.body ?? '';
       const author = req.params?.author_id ?? '';
-      stub.submitted.push({ body, author });
+      const parent = req.params?.parent_id ?? '';
+      stub.submitted.push({ body, author, parent });
       // A distinct id per accepted write, the way a real node derives one from
       // the body. `landSubmissions` decides whether the room then serves it.
       const contentId = `sha256:${(0xf000 + stub.submitted.length).toString(16).padStart(64, '0')}`;
       if (stub.landSubmissions) {
         stub.replies = [...stub.replies, {
           content_id: contentId, author_id: author, body,
-          parent_id: ROOM, block_height: null, created_at: 0,
+          parent_id: parent, block_height: null, created_at: 0,
         }];
       }
       return json({ jsonrpc: '2.0', id: req.id, result: { content_id: contentId } });
@@ -218,15 +291,24 @@ function installStub(): { stub: Stub; restore: () => void } {
   };
 }
 
+/**
+ * Build a sea, opened at `openAtMs`.
+ *
+ * `openedAtMs` is a required part of a `ChainSeaConfig` now, and it decides
+ * WHICH PAIR OF ROOMS the constructor's first read asks for — see that field.
+ * It is always at or before the first instant the case under test steps to, so
+ * it can only reach ticks that case was going to fold anyway.
+ */
 function makeSea(
   onError?: (where: string, err: unknown) => void,
   onWrite?: (failure: SendFailure | null) => void,
+  openAtMs: number = EPOCH_START,
 ): ChainSea {
   return chainSea({
+    openedAtMs: openAtMs,
     ...(onWrite === undefined ? {} : { onWrite }),
     auth: { endpoint: ENDPOINT, authHeader: null },
-    spaceId: SPACE,
-    roomContentId: ROOM,
+    water: WATER,
     authorIdHex: ID,
     signer: Promise.resolve({
       publicKeyHex: ID,
@@ -453,11 +535,34 @@ async function anUnansweredRowExpires(): Promise<void> {
 function wildSeedFromIsPinnedAndAgreesAcrossShells(): void {
   check('hand-derived: wildSeedFrom("a", "b") = 982414785',
     wildSeedFrom('a', 'b') === 982414785, wildSeedFrom('a', 'b'));
-  check('the same room derives the same seed every time',
+  check('the same key derives the same seed every time',
     wildSeedFrom(SPACE, ROOM) === wildSeedFrom(SPACE, ROOM), wildSeedFrom(SPACE, ROOM));
-  check('two different rooms in the same space derive different seeds',
+  check('two different keys in the same space derive different seeds',
     wildSeedFrom(SPACE, ROOM) !== wildSeedFrom(SPACE, ROOM + 'x'),
     { a: wildSeedFrom(SPACE, ROOM), b: wildSeedFrom(SPACE, ROOM + 'x') });
+
+  // A ROTATION MUST BE INVISIBLE (spec §1.1, and this plan's own constraint).
+  // `chainSea` seeds the wild shoal from the WATER's room family, never from an
+  // hour's room id — otherwise every ambient fish in the sea would re-roll on
+  // the stroke of the hour, in front of the player, and announce that the sea
+  // has hours.
+  check('the family key is a function of the water and carries no hour',
+    roomFamilyKey(WATER) === 'wild:shoal:v1:main' && !/\d{5,}/.test(roomFamilyKey(WATER)),
+    roomFamilyKey(WATER));
+  check('...so every hour of this water has ONE wild seed',
+    new Set([PREV_ROOM, ROOM, NEXT_ROOM].map(() => wildSeedFrom(SPACE, roomFamilyKey(WATER)))).size === 1
+    && new Set([PREV_ROOM, ROOM, NEXT_ROOM]).size === 3,
+    [PREV_ROOM, ROOM, NEXT_ROOM]);
+  // NON-DEGENERACY: the check above would hold for a seed function that ignored
+  // its second argument entirely. This is what the OLD seeding would have done
+  // at the same three hours, and it must differ — otherwise nothing was fixed.
+  check('NON-DEGENERACY: seeding from the hour\'s own room WOULD have re-rolled it',
+    new Set([PREV_ROOM, ROOM, NEXT_ROOM].map((r) => wildSeedFrom(SPACE, r))).size === 3,
+    [PREV_ROOM, ROOM, NEXT_ROOM].map((r) => wildSeedFrom(SPACE, r)));
+  // And two waters are still two seas (open item 13).
+  check('a different water is a different wild shoal',
+    wildSeedFrom(SPACE, roomFamilyKey(WATER))
+      !== wildSeedFrom(SPACE, roomFamilyKey({ ...WATER, name: 'smoke' })));
   check('the seed is always non-negative (the high bit is always cleared)',
     wildSeedFrom('a', 'b') >= 0 && wildSeedFrom(SPACE, ROOM) >= 0 && wildSeedFrom('', '') >= 0,
     { ab: wildSeedFrom('a', 'b'), room: wildSeedFrom(SPACE, ROOM), empty: wildSeedFrom('', '') });
@@ -558,27 +663,34 @@ function vecAtOn(t: number, c: { x: number; y: number }): Vec {
 }
 
 /** A reply from an arbitrary author (the fixture above needs two). */
-function landedBy(n: number, author: string, body: string, createdAt: number): NodeReply {
+function landedBy(
+  n: number, author: string, body: string, createdAt: number, parent: string = ROOM,
+): NodeReply {
   return {
     content_id: `sha256:${n.toString(16).padStart(64, '0')}`,
     author_id: author,
     body,
-    parent_id: ROOM,
+    parent_id: parent,
     block_height: null,
     created_at: createdAt,
   };
 }
 
-/** The room, before anyone publishes anything. */
+/**
+ * The rooms, before anyone publishes anything — TWO of them now, and every
+ * entry placed by the hour it was AUTHORED in (plan 4d Task 2, decision 2).
+ * That placement is the fixture's own statement of the rule, so a client that
+ * read only one room folds a different world here rather than the same one.
+ */
 function boundaryRoom(): NodeReply[] {
   return [
-    landedBy(11, OTHER, encodePresence(vecAtOn(EPOCH_START + 1_000, CENTRE_O), OTHER), 0),
-    landedBy(12, OTHER, encodeEat(CELL_O, EPOCH_START + 1_500, OTHER), 0),
-    landedBy(13, OTHER, encodePresence(vecAtOn(EPOCH_START + 2_000, CENTRE_O), OTHER), 0),
-    landedBy(14, ID, encodePresence(vecAtOn(E_END - 5_000, CENTRE), ID), 0),
-    landedBy(15, ID, encodeEat(CELL, ID_BITE_MS, ID), 0),
-    // Epoch E+1: OTHER comes back.
-    landedBy(16, OTHER, encodePresence(vecAtOn(E_END + 2_000, CENTRE_O), OTHER), 0),
+    landedBy(11, OTHER, encodePresence(vecAtOn(EPOCH_START + 1_000, CENTRE_O), OTHER), 0, ROOM),
+    landedBy(12, OTHER, encodeEat(CELL_O, EPOCH_START + 1_500, OTHER), 0, ROOM),
+    landedBy(13, OTHER, encodePresence(vecAtOn(EPOCH_START + 2_000, CENTRE_O), OTHER), 0, ROOM),
+    landedBy(14, ID, encodePresence(vecAtOn(E_END - 5_000, CENTRE), ID), 0, ROOM),
+    landedBy(15, ID, encodeEat(CELL, ID_BITE_MS, ID), 0, ROOM),
+    // Epoch E+1: OTHER comes back — into the NEXT hour's room.
+    landedBy(16, OTHER, encodePresence(vecAtOn(E_END + 2_000, CENTRE_O), OTHER), 0, NEXT_ROOM),
   ];
 }
 
@@ -632,9 +744,29 @@ async function aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts(): Promise
       atBoundary.fish.get(OTHER) === undefined);
 
     // --- Cross it ----------------------------------------------------------
+    const readsAtRoll = stub.calls.getReplies;
+    const rolling = a.step(TARGET);
+    check('A rolled into the next epoch', rolling.epoch === EPOCH + 1, rolling.epoch);
+
+    // THE PAIR OF ROOMS MOVED WITH IT, and the frame that rolls cannot already
+    // have read the new one — `advance` decides the roll, and the read it fires
+    // is a round trip. So the rolling frame folds epoch E+1 from what this
+    // client held while it was still in epoch E: everything up to the boundary,
+    // and nothing authored after it. That is correct rather than a gap. Nothing
+    // with an `ms` in epoch E+1 can have been authored before E_END, so during
+    // epoch E there was nothing in E+1's room to miss; the fixture only has one
+    // because it jumps ten seconds in a single step where a real window takes
+    // six hundred frames.
+    check('the rolling frame has not read the new hour room yet — OTHER is still away',
+      rolling.fish.get(OTHER) === undefined && rolling.departed.get(OTHER)?.size === 60,
+      { fish: rolling.fish.get(OTHER)?.size, departed: rolling.departed.get(OTHER)?.size });
+    await until(() => stub.calls.getReplies > readsAtRoll, 'A to read the new hour room');
+
     const crossed = a.step(TARGET);
     const crossedPrint = fingerprint(crossed);
-    check('A rolled into the next epoch', crossed.epoch === EPOCH + 1, crossed.epoch);
+    check('...and the very next frame, having read it, has OTHER back',
+      crossed.epoch === EPOCH + 1 && crossed.fish.get(OTHER) !== undefined,
+      { epoch: crossed.epoch, other: crossed.fish.get(OTHER)?.size });
 
     await until(() => stub.submitted.length >= 1, 'A to publish its checkpoint');
     check('A published exactly one thing at the boundary — its checkpoint',
@@ -660,7 +792,7 @@ async function aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts(): Promise
 
     // --- The client that joins after ---------------------------------------
     const readsBefore = stub.calls.getReplies;
-    const b = makeSea();
+    const b = makeSea(undefined, undefined, E_END);
     seas.push(b);
     await until(() => stub.calls.getReplies > readsBefore, 'B\'s first read');
     const joined = b.step(TARGET);
@@ -678,7 +810,7 @@ async function aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts(): Promise
     // changed nothing at all.
     stub.replies = stub.replies.filter((r) => !r.body.startsWith('v1|checkpoint|'));
     const readsBeforeC = stub.calls.getReplies;
-    const c = makeSea();
+    const c = makeSea(undefined, undefined, E_END);
     seas.push(c);
     await until(() => stub.calls.getReplies > readsBeforeC, 'C\'s first read');
     const unseeded = c.step(TARGET);
@@ -744,11 +876,11 @@ async function twoCheckpointsForOneEpochAreReported(): Promise<void> {
     const rival: Checkpoint = { epoch: EPOCH, sizes: [[ID, 108], [OTHER, 100]], recent: [] };
     stub.replies = [
       ...boundaryRoom(),
-      landedBy(21, ID, encodeCheckpoint(honest, ID), 0),
-      landedBy(22, OTHER, encodeCheckpoint(rival, OTHER), 0),
+      landedBy(21, ID, encodeCheckpoint(honest, ID), 0, NEXT_ROOM),
+      landedBy(22, OTHER, encodeCheckpoint(rival, OTHER), 0, NEXT_ROOM),
     ];
 
-    sea = makeSea((where, err) => { errors.push({ where, err }); });
+    sea = makeSea((where, err) => { errors.push({ where, err }); }, undefined, E_END);
     await until(() => stub.calls.getReplies >= 1, 'the first read');
     const state = sea.step(TARGET);
 
@@ -792,7 +924,7 @@ async function noCheckpointIsSkippedCleanly(): Promise<void> {
   const errors: { where: string; err: unknown }[] = [];
   try {
     stub.replies = boundaryRoom();
-    sea = makeSea((where, err) => { errors.push({ where, err }); });
+    sea = makeSea((where, err) => { errors.push({ where, err }); }, undefined, E_END);
     await until(() => stub.calls.getReplies >= 1, 'the first read');
     const state = sea.step(TARGET);
     check('nothing is reported at all', errors.length === 0, errors.map((e) => e.where));
@@ -822,9 +954,12 @@ async function adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch(): Promise<void> 
       sizes: [[ID, 108], [OTHER, 60]],
       recent: [[ID, ID_BITE_MS, [ID_BITE_MS]]],
     };
-    stub.replies = [...boundaryRoom(), landedBy(21, ID, encodeCheckpoint(honest, ID), 0)];
+    // The checkpoint for epoch E lives in epoch E+1's room — decision 3: a write
+    // goes to the room of the fold that will read it, and only E+1's fold ever
+    // reads this one.
+    stub.replies = [...boundaryRoom(), landedBy(21, ID, encodeCheckpoint(honest, ID), 0, NEXT_ROOM)];
 
-    sea = makeSea();
+    sea = makeSea(undefined, undefined, TARGET);
     // Synchronously, before the constructor's own fetch can have resolved.
     const first = sea.step(TARGET);
     check('the first frame folds an empty, unseeded sea (the fetch has not landed)',
@@ -944,6 +1079,551 @@ async function anAcceptedWriteReportsAcceptance(): Promise<void> {
   check('...and one that never was stays where it was', standing.atTheEdge === false, standing);
 }
 
+// ===========================================================================
+// 9. THE CROSSING — two rooms, one world (plan 4d Task 2)
+//
+// The room is a function of the hour. A fold for epoch E therefore reads TWO
+// rooms, because the fold does not start at the hour: it starts at
+// `epochWarmStartMs(E)` — 90 s earlier — and its entry cursor admits everything
+// from `admitFloorMs(E)`, 180 s earlier still. All of that is epoch E-1, and
+// since Task 1 that is a different post.
+//
+// THE FAILURE THIS SECTION EXISTS TO CATCH HAS NO SYMPTOM. A client that read
+// only the current room would fold a sea missing three minutes of history —
+// no error, no warning, nothing missing on screen, just a permanent
+// disagreement with everybody, renewed every hour. So the tests below are
+// written so that the one-room client FAILS them, and the mutation at the end
+// proves it does.
+//
+// ── THE FIXTURE ────────────────────────────────────────────────────────────
+//
+// Two swimmers writing across the boundary between E-1 and E. Every entry is
+// placed in the room of the hour it was AUTHORED in, which is the rule
+// `chainSea` writes by (decision 2), so the fixture states the rule rather than
+// assuming it.
+//
+//   PREV_ROOM (epoch E-1):
+//     E_START - 100_000   ID    presence      below the warm start, ABOVE the
+//     E_START - 100_000   OTHER presence      admit floor: reachable ONLY by
+//                                             reading the previous room
+//     E_START -  20_000   ID    presence      inside the warm-up window
+//     E_START -  15_000   ID    eat CELL      a bite before the hour, whose
+//                                             growth and cooldown cross it
+//     E_START -  10_000   OTHER presence
+//   ROOM (epoch E):
+//     E_START +  5_000    ID    presence
+//     E_START +  5_000    OTHER presence
+//     E_START + 10_000    OTHER eat CELL_O
+//     the checkpoint for epoch E-1                (decision 3: it seeds E, so
+//                                                  it lives in E's room)
+//
+// The 100 s entries are the load-bearing ones. `admitFloorMs(E)` is
+// `E_START - 180_000` and `epochWarmStartMs(E)` is `E_START - 90_000`, so an
+// entry at -100_000 is admitted, is already expired at the first warm-up tick
+// by `PRESENCE_TTL_MS`... no: it is alive for the first warm-up tick and leaves
+// a `departed` row, which is precisely why shoalLoop.ts calls that floor EXACT
+// rather than conservative. Either way it CHANGES THE FOLD, and it is only in
+// the old room.
+// ===========================================================================
+
+/** 00:00:30 — the instant the brief names, 30 s into the hour, when the fold
+ *  still needs the last 90 s of the hour before it. */
+const JUST_AFTER = EPOCH_START + 30_000;
+/** 00:05 — long past the warm-up, and still reading the same two rooms. */
+const WELL_INTO = EPOCH_START + 300_000;
+
+/**
+ * A cell FAR from `CELL` — far enough that neither swimmer's presence stamps
+ * the other's bloom.
+ *
+ * The distance matters and is checked below. `markVisits` stamps every cell
+ * within `BLOOM_VISIT_R` (200 cu) of a fish, and `isBloomReady` exempts only
+ * the CLAIMANT's own stamps — so two swimmers standing on adjacent cells hold
+ * each other's bloom fallow forever and NEITHER can ever eat. Section 4b's
+ * fixture wants them adjacent (so they shelter each other); this one wants them
+ * apart (so both bites credit and the world is demonstrably not inert).
+ */
+const CELL_F = cellIndex(1_000, 1_000);
+const CENTRE_F = cellCentre(CELL_F);
+
+/** The checkpoint that closes epoch E-1. Hand-built rather than harvested:
+ *  what these tests compare is LOGS, and a seed both sides are given equally is
+ *  a control rather than a variable. */
+const CROSSING_SEED: Checkpoint = {
+  epoch: EPOCH - 1,
+  sizes: [[ID, 104], [OTHER, 96]],
+  recent: [],
+};
+
+/** Every reply in the crossing fixture, each in the room of its own hour. */
+function crossingReplies(): NodeReply[] {
+  return [
+    // --- epoch E-1, in the CLOSING hour's room ---------------------------
+    landedBy(31, ID, encodePresence(vecAtOn(EPOCH_START - 100_000, CENTRE), ID), 0, PREV_ROOM),
+    landedBy(32, OTHER, encodePresence(vecAtOn(EPOCH_START - 100_000, CENTRE_F), OTHER), 0, PREV_ROOM),
+    landedBy(33, ID, encodePresence(vecAtOn(EPOCH_START - 20_000, CENTRE), ID), 0, PREV_ROOM),
+    landedBy(34, ID, encodeEat(CELL, EPOCH_START - 15_000, ID), 0, PREV_ROOM),
+    landedBy(35, OTHER, encodePresence(vecAtOn(EPOCH_START - 10_000, CENTRE_F), OTHER), 0, PREV_ROOM),
+    // --- epoch E, in the OPENING hour's room ------------------------------
+    landedBy(36, ID, encodePresence(vecAtOn(EPOCH_START + 5_000, CENTRE), ID), 0, ROOM),
+    landedBy(37, OTHER, encodePresence(vecAtOn(EPOCH_START + 5_000, CENTRE_F), OTHER), 0, ROOM),
+    landedBy(38, OTHER, encodeEat(CELL_F, EPOCH_START + 10_000, OTHER), 0, ROOM),
+    // The seed for THIS hour lives in THIS hour's room (decision 3).
+    landedBy(39, ID, encodeCheckpoint(CROSSING_SEED, ID), 0, ROOM),
+    // Keep-alives, so the sea is still populated at 00:05 and the comparison
+    // there is between two worlds rather than between two empty ones.
+    landedBy(40, ID, encodePresence(vecAtOn(EPOCH_START + 120_000, CENTRE), ID), 0, ROOM),
+    landedBy(41, OTHER, encodePresence(vecAtOn(EPOCH_START + 121_000, CENTRE_F), OTHER), 0, ROOM),
+    landedBy(42, ID, encodePresence(vecAtOn(EPOCH_START + 250_000, CENTRE), ID), 0, ROOM),
+    landedBy(43, OTHER, encodePresence(vecAtOn(EPOCH_START + 251_000, CENTRE_F), OTHER), 0, ROOM),
+    landedBy(44, ID, encodePresence(vecAtOn(EPOCH_START + 290_000, CENTRE), ID), 0, ROOM),
+    landedBy(45, OTHER, encodePresence(vecAtOn(EPOCH_START + 291_000, CENTRE_F), OTHER), 0, ROOM),
+  ];
+}
+
+function theCrossingFixtureGeometryIsWhatItAssumes(): void {
+  console.log('\n9. the crossing fixture geometry, before anything depends on it');
+  const d2 = (CENTRE.x - CENTRE_F.x) ** 2 + (CENTRE.y - CENTRE_F.y) ** 2;
+  check('the two swimmers are far enough apart not to trample each other\'s bloom',
+    d2 > BLOOM_VISIT_R2 * 4, { d2, BLOOM_VISIT_R2 });
+  check('the entry below the warm start is still ABOVE the admit floor, so it '
+    + 'changes the fold and lives only in the previous hour\'s room',
+    EPOCH_START - 100_000 < epochWarmStartMs(EPOCH)
+    && EPOCH_START - 100_000 >= admitFloorMs(EPOCH)
+    && epochOf(EPOCH_START - 100_000) === EPOCH - 1,
+    { warmStart: epochWarmStartMs(EPOCH), floor: admitFloorMs(EPOCH) });
+}
+
+/**
+ * THE PRE-CHANGE FOLD, computed directly rather than through `chainSea`.
+ *
+ * This is what a single-room client folded before rotation existed: ONE room
+ * holding every reply that was ever written, handed whole to the engine for
+ * epoch E. `repliesToLog` is the same decoder `chainSea` uses and `foldShoal`
+ * is the same fold; the only difference is that nothing here knows what a room
+ * is. If the union of two rooms folds to this, rotation changed the storage and
+ * not the world.
+ */
+function singleRoomFold(toMs: number): ShoalState {
+  return foldShoal(
+    repliesToLog(crossingReplies()),
+    toMs,
+    { epoch: EPOCH, seed: CROSSING_SEED },
+  );
+}
+
+async function theCrossingReadsExactlyTwoRooms(): Promise<void> {
+  console.log('\n9a. a fold of epoch E reads epoch E-1\'s room and epoch E\'s, and no others');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = crossingReplies();
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    await until(() => stub.roomsRead.length >= 2, 'the first pair of reads');
+
+    const asked = new Set(stub.roomsRead);
+    check('both rooms of the pair were asked for', asked.has(PREV_ROOM) && asked.has(ROOM),
+      [...asked]);
+    check('...and NOTHING else was — not E-2, not E+1',
+      asked.size === 2, [...asked]);
+    // The rule itself, stated where a reader can check it against the reads.
+    check('`roomEpochsFor` says exactly that: [E-1, E], oldest first',
+      roomEpochsFor(EPOCH)[0] === EPOCH - 1 && roomEpochsFor(EPOCH)[1] === EPOCH
+      && roomEpochsFor(EPOCH).length === 2, roomEpochsFor(EPOCH));
+
+    // AND THE OLD ROOM IS NOT DROPPED HALFWAY THROUGH THE HOUR. The admit floor
+    // is a function of the EPOCH, so it does not move within one; a client at
+    // 00:05 needs the previous room exactly as much as one at 00:00:30.
+    const readsBefore = stub.roomsRead.length;
+    sea.step(WELL_INTO);
+    await until(() => stub.roomsRead.length > readsBefore || stub.calls.getReplies > 0,
+      'a later read', 2_000).catch(() => { /* no further read is fine; the set below is what matters */ });
+    check('the admit floor does not move within an epoch, so neither does the pair',
+      admitFloorMs(EPOCH) === epochWarmStartMs(EPOCH) - PRESENCE_TTL_MS
+      && admitFloorMs(EPOCH) === EPOCH_START - 180_000
+      && admitFloorMs(EPOCH) > epochStartMs(EPOCH - 1),
+      { floor: admitFloorMs(EPOCH), prevStart: epochStartMs(EPOCH - 1) });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function theUnionIsThePreChangeFold(): Promise<void> {
+  console.log('\n9b. the union of the two rooms folds to the world one room used to');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = crossingReplies();
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+    const union = sea.step(JUST_AFTER);
+
+    // ── NON-DEGENERACY FIRST. An inert world would satisfy every equality
+    // below, and equalities between two empty seas prove nothing at all.
+    const before = singleRoomFold(JUST_AFTER);
+    check('NON-DEGENERACY: both swimmers are in the sea',
+      union.fish.size === 2 && union.fish.has(ID) && union.fish.has(OTHER),
+      [...union.fish.keys()]);
+    check('NON-DEGENERACY: bites were credited — the bloom map is not empty',
+      union.bitesTaken.size >= 1, [...union.bitesTaken.entries()]);
+    check('NON-DEGENERACY: sizes have really moved off the seed and off START_SIZE',
+      union.fish.get(ID)?.size !== 100 && union.fish.get(OTHER)?.size !== 100
+      && union.fish.get(ID)?.size !== 104,
+      { id: union.fish.get(ID)?.size, other: union.fish.get(OTHER)?.size });
+    check('NON-DEGENERACY: every fish has been outside the tension core and is counted',
+      union.outsideTicks.size === 2, [...union.outsideTicks.entries()]);
+    check('NON-DEGENERACY: and the fold really ran its ticks — hundreds of them, counted',
+      Math.max(...union.outsideTicks.values()) > 100, [...union.outsideTicks.values()]);
+
+    // ── THE CLAIM.
+    check('THE UNION IS THE OLD LOG: two rooms fold byte-for-byte to what one room did',
+      fingerprint(union) === fingerprint(before),
+      { union: fingerprint(union), before: fingerprint(before) });
+
+    // ...and at 00:05 as well, where the warm-up is long past but the floor has
+    // not moved, so the previous room is still load-bearing.
+    const later = sea.step(WELL_INTO);
+    check('NON-DEGENERACY: the sea at 00:05 is still populated — this is not two empty worlds',
+      later.fish.size === 2 && later.bitesTaken.size >= 1,
+      { fish: later.fish.size, bites: [...later.bitesTaken.entries()] });
+    check('...and still at 00:05, when the warm-up is long behind but the floor is not',
+      fingerprint(later) === fingerprint(singleRoomFold(WELL_INTO)),
+      { union: fingerprint(later), before: fingerprint(singleRoomFold(WELL_INTO)) });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function readingOnlyTheCurrentRoomDiverges(): Promise<void> {
+  console.log('\n9c. THE MUTATION: a client that reads only the current room folds a DIFFERENT sea');
+  // This is the agreement test of 9b with one thing changed — the previous
+  // hour's room comes back empty, which is exactly what a client that read one
+  // room would see. It MUST fail the comparison. If it passed, 9b would be
+  // proving nothing: the whole of the crossing would be dead code and the sea
+  // would look perfectly healthy without it.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = crossingReplies().filter((r) => r.parent_id !== PREV_ROOM);
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+    const oneRoom = sea.step(JUST_AFTER);
+    const before = singleRoomFold(JUST_AFTER);
+
+    check('MUTATION: without the previous hour\'s room the fold DISAGREES',
+      fingerprint(oneRoom) !== fingerprint(before),
+      { oneRoom: fingerprint(oneRoom), before: fingerprint(before) });
+    // And it disagrees in the way that has no symptom: a full, healthy-looking
+    // sea with both swimmers in it, at the wrong sizes.
+    check('...while looking entirely healthy — same swimmers, no error, wrong world',
+      oneRoom.fish.size === 2 && oneRoom.fish.has(ID) && oneRoom.fish.has(OTHER),
+      [...oneRoom.fish.keys()]);
+    check('...and specifically loses the bite taken before the hour',
+      oneRoom.fish.get(ID)?.size !== before.fish.get(ID)?.size,
+      { oneRoom: oneRoom.fish.get(ID)?.size, before: before.fish.get(ID)?.size });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aJoinerInTheWarmUpSeesTheSameSea(): Promise<void> {
+  console.log('\n9d. a client that joins at 00:00:30 and one that joins at 00:05 agree');
+  const { stub, restore } = installStub();
+  const seas: ChainSea[] = [];
+  try {
+    stub.replies = crossingReplies();
+
+    // EARLY — opens 30 s into the hour, while the fold still depends on the
+    // previous room's tail, and keeps running to 00:05.
+    const early = makeSea(undefined, undefined, JUST_AFTER);
+    seas.push(early);
+    await until(() => stub.calls.getReplies >= 2, 'the early client\'s read');
+    early.step(JUST_AFTER);
+    const earlyState = early.step(WELL_INTO);
+
+    // LATE — has never seen 00:00:30 at all and opens straight at 00:05.
+    const readsBefore = stub.calls.getReplies;
+    const late = makeSea(undefined, undefined, WELL_INTO);
+    seas.push(late);
+    await until(() => stub.calls.getReplies > readsBefore + 1, 'the late client\'s read');
+    const lateState = late.step(WELL_INTO);
+
+    check('NON-DEGENERACY: the late client folded a populated sea',
+      lateState.fish.size === 2 && lateState.bitesTaken.size >= 1,
+      { fish: lateState.fish.size, bites: [...lateState.bitesTaken.entries()] });
+    check('a joiner inside the first 90 s and one at 00:05 fold identical worlds',
+      fingerprint(earlyState) === fingerprint(lateState),
+      { early: fingerprint(earlyState), late: fingerprint(lateState) });
+    check('...and both are the pre-change single-room fold',
+      fingerprint(lateState) === fingerprint(singleRoomFold(WELL_INTO)),
+      { late: fingerprint(lateState), before: fingerprint(singleRoomFold(WELL_INTO)) });
+  } finally {
+    for (const s of seas) s.stop();
+    restore();
+  }
+}
+
+async function everyWriteGoesToTheRoomOfItsOwnHour(): Promise<void> {
+  console.log('\n9e. a write straddling the boundary goes to the room of the hour it was AUTHORED in');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.replies = crossingReplies();
+    // The window is 30 s into epoch E and publishes a vector it authored 500 ms
+    // BEFORE the boundary — which is exactly what a mine that took a second
+    // produces, and the case the brief calls the straddling write.
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+
+    sea.publish(vecAtOn(EPOCH_START - 500, CENTRE));
+    await until(() => stub.submitted.length >= 1, 'the straddling write');
+    check('a vector authored before the boundary goes into the CLOSING hour\'s room',
+      stub.submitted[0]?.parent === PREV_ROOM,
+      { got: stub.submitted[0]?.parent, prev: PREV_ROOM, now: ROOM });
+
+    // ...and one authored after it goes into the opening hour's.
+    sea.publish(vecAtOn(EPOCH_START + 20_000, CENTRE));
+    await until(() => stub.submitted.length >= 2, 'the ordinary write');
+    check('...and one authored after the boundary goes into the OPENING hour\'s',
+      stub.submitted[1]?.parent === ROOM,
+      { got: stub.submitted[1]?.parent, now: ROOM });
+
+    // NON-DEGENERACY: the two rooms really are different, so the pair of checks
+    // above is discriminating rather than accidentally true.
+    check('NON-DEGENERACY: those are two different rooms', PREV_ROOM !== ROOM);
+
+    // AND NOTHING IS LOST. The straddler landed in a room every client folding
+    // epoch E is reading for the whole hour — that is what decision 1 buys, and
+    // it is why placing by authoring time costs nothing.
+    check('the room it landed in is one of the pair a fold of epoch E reads',
+      roomEpochsFor(EPOCH).includes(EPOCH - 1), roomEpochsFor(EPOCH));
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function everyClientMintsItsOwnHour(): Promise<void> {
+  console.log('\n9f. every client mints the hour it needs, and the one after it');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    // A NODE THAT HAS NEVER HEARD OF THIS GAME. No replies anywhere, no room
+    // post, nobody played last hour — the case the brief requires to work
+    // without depending on any particular client being online.
+    stub.replies = [];
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    // Bounded, and a TIMEOUT IS A FAILED CHECK rather than a thrown run: the
+    // interesting mutation here (drop the ahead-mint) makes the second mint
+    // never happen, and a suite that died of a timeout would report that as an
+    // error rather than as the check it is.
+    const bothMinted = await until(() => stub.minted.length >= 2, 'both mints', 10_000)
+      .then(() => true).catch(() => false);
+
+    check('the hour being folded is minted', stub.minted.some(
+      (m) => m.body === `room:shoal:v1:main:${EPOCH}`), stub.minted.map((m) => m.body));
+    check('...and the NEXT hour, ahead of the boundary, so a rollover never waits on a mine',
+      bothMinted && stub.minted.some((m) => m.body === `room:shoal:v1:main:${EPOCH + 1}`),
+      stub.minted.map((m) => m.body));
+    check('every mint carries the constant title and this water\'s own space',
+      stub.minted.every((m) => m.title === 'The Shoal' && m.space === WATER.spaceId),
+      stub.minted);
+    // NOT the previous hour: this client never writes into it (its own first
+    // vector is authored now), so minting it would be a post nobody needs.
+    check('the PREVIOUS hour is not minted — nothing this client writes belongs there',
+      !stub.minted.some((m) => m.body === `room:shoal:v1:main:${EPOCH - 1}`),
+      stub.minted.map((m) => m.body));
+    // AND AN HOUR NOBODY PLAYED COSTS NOTHING. `get_replies` on a parent that
+    // does not exist answers with no replies rather than failing
+    // (methods.rs:9628-9640), so the previous room simply reads empty.
+    const state = sea.step(JUST_AFTER);
+    check('an hour nobody played leaves an empty previous room and a working sea',
+      state.fish.size === 0 && state.epoch === EPOCH,
+      { fish: state.fish.size, epoch: state.epoch });
+
+    // NON-DEGENERACY: minting is not a per-frame Argon2id loop. Twelve more
+    // frames inside the same hour must add no mints at all.
+    const after = stub.minted.length;
+    for (let i = 1; i <= 12; i++) sea.step(JUST_AFTER + i * 1_000);
+    await new Promise((r) => setTimeout(r, 50));
+    check('NON-DEGENERACY: twelve more frames in the same hour mint nothing further',
+      stub.minted.length === after, { before: after, after: stub.minted.length });
+
+    // ...and crossing hours does not accumulate either. A window left open for
+    // a week must not carry a week of derived room ids, mint promises and
+    // failure stamps: `noteEpoch` prunes everything below `epoch - 1`, which is
+    // the oldest room `roomEpochsFor` can ever ask for. Observed through the
+    // WRITE PATH rather than by reaching into the closure — a write into a
+    // pruned hour re-derives its room correctly, which is the only thing the
+    // prune could have broken.
+    for (let h = 1; h <= 3; h++) {
+      sea.step(epochStartMs(EPOCH + h) + 1_000);
+      // The ahead-mint is chained behind the current hour's, so give the two
+      // promises their turns before stepping into the next hour.
+      await until(() => stub.minted.some((m) => m.body === `room:shoal:v1:main:${EPOCH + h + 1}`),
+        `the mint for hour +${h + 1}`, 10_000).catch(() => {});
+    }
+    const mintedByThen = stub.minted.length;
+    check('...and three hours later the client has minted each hour it reached, once each',
+      mintedByThen === after + 3
+      && new Set(stub.minted.map((m) => m.body)).size === mintedByThen,
+      { after, mintedByThen, bodies: stub.minted.map((m) => m.body) });
+    const submittedBefore = stub.submitted.length;
+    sea.publish(vecAtOn(epochStartMs(EPOCH + 3) + 2_000, CENTRE));
+    await until(() => stub.submitted.length > submittedBefore, 'a write three hours on', 10_000)
+      .catch(() => {});
+    check('a write in the fourth hour still names that hour room, after three prunes',
+      stub.submitted[submittedBefore]?.parent === (await roomIdIn(WATER, EPOCH + 3)),
+      { got: stub.submitted[submittedBefore]?.parent, want: await roomIdIn(WATER, EPOCH + 3) });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function theCheckpointGoesIntoTheOpeningRoom(): Promise<void> {
+  console.log('\n9g. the checkpoint is published into the room of the hour it OPENS');
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.landSubmissions = true;
+    stub.replies = boundaryRoom();
+    sea = makeSea();
+    await until(() => stub.calls.getReplies >= 2, 'the first pair of reads');
+
+    sea.step(E_END - TICK_MS);
+    sea.step(TARGET); // cross it
+    await until(() => stub.submitted.length >= 1, 'the checkpoint');
+
+    check('NON-DEGENERACY: what was published IS a checkpoint for the closing hour',
+      stub.submitted[0]?.body.startsWith(`v1|checkpoint|${ID.slice(0, 16)}|{"epoch":${EPOCH},`),
+      stub.submitted[0]?.body.slice(0, 60));
+    check('THE CARRY: it went into epoch E+1\'s room — the hour it seeds',
+      stub.submitted[0]?.parent === NEXT_ROOM,
+      { got: stub.submitted[0]?.parent, opening: NEXT_ROOM, closing: ROOM });
+    check('NON-DEGENERACY: and NOT into the closing hour\'s room, which is a different post',
+      stub.submitted[0]?.parent !== ROOM && ROOM !== NEXT_ROOM);
+
+    // WHY IT MATTERS, DEMONSTRATED RATHER THAN ARGUED: a joiner in epoch E+1
+    // whose read of the PREVIOUS room fails outright still finds the seed,
+    // because the seed is in the room it is definitely reading. Under the
+    // closing-room rule the same joiner folds unseeded and puts everyone back
+    // at START_SIZE — Blocker 12, returning through a fetch failure.
+    const seeds = stub.replies.filter(
+      (r) => r.body.startsWith('v1|checkpoint|') && r.parent_id === NEXT_ROOM);
+    check('...so a client reading only epoch E+1\'s room can still adopt it',
+      seeds.length === 1, seeds.map((r) => r.parent_id));
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aFailedMintDoesNotSwallowTheWrite(): Promise<void> {
+  console.log('\n9h. a mint the node refuses does not take the WRITE down with it');
+  // THE DEFECT THIS PINS, found in self-review of this very branch. The write
+  // path used to `await ensureRoom(...)` and let a rejection propagate, which
+  // is wrong twice over:
+  //
+  //  - everybody mints, so the second client into an hour is ordinarily minting
+  //    a post a peer has already made, and a failure of that redundant call
+  //    would drop a move for a reason that does not exist;
+  //  - `submit_post` runs the SAME `check_identity_sponsored` as `submit_reply`
+  //    (methods.rs:2204), so an unsponsored player's mint fails with the same
+  //    -32015 — and if that cancelled the write, `submit_reply` would never be
+  //    reached at all. `onWrite` would never fire, and a write that goes
+  //    through is the ONLY evidence this client can ever have that somebody has
+  //    let it in (`wayIn.ts`). The silent permanent lockout, from a new
+  //    direction.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const errors: string[] = [];
+  const seen: (SendFailure | null)[] = [];
+  try {
+    stub.rejectMint = true;
+    stub.replies = crossingReplies();
+    sea = makeSea((where) => { errors.push(where); }, (f) => { seen.push(f); }, JUST_AFTER);
+    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+
+    // THE STRADDLING WRITE, which is the sharpest case available and a real
+    // one: a vector authored 500 ms before the boundary goes into the CLOSING
+    // hour's room — a room THIS client has never minted (9f: it mints the hour
+    // it is in and the next, never the one behind). So this is the mint's very
+    // first attempt for that epoch, with no cooldown standing in front of it,
+    // and it is refused.
+    sea.publish(vecAtOn(EPOCH_START - 500, CENTRE));
+    // Bounded, and A TIMEOUT IS A FAILED CHECK: the mutation this section
+    // exists for (let the mint's rejection propagate) makes the write never
+    // happen at all, and a suite that died of a timeout would report that as an
+    // error rather than as the check it is.
+    const reached = await until(() => stub.calls.submit >= 1, 'the write', 10_000)
+      .then(() => true).catch(() => false);
+
+    check('the write REACHED the node even though the mint was refused',
+      reached && stub.submitted.length === 1, stub.submitted.length);
+    check('...into the room this client DERIVES for that hour, not into nothing',
+      stub.submitted[0]?.parent === PREV_ROOM,
+      { got: stub.submitted[0]?.parent, want: PREV_ROOM });
+    await until(() => seen.length >= 1, 'the write outcome', 10_000).catch(() => {});
+    check('...and its outcome reached the way-in channel, which is the only signal that can '
+      + 'ever lift the edge of the water', seen[0] === null, seen[0]);
+    check('the refused mint is still REPORTED, loudly, on the developer channel',
+      errors.includes('mintRoom'), errors);
+
+    // NON-DEGENERACY: the mint really was attempted and really was refused.
+    // Without this the checks above would pass for a client that had stopped
+    // minting altogether.
+    check('NON-DEGENERACY: a mint really was attempted and really was refused',
+      stub.minted.length === 0 && errors.filter((e) => e === 'mintRoom').length >= 1, errors);
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
+  console.log('\n9i. a refused mint is not re-mined on every single write');
+  // A CPU bound, not a correctness one. A refused player writes every
+  // MAX_EMIT_GAP_MS forever by design, and a Post is four times a Reply's
+  // expected work — so a mint retried per write would make being refused cost
+  // five mines where it costs one. `MINT_RETRY_MS` is the cooldown, and it is
+  // `PRESENCE_TTL_MS` rather than a number somebody liked.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  try {
+    stub.rejectMint = true;
+    stub.replies = crossingReplies();
+    sea = makeSea(undefined, undefined, JUST_AFTER);
+    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+    const postsAfterOpen = stub.calls.submitPost;
+    check('NON-DEGENERACY: opening the sea did attempt a mint', postsAfterOpen >= 1, postsAfterOpen);
+
+    // Four writes inside the cooldown. None of them may mine another Post.
+    for (let i = 1; i <= 4; i++) {
+      sea.publish(vecAtOn(JUST_AFTER + i * 1_000, CENTRE));
+      await until(() => stub.calls.submit >= i, `write ${i}`);
+    }
+    check('four writes inside the cooldown mined no further room posts',
+      stub.calls.submitPost === postsAfterOpen,
+      { before: postsAfterOpen, after: stub.calls.submitPost });
+    check('...while every one of the four writes still went out',
+      stub.calls.submit >= 4, stub.calls.submit);
+
+    // And past the cooldown it tries again — a transient failure must not lock
+    // an hour out for the life of the window.
+    sea.publish(vecAtOn(JUST_AFTER + MINT_RETRY_MS + 1_000, CENTRE));
+    await until(() => stub.calls.submitPost > postsAfterOpen, 'the retry past the cooldown');
+    check('a write past the cooldown DOES try to mint again', stub.calls.submitPost > postsAfterOpen,
+      { before: postsAfterOpen, after: stub.calls.submitPost });
+  } finally {
+    sea?.stop();
+    restore();
+  }
+}
+
 async function main(): Promise<void> {
   wildSeedFromIsPinnedAndAgreesAcrossShells();
   await landedEatMustNotRetireAPendingVector();
@@ -958,6 +1638,16 @@ async function main(): Promise<void> {
   await theGateReachesTheShellAsAType();
   await anUnrelatedRefusalIsNotTheWayIn();
   await anAcceptedWriteReportsAcceptance();
+  theCrossingFixtureGeometryIsWhatItAssumes();
+  await theCrossingReadsExactlyTwoRooms();
+  await theUnionIsThePreChangeFold();
+  await readingOnlyTheCurrentRoomDiverges();
+  await aJoinerInTheWarmUpSeesTheSameSea();
+  await everyWriteGoesToTheRoomOfItsOwnHour();
+  await everyClientMintsItsOwnHour();
+  await theCheckpointGoesIntoTheOpeningRoom();
+  await aFailedMintDoesNotSwallowTheWrite();
+  await aRefusedMintIsNotRetriedOnEveryWrite();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

@@ -39,6 +39,7 @@
  * hand-enumerated — all eight combinations, written out rather than generated
  * from the rule it is checking.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
@@ -51,6 +52,8 @@ import type { ChainSea } from './chainSea';
 import type { Vec } from '../lib/shoalTypes';
 import { shellConfig, waterSpaceId, WATER_APP, WATER_NAME, type InvokeFn } from './shellConfig';
 import { wildSeedFrom } from './demoSea';
+import { roomFamilyKey, roomIdIn } from '../lib/water';
+import { epochOf } from '../lib/epoch';
 import { decodeBody } from '../lib/shoalWire';
 import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
 import { WORLD_H, WORLD_W } from '../lib/shoalConst';
@@ -404,6 +407,15 @@ function installNode(): { seen: Seen[]; socket: () => Socketish | null; restore:
         return ok({ network: 'regtest', min_pow_difficulty: 4 });
       case 'get_replies':
         return ok({ parent_id: req.params.content_id, replies: [], total_count: 0 });
+      case 'submit_post':
+        // The hour's room, minted by the client (plan 4d Task 2). Answered
+        // exactly as the node answers it (methods.rs:2221-2223) because
+        // `ensureRoom` compares the answer against its own derivation.
+        return ok({
+          content_id: 'sha256:' + createHash('sha256')
+            .update(`${String(req.params.title ?? '')}\n\n${String(req.params.body ?? '')}`, 'utf8')
+            .digest('hex'),
+        });
       case 'submit_reply':
         return ok({ content_id: `sha256:${'cd'.repeat(32)}` });
       default:
@@ -456,8 +468,24 @@ async function aShellConfigurationBecomesASea(): Promise<void> {
       check('the camera follows the node\'s own swimmer', sea.selfId === NODE_PUBKEY, sea.selfId);
       // Hand-derived independently of `seaFrom`: the sea is a property of the
       // PLACE, so this must be the seed EVERY client in this room computes.
-      check('the wild shoal is the room\'s, not the caller\'s',
-        sea.wildSeed === wildSeedFrom(SHOAL_SPACE, cfg.roomContentId), sea.wildSeed);
+      // Hand-derived independently of `seaFrom`: the sea is a property of the
+      // WATER — not of the hour — so this must be the seed every client in this
+      // water computes, this hour and every hour after it.
+      check('the wild shoal is the water\'s, not the caller\'s',
+        sea.wildSeed === wildSeedFrom(SHOAL_SPACE, roomFamilyKey(cfg.water)), sea.wildSeed);
+      // A ROTATION MUST BE INVISIBLE (spec §1.1, and this plan's constraint).
+      // The seed used to be `wildSeedFrom(space, roomContentId)`, which with a
+      // room per hour would re-roll every ambient fish on the stroke of the
+      // hour in front of the player. Asserted as "no hour of this water is in
+      // the seed" rather than argued: the four rooms below are four different
+      // content ids and none of them may change the answer.
+      const perHour = await Promise.all(
+        [495_935, 495_936, 495_937, 495_938].map((e) => roomIdIn(cfg.water, e)),
+      );
+      check('...and it does not change from hour to hour — a rotation is invisible',
+        new Set(perHour).size === 4
+        && perHour.every((r) => wildSeedFrom(SHOAL_SPACE, roomFamilyKey(cfg.water)) !== wildSeedFrom(SHOAL_SPACE, r)),
+        perHour);
       check('and it spawns where the dev path spawns',
         sea.spawn.x === SEA_SPAWN.x && sea.spawn.y === SEA_SPAWN.y, sea.spawn);
 
@@ -469,8 +497,24 @@ async function aShellConfigurationBecomesASea(): Promise<void> {
 
       const submit = node.seen.find((c) => c.method === 'submit_reply');
       check('a published vector reaches the node as a reply', submit !== undefined);
-      check('...into the room the shell resolved, not one it was told',
-        submit?.params.parent_id === cfg.roomContentId, submit?.params.parent_id);
+      // INTO THE ROOM OF THE HOUR THE VECTOR WAS AUTHORED IN (plan 4d Task 2,
+      // decision 2) — re-derived here from `t`, the same instant the body
+      // carries, not from a constant this file holds.
+      check('...into the room of the hour it was authored in, derived from the water',
+        submit?.params.parent_id === (await roomIdIn(cfg.water, epochOf(t))),
+        { parent: submit?.params.parent_id, want: await roomIdIn(cfg.water, epochOf(t)) });
+      // NON-DEGENERACY: the neighbouring hours are different rooms, so the
+      // check above is discriminating rather than accidentally true.
+      check('...and the neighbouring hours are different rooms',
+        (await roomIdIn(cfg.water, epochOf(t) - 1)) !== submit?.params.parent_id
+        && (await roomIdIn(cfg.water, epochOf(t) + 1)) !== submit?.params.parent_id);
+      // AND THE CLIENT MADE THAT ROOM ITSELF, first.
+      const posted = node.seen.find((c) => c.method === 'submit_post');
+      check('...having minted that room itself rather than waiting for one',
+        posted?.params.title === 'The Shoal'
+        && posted?.params.body === `room:shoal:v1:${cfg.water.name}:${epochOf(t)}`
+        && posted?.params.space_id === cfg.water.spaceId,
+        posted?.params);
       check('...authored by the node', submit?.params.author_id === NODE_PUBKEY, submit?.params.author_id);
 
       // NOT "a reply was sent" — the BODY is decoded back with the real wire
@@ -652,9 +696,20 @@ function theWaterHasOneName(): void {
   const mint = codeOnly(readSource('../../scripts/mint-water.ts'));
   check('the minter imports the name from shellConfig',
     /import\s*\{[^}]*WATER_SPACE_NAME[^}]*\}\s*from\s*'[^']*shellConfig'/s.test(mint));
-  check('...and the room text as well',
-    /import\s*\{[^}]*ROOM_TITLE[^}]*\}\s*from\s*'[^']*shellConfig'/s.test(mint)
-    && /import\s*\{[^}]*ROOM_BODY[^}]*\}\s*from\s*'[^']*shellConfig'/s.test(mint));
+  // THE MINTER NO LONGER MINTS A ROOM AT ALL, and this check is what holds
+  // that in place. It used to require `ROOM_TITLE`/`ROOM_BODY` to be imported
+  // rather than typed, because one fixed room post had to be established by
+  // hand. The room is a function of the hour now (plan 4d) and every client
+  // mints the hour it needs, so a room post minted here would be one arbitrary
+  // hour out of a stream of them — and a room TEXT spelled here would be a
+  // second grammar beside `roomTextFor`, which is exactly the kind of second
+  // source this section exists to forbid.
+  check('the minter spells no room text of its own',
+    !mint.includes('ROOM_TITLE') && !mint.includes('ROOM_BODY')
+    && !mint.includes('The Shoal') && !mint.includes('room:shoal:'),
+    mint.match(/.{0,40}(ROOM_TITLE|ROOM_BODY|The Shoal|room:shoal:).{0,20}/g));
+  check('...and submits no post, so nothing here can be one hour out of many',
+    !mint.includes('submit_post'), mint.match(/.{0,40}submit_post.{0,20}/g));
   check('the minter contains no space name of its own to mistype',
     !mint.includes('@shoal:'), mint.match(/.{0,40}@shoal:.{0,20}/g));
 
