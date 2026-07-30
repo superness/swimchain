@@ -27,6 +27,8 @@ import {
   DIP_TIERS, CONGEAL_GAP_MS, UPGRADES, UPGRADE_CHAINS, MAX_BATCH,
   DEEP_BAND_COUNT, CHAR_PER_BAND, deepBandFloor,
   BURN_REFUND_NUM, BURN_REFUND_DEN,
+  bossHp,
+  FIRST_HP_BAND,
   type Upgrade,
 } from './chipsConst';
 import { proofKey } from './proofKey';
@@ -54,6 +56,8 @@ export type Outcome =
   | 'tipped' | 'rejected-shallow'
   | 'broke'
   | 'spent'
+  /** A blow that hurt the boss without finishing it. */
+  | 'chipped'
   /** `spend`: not enough char, or you already have it. */
   | 'rejected-char'
   | 'bought' | 'rejected-cost' | 'rejected-owned' | 'rejected-order' | 'rejected-parse'
@@ -106,6 +110,11 @@ export interface ChipsState {
   /** Total worth of chips FED TO BOSSES. Spent, never banked — recorded only
    *  so the UI can say what the descent cost. */
   paidToBosses: number;
+
+  /** Damage dealt to the CURRENT band's boss, in crumbs — "chipping away at
+   *  the table". Belongs to the BOWL: a tip resets it, so tipping mid-fight
+   *  costs you the fight. Meaningless for band 0, which settles in one blow. */
+  bossDamage: number;
 
   /** Char abilities bought from scoop. PRESTIGE — rides across a tip, like
    *  char itself: you paid the descent for these, not the run. */
@@ -408,7 +417,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, charOwned: new Set(), declined: new Set(),
+    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, bossDamage: 0, charOwned: new Set(), declined: new Set(),
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -538,6 +547,7 @@ export function foldChips(
       // bands broken in it are gone with it — you are back at the surface of
       // a new one. `deepest` and `char` are prestige and stay (see `broke`).
       state.broken = 0;
+      state.bossDamage = 0;   // the fight belongs to the bowl
       state.declined = new Set();
       state.crumbs = 0;
       state.lifetimeChips = 0;
@@ -658,6 +668,33 @@ export function foldChips(
       // Banking it as well is what let one enormous winning dip carry a player
       // past every remaining band in a single move.
       state.paidToBosses += parsed.paid;
+
+      /* ── CHIPPING AWAY AT THE TABLE ─────────────────────────────────────
+         Bands 1+ have HEALTH. Every chip fed does its worth in damage and the
+         band only gives when the total lands, so a fight can span sessions —
+         which is the whole point: The Porcelain rewards one enormous swing,
+         The Table makes you keep coming back.
+
+         BAND 0 IS EXEMPT and settles in one blow, as it always has (operator:
+         "leave porcelein alone"). That also keeps this change safe: the single
+         `broke` already on mainnet is the legacy bare form carrying NO amount,
+         so under HP rules it would deal zero damage and silently un-break a
+         real player's band — taking their char and their ability with it.
+
+         A blow that does not finish the boss is not a failure and not a
+         rejection: it is progress, and it says so. */
+      if (band >= FIRST_HP_BAND) {
+        state.bossDamage += parsed.paid;
+        const hp = bossHp(band, state.lifetimeChips);
+        if (state.bossDamage < hp) {
+          state.moves.push({
+            content_id: reply.content_id, ms: parsed.ms, outcome: 'chipped',
+          });
+          continue;
+        }
+        // It gives. Damage resets for whatever is under it.
+        state.bossDamage = 0;
+      }
 
       state.broken = band + 1;
       if (state.broken > state.deepest) {
