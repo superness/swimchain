@@ -91,7 +91,7 @@ fi
 
 # ---- B1: website up through gateway ------------------------------------------
 B1_OK=true; B1_DETAIL=""
-for path in / /reef/ /chess/ /example/ /download; do
+for path in / /reef/ /chess/ /example/ /download /defcon/; do
   CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -H "Host: swimchain.io" "http://$GATEWAY$path")
   B1_DETAIL="$B1_DETAIL$path=$CODE "
   [ "$CODE" = "200" ] || B1_OK=false

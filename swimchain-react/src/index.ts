@@ -175,8 +175,11 @@ export {
 // can act (shared by the reef/chess public pages).
 export {
   ensureSponsored,
+  selectClaimableOffer,
   type SponsorableIdentity,
   type EnsureSponsoredOptions,
+  type OfferSelectionOpts,
+  type OpenOffer,
 } from "./lib/ensureSponsored";
 
 // Caching utilities

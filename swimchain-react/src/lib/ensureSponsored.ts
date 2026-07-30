@@ -23,7 +23,7 @@ export interface SponsorableIdentity {
 }
 
 /** A sponsorship offer as returned by list_sponsorship_offers. */
-interface OpenOffer {
+export interface OpenOffer {
   offer_id: string;
   sponsor_pubkey: string;
   auto_approve?: boolean;
@@ -35,6 +35,80 @@ interface OpenOffer {
    * onboarding uses scoped offers so a reef player can't claim the chess offer.
    */
   space_scope?: string | null;
+}
+
+export interface OfferSelectionOpts {
+  spaceIdHex?: string;
+  preferredSponsorHex?: string;
+  strictPreferred?: boolean;
+  /**
+   * When true, offers with `auto_approve === false` are eligible too (default
+   * false: today's behavior only claims auto-approve offers). The DEF CON
+   * landing page claims a manual-approval offer, so it opts in.
+   */
+  allowManualOffers?: boolean;
+  /**
+   * When true, only an offer whose `space_scope` equals `spaceIdHex` exactly
+   * is eligible — a global (unscoped) offer is rejected even though `scopeOk`
+   * would normally accept it. Default false preserves today's behavior. The
+   * DEF CON page must not let browsers drain the global tier's slots.
+   */
+  requireExactScope?: boolean;
+}
+
+// A scoped offer only grants action inside its own space. If the caller needs
+// a specific space, accept an offer scoped to THAT space (or a global offer
+// that works everywhere) and skip offers scoped elsewhere — otherwise a reef
+// player could claim the chess-scoped offer and then be unable to act in reef.
+function scopeOk(o: OpenOffer, spaceIdHex?: string): boolean {
+  return (
+    !spaceIdHex || !o.space_scope || o.space_scope.toLowerCase() === spaceIdHex.toLowerCase()
+  );
+}
+
+// Within each tier, take the offer with the MOST remaining slots. Public
+// pages have many concurrent newcomers; picking the first match kept landing
+// everyone on the same near-exhausted 1-slot invite (which then auto-approves
+// only the first claimant and drops the rest with "no slots"). Preferring the
+// largest standing offer spreads the load and avoids that thundering herd.
+function mostSlots(candidates: OpenOffer[]): OpenOffer | undefined {
+  return candidates.reduce<OpenOffer | undefined>(
+    (best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o),
+    undefined
+  );
+}
+
+/** Pure: pick the offer a claimant should claim, or null. Extracted for tests. */
+export function selectClaimableOffer(
+  offers: OpenOffer[],
+  opts: OfferSelectionOpts
+): OpenOffer | null {
+  const { spaceIdHex, preferredSponsorHex, strictPreferred, allowManualOffers, requireExactScope } =
+    opts;
+  const hasRoom = (o: OpenOffer) => o.slots_remaining > 0;
+  const preferred = (o: OpenOffer) =>
+    !!preferredSponsorHex &&
+    o.sponsor_pubkey?.toLowerCase() === preferredSponsorHex.toLowerCase();
+  // An offer passes the auto-approve filter iff it is genuinely auto-approve,
+  // OR the caller opted into manual offers.
+  const autoOk = (o: OpenOffer) => o.auto_approve || allowManualOffers;
+  const inScope = (o: OpenOffer) =>
+    requireExactScope ? o.space_scope === spaceIdHex : scopeOk(o, spaceIdHex);
+  // Preferred-sponsor tiers first. In strict mode we STOP here — never claim a
+  // different sponsor's offer, because that fallback is what let a player land
+  // on a stale offer from an offline sponsor and hang forever.
+  const pick =
+    mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o) && inScope(o))) ??
+    mostSlots(offers.filter((o) => preferred(o) && hasRoom(o) && inScope(o))) ??
+    (strictPreferred
+      ? undefined
+      : // Prefer a genuine auto-approve offer first (fast, no operator wait);
+        // fall back to ANY offer only when the caller opted into manual ones
+        // via `allowManualOffers` — otherwise a manual offer would silently
+        // become "claimable" for every existing default-options caller.
+        mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o) && inScope(o))) ??
+        mostSlots(offers.filter((o) => autoOk(o) && hasRoom(o) && inScope(o))));
+  return pick ?? null;
 }
 
 export interface EnsureSponsoredOptions {
@@ -67,6 +141,27 @@ export interface EnsureSponsoredOptions {
   onProgress?: (phase: string) => void;
   /** How long to wait for the chain to record the sponsorship (ms). */
   timeoutMs?: number;
+  /**
+   * Free-text application submitted with the claim (sent as `application_text`
+   * to `claim_sponsorship_offer`). Defaults to `null` — today's behavior.
+   * Offers with `requirements.application_required` typically need this.
+   */
+  applicationText?: string;
+  /**
+   * When true, offers with `auto_approve === false` become eligible to claim
+   * (default false: only auto-approve offers are claimed, today's behavior).
+   * A manual offer requires operator review before `isSponsored` returns true,
+   * so callers that set this should expect the wait to take longer.
+   */
+  allowManualOffers?: boolean;
+  /**
+   * When true, only an offer whose `space_scope` equals `requiredSpaceId`
+   * exactly is eligible — a global (unscoped) offer is rejected even though it
+   * would normally be accepted as "works everywhere" (default false, today's
+   * behavior). Set this when browsers must not be able to drain a global
+   * tier's slots by landing on it instead of their own space's offer.
+   */
+  requireExactScope?: boolean;
 }
 
 /**
@@ -132,8 +227,16 @@ export async function ensureSponsored(
   id: SponsorableIdentity,
   options: EnsureSponsoredOptions = {}
 ): Promise<void> {
-  const { preferredSponsorHex, strictPreferred, requiredSpaceId, onProgress, timeoutMs = 180_000 } =
-    options;
+  const {
+    preferredSponsorHex,
+    strictPreferred,
+    requiredSpaceId,
+    onProgress,
+    timeoutMs = 180_000,
+    applicationText,
+    allowManualOffers,
+    requireExactScope,
+  } = options;
 
   const isSponsored = async (): Promise<boolean> => {
     try {
@@ -154,38 +257,13 @@ export async function ensureSponsored(
     .call<{ offers?: OpenOffer[] }>('list_sponsorship_offers', {})
     .catch(() => ({ offers: [] as OpenOffer[] }));
   const offers = list.offers ?? [];
-  const hasRoom = (o: OpenOffer) => o.slots_remaining > 0;
-  const preferred = (o: OpenOffer) =>
-    !!preferredSponsorHex &&
-    o.sponsor_pubkey?.toLowerCase() === preferredSponsorHex.toLowerCase();
-  // A scoped offer only grants action inside its own space. If the caller needs
-  // a specific space, accept an offer scoped to THAT space (or a global offer
-  // that works everywhere) and skip offers scoped elsewhere — otherwise a reef
-  // player could claim the chess-scoped offer and then be unable to act in reef.
-  const scopeOk = (o: OpenOffer) =>
-    !requiredSpaceId ||
-    !o.space_scope ||
-    o.space_scope.toLowerCase() === requiredSpaceId.toLowerCase();
-  // Within each tier, take the offer with the MOST remaining slots. Public
-  // pages have many concurrent newcomers; picking the first match kept landing
-  // everyone on the same near-exhausted 1-slot invite (which then auto-approves
-  // only the first claimant and drops the rest with "no slots"). Preferring the
-  // largest standing offer spreads the load and avoids that thundering herd.
-  const mostSlots = (candidates: OpenOffer[]): OpenOffer | undefined =>
-    candidates.reduce<OpenOffer | undefined>(
-      (best, o) => (best && best.slots_remaining >= o.slots_remaining ? best : o),
-      undefined
-    );
-  // Preferred-sponsor tiers first. In strict mode we STOP here — never claim a
-  // different sponsor's offer, because that fallback is what let a player land
-  // on a stale offer from an offline sponsor and hang forever.
-  const pick =
-    mostSlots(offers.filter((o) => preferred(o) && o.auto_approve && hasRoom(o) && scopeOk(o))) ??
-    mostSlots(offers.filter((o) => preferred(o) && hasRoom(o) && scopeOk(o))) ??
-    (strictPreferred
-      ? undefined
-      : mostSlots(offers.filter((o) => o.auto_approve && hasRoom(o) && scopeOk(o))) ??
-        mostSlots(offers.filter((o) => hasRoom(o) && scopeOk(o))));
+  const pick = selectClaimableOffer(offers, {
+    spaceIdHex: requiredSpaceId,
+    preferredSponsorHex,
+    strictPreferred,
+    allowManualOffers,
+    requireExactScope,
+  });
   if (!pick) {
     throw new Error(
       strictPreferred
@@ -205,7 +283,7 @@ export async function ensureSponsored(
   await rpc.call('claim_sponsorship_offer', {
     offer_id: pick.offer_id,
     claimant_pubkey: id.publicKeyHex,
-    application_text: null,
+    application_text: applicationText ?? null,
     pow_nonce: nonce,
     pow_difficulty: minDifficulty,
     pow_nonce_space: bytesToHex(nonceSpace),
