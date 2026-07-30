@@ -3,8 +3,13 @@
  *
  * DISPLAY SIDE. `terrain.ts` owns the four places' coordinates, names and
  * queries and is pure and tested; this file owns nothing but what they look
- * like, and like `seaPaint.ts` it is verified by screenshot rather than by a
- * mocked canvas.
+ * like, and how it LOOKS is verified by screenshot, exactly as `seaPaint.ts`
+ * is. That was the whole of it until the Drop-off shipped a defect that was
+ * structural rather than a matter of taste — flat opaque straight-sided
+ * polygons, which read as a missing texture — so `terrainPaint.test.ts` now
+ * records the drawing calls and fails on that specific shape of mistake. Read
+ * its header before trusting it: it is a guard against one class of defect and
+ * it cannot tell you whether anything here looks good.
  *
  * NO STANDING TEXT. Not a label, not a marker, nothing that is on screen a
  * second longer than it has to be. A place is recognised the way a place is
@@ -128,6 +133,22 @@ function seedOf(place: Place, k: number): number {
   return place.x * 7919 + place.y * 31 + k;
 }
 
+/**
+ * How far beyond its own radius a place is allowed to DRAW, in radii — and,
+ * because it is the same number, how far off the window a place may be before
+ * `nearby` stops drawing it.
+ *
+ * The two have to be one constant. If a place draws further out than the
+ * culler admits, the far end of it appears and disappears on its own schedule
+ * as you swim toward the place: a landmark that arrives a limb at a time,
+ * which is the exact "this is a rendering fault" reading the whole file is
+ * trying to shed. `terrainPaint.test.ts` §5 measures the real drawn extent of
+ * all four places against this and fails if any of them reaches past it. As
+ * measured today: the Drop-off reaches 2.37 radii (its deepest ledge), and the
+ * other three reach 2.10 each.
+ */
+export const PLACE_REACH = 2.6;
+
 // ---------------------------------------------------------------------------
 // The rock every place stands on
 // ---------------------------------------------------------------------------
@@ -167,9 +188,43 @@ function paintOutcrop(
   ctx: CanvasRenderingContext2D, f: TerrainFrame, place: Place, cam: Camera,
   wide: number, tall: number, lit: number, k: number,
 ): void {
-  const rx = place.r * wide;
-  const ry = place.r * tall;
-  const midY = crestRefY(place, tall);
+  paintMass(
+    ctx, f, cam, place.x, crestRefY(place, tall),
+    place.r * wide, place.r * tall, lit, 1, seedOf(place, k * 1000),
+  );
+}
+
+/**
+ * The rock mass itself, at an arbitrary centre and size.
+ *
+ * Split out of `paintOutcrop` so the Drop-off can build a CLIFF out of the
+ * same shape — a wall below the lip and the ledges falling away east of it are
+ * all rock masses, and every hard-won property in the paragraphs below (the
+ * closed lumpy lens, the gradient that runs out before the silhouette does)
+ * is exactly what stops each of them reading as a slab. `seed` is what
+ * `seedOf(place, k * 1000)` used to be inlined as; because `seedOf` is linear
+ * in `k`, passing that base and adding the same offsets reproduces every hash
+ * the four places drew before the split, to the bit.
+ *
+ * `alpha` scales every stop, so a mass can be pushed back into the murk
+ * without touching its colours — which is the whole of the atmospheric
+ * perspective on the Drop-off's ledges.
+ *
+ * `body` is what the middle of the mass mixes toward, and it is the difference
+ * between a rock and a shadow. The four outcrops want `ROCK`, which is lighter
+ * than the deep water and reads as a solid thing standing in it. A cliff FACE
+ * wants `ROCK_DARK`, which is very nearly the water's own colour down there,
+ * so all that survives of the mass is the light along its top edge — which is
+ * all you ever see of a wall below a lip. The first pass ran the Drop-off's
+ * wall at `ROCK` and it came out as a large pale boulder sitting under the
+ * plateau: lighter than the sea it was supposed to be a hole in.
+ */
+function paintMass(
+  ctx: CanvasRenderingContext2D, f: TerrainFrame, cam: Camera,
+  cx: number, midY: number, rx: number, ry: number,
+  lit: number, alpha: number, seed: number,
+  body: [number, number, number] = ROCK,
+): void {
   const steps = 40;
 
   const ring = (grow: number): Array<{ x: number; y: number }> => {
@@ -179,11 +234,11 @@ function paintOutcrop(
       const ux = Math.cos(a);
       const uy = Math.sin(a);
       const lump = 1
-        + (unit(seedOf(place, k * 1000 + i)) - 0.5) * 0.16
-        + (unit(seedOf(place, k * 1000 + 700 + Math.floor(i / 5))) - 0.5) * 0.24;
+        + (unit(seed + i) - 0.5) * 0.16
+        + (unit(seed + 700 + Math.floor(i / 5)) - 0.5) * 0.24;
       // Shallower below the waist: a rock, not an egg.
       const vr = (uy < 0 ? ry : ry * 0.72) * grow;
-      pts.push({ x: place.x + rx * grow * ux * lump, y: midY + vr * uy * lump });
+      pts.push({ x: cx + rx * grow * ux * lump, y: midY + vr * uy * lump });
     }
     return pts;
   };
@@ -228,14 +283,14 @@ function paintOutcrop(
   // hard edge of the path, and from any distance the mass reads as a pale
   // rectangle with square bottom corners. Fading out INSIDE the shape leaves
   // the lower sliver invisible and the mass with no bottom at all.
-  const crest = worldToScreen(cam, f.view, place.x, midY - ry * 1.15);
-  const base = worldToScreen(cam, f.view, place.x, midY + ry * 0.6);
+  const crest = worldToScreen(cam, f.view, cx, midY - ry * 1.15);
+  const base = worldToScreen(cam, f.view, cx, midY + ry * 0.6);
   const g = ctx.createLinearGradient(0, crest.y, 0, base.y);
-  g.addColorStop(0, siltAt(midY - ry, ROCK_LIT, lit, 0.9));
-  g.addColorStop(0.2, siltAt(midY - ry * 0.8, ROCK_LIT, lit * 0.62, 0.92));
-  g.addColorStop(0.55, siltAt(midY - ry * 0.2, ROCK, 0.86, 0.88));
-  g.addColorStop(0.8, siltAt(midY + ry * 0.2, ROCK_DARK, 0.72, 0.45));
-  g.addColorStop(0.93, siltAt(midY + ry * 0.45, ROCK_DARK, 0.6, 0.12));
+  g.addColorStop(0, siltAt(midY - ry, ROCK_LIT, lit, 0.9 * alpha));
+  g.addColorStop(0.2, siltAt(midY - ry * 0.8, ROCK_LIT, lit * 0.62, 0.92 * alpha));
+  g.addColorStop(0.55, siltAt(midY - ry * 0.2, body, 0.86, 0.88 * alpha));
+  g.addColorStop(0.8, siltAt(midY + ry * 0.2, ROCK_DARK, 0.72, 0.45 * alpha));
+  g.addColorStop(0.93, siltAt(midY + ry * 0.45, ROCK_DARK, 0.6, 0.12 * alpha));
   g.addColorStop(1, siltAt(midY + ry * 0.6, ROCK_DARK, 0.55, 0));
   ctx.fillStyle = g;
   trace(ring(1));
@@ -244,8 +299,8 @@ function paintOutcrop(
   // Two darker lobes inside it, so the mass has folds rather than being one
   // flat silhouette.
   for (let i = 0; i < 2; i++) {
-    const s = seedOf(place, k * 1000 + 300 + i * 41);
-    const lx = place.x + span(s, -rx * 0.6, rx * 0.6);
+    const s = seed + 300 + i * 41;
+    const lx = cx + span(s, -rx * 0.6, rx * 0.6);
     const ly = midY - ry * span(s + 1, 0.1, 0.55);
     const lr = rx * span(s + 2, 0.16, 0.3);
     const c = worldToScreen(cam, f.view, lx, ly);
@@ -262,12 +317,12 @@ function paintOutcrop(
   // only — clipped to the upper half, because a rim all the way round would
   // draw the base this shape is deliberately not committing to.
   ctx.save();
-  const clipTop = worldToScreen(cam, f.view, place.x - rx * 2, midY - ry * 3);
-  const clipBot = worldToScreen(cam, f.view, place.x + rx * 2, midY - ry * 0.05);
+  const clipTop = worldToScreen(cam, f.view, cx - rx * 2, midY - ry * 3);
+  const clipBot = worldToScreen(cam, f.view, cx + rx * 2, midY - ry * 0.05);
   ctx.beginPath();
   ctx.rect(clipTop.x, clipTop.y, clipBot.x - clipTop.x, clipBot.y - clipTop.y);
   ctx.clip();
-  ctx.strokeStyle = siltAt(midY - ry, ROCK_LIT, Math.min(1, lit * 1.2), 0.26 + 0.24 * lit);
+  ctx.strokeStyle = siltAt(midY - ry, ROCK_LIT, Math.min(1, lit * 1.2), (0.26 + 0.24 * lit) * alpha);
   ctx.lineWidth = Math.max(0.9, 2.4 * cam.scale);
   trace(ring(1));
   ctx.stroke();
@@ -509,98 +564,310 @@ function paintWreck(
 
 const DROP_WIDE = 1.5;
 const DROP_TALL = 0.5;
+/** Where the floor stops, east of the place's centre, in radii. */
+const DROP_EDGE = 0.15;
+
+/**
+ * The wall under the lip: waist, size and light, in radii of the place.
+ *
+ * It is a WHOLE ROCK MASS, not a face painted on the plateau's underside, and
+ * that is the entire fix for the complaint that the Drop-off had no height.
+ * Its waist sits half a radius BELOW the place's centre and it is nearly a
+ * radius tall, which takes the rock from 0.80 of a radius below the lip to
+ * 1.64 — twice the depth the plateau alone had. Its own gradient runs out
+ * before its silhouette does, so the cliff still has no bottom, which is what
+ * a drop-off is.
+ */
+const DROP_WALL = { down: 0.52, wide: 1.25, tall: 0.92, lit: 0.08 };
+
+/**
+ * The ledges out over the void: how far east, how far down, how big, how lit,
+ * and how strongly drawn — all in radii of the place, all falling away.
+ *
+ * THIS IS THE PART THAT MAKES THE VOID READ AS DEPTH RATHER THAN AS A HOLE,
+ * and it is worth saying why an empty void could not. A drop-off that is
+ * simply dark is indistinguishable from a region the renderer failed to paint:
+ * there is nothing in it, so there is no distance in it either. What makes a
+ * real one legible is that you CAN still see a little — a step, then a fainter
+ * step, then nothing — and each one is dimmer and lower in contrast than the
+ * one above it. That is atmospheric perspective, the same cue the far kelp and
+ * the depth wash already use, applied to the one place in the sea whose whole
+ * subject is distance downward.
+ *
+ * `alpha` falls faster than `lit` on purpose: the deeper ledges lose their
+ * PRESENCE before they lose their highlight, which is how water actually eats
+ * a shape — it does not darken it, it dissolves it.
+ *
+ * Every extent here is inside `PLACE_REACH`; `terrainPaint.test.ts` §5
+ * measures it rather than trusting this sentence.
+ */
+const DROP_LEDGES = [
+  { east: 1.05, down: 0.58, wide: 0.70, tall: 0.10, lit: 0.80, alpha: 0.62 },
+  { east: 1.45, down: 0.86, wide: 0.52, tall: 0.085, lit: 0.58, alpha: 0.40 },
+  { east: 1.70, down: 1.10, wide: 0.38, tall: 0.07, lit: 0.40, alpha: 0.24 },
+];
+
+/**
+ * The cut: where the floor stops.
+ *
+ * A CURVE, AND UNDERCUT. The first version clipped with `ctx.rect`, which put
+ * a perfectly straight vertical line down the one feature in the sea whose
+ * whole job is to not look manufactured — and a straight vertical line is also
+ * wrong about the subject, because a drop-off undercuts: the lip juts out and
+ * the face leans back in under it as it goes down. So the cut leans about a
+ * fifth of a radius west over its height and wanders while it does.
+ *
+ * It is a CLIP rather than a painted face because a painted face is a shape,
+ * and every shape drawn over this feature so far has read as a slab pasted on
+ * top of it. What is left of the rock after the cut is the face; nothing is
+ * drawn to represent it.
+ */
+function cutAtLip(
+  ctx: CanvasRenderingContext2D, f: TerrainFrame, place: Place, cam: Camera,
+): void {
+  const r = place.r;
+  const edgeX = place.x + r * DROP_EDGE;
+  const p = (wx: number, wy: number) => worldToScreen(cam, f.view, wx, wy);
+  const a = p(edgeX + r * 0.03, place.y - r * 2.2);
+  ctx.beginPath();
+  ctx.moveTo(a.x, a.y);
+  const quad = (cxw: number, cyw: number, xw: number, yw: number) => {
+    const c = p(cxw, cyw);
+    const e = p(xw, yw);
+    ctx.quadraticCurveTo(c.x, c.y, e.x, e.y);
+  };
+  // A notch just under the lip and a shoulder back out below it: the corner of
+  // a drop-off is where the rock is most broken, and a clean line there is the
+  // single most manufactured-looking thing the feature can do.
+  quad(edgeX + r * 0.06, place.y - r * 1.15, edgeX - r * 0.06, place.y - r * 0.72);
+  quad(edgeX + r * 0.04, place.y - r * 0.5, edgeX + r * 0.02, place.y - r * 0.28);
+  quad(edgeX - r * 0.09, place.y + r * 0.05, place.x + r * 0.05, place.y + r * 0.44);
+  quad(place.x - r * 0.05, place.y + r * 0.88, place.x - r * 0.17, place.y + r * 1.35);
+  quad(place.x - r * 0.23, place.y + r * 1.8, place.x - r * 0.2, place.y + r * 2.2);
+  // Back around the far side of the world. These three runs are the only
+  // straight lines in the feature and none of them is ever within a screen of
+  // the rock — they exist to close a half-plane, not to draw an edge.
+  const bl = p(place.x - r * 8, place.y + r * 2.2);
+  const tl = p(place.x - r * 8, place.y - r * 2.2);
+  ctx.lineTo(bl.x, bl.y);
+  ctx.lineTo(tl.x, tl.y);
+  ctx.closePath();
+  ctx.clip();
+}
 
 /**
  * Where the floor falls away.
  *
- * The whole feature is ONE READ: a bright ledge that stops, and black under
- * it. In elevation that is a plateau CLIPPED at a vertical line — the clip
- * edge IS the cliff face, and because the plateau's own fill fades downward
- * the face has no bottom, which is the point of a drop-off.
+ * WHAT WAS WRONG WITH THIS, in the words of the person who had to look at it:
+ * it rendered as a hard-edged dark rectangle and read as a missing texture
+ * rather than as a place. Two separate faults, found by driving the shipped
+ * shallows sea to the lip and photographing it rather than by reasoning about
+ * the code:
  *
- * The first pass drew the void as a filled quadrilateral and it came out as a
- * hard-edged dark RECTANGLE hanging in open water, visible from two places
- * away (it is the black slab in the corner of the Shelf's first capture).
- * Nothing here is a polygon with corners any more: the depth below the lip is
- * a radial gradient, which cannot have an edge.
+ *  1. **The near layer drew three flat black polygons.** They were built from
+ *     `lineTo` up one flank and down the other and closed with a straight run
+ *     out to a foot point, filled at a flat 0.95 alpha — i.e. slabs, with
+ *     straight sides and a flat cut bottom, standing in front of everything
+ *     else in the frame. THESE were the rectangles. (An earlier pass had
+ *     already fixed a different rectangle — a filled quadrilateral for the
+ *     void — and its comment claiming "nothing here is a polygon with corners
+ *     any more" was simply not true of the layer drawn in front of the fish.)
+ *  2. **There was no depth to read.** The plateau was a lens a fifth of a
+ *     radius deep with its floor cut off, and below the lip there was one
+ *     broad soft radial of dark and nothing else. Nothing in the picture went
+ *     DOWN, so there was nothing for the eye to lose the bottom of.
+ *
+ * What is here now is one read in four parts, and each part is doing a job
+ * the others cannot:
+ *
+ *  - **A plateau you are standing on**, with the one high-contrast lip line in
+ *    the whole terrain set along its edge — kept, it was the only part that
+ *    worked.
+ *  - **A wall under it** (`DROP_WALL`), which is where the height comes from.
+ *  - **A cut through both** (`cutAtLip`), undercut and curved, which is the
+ *    face itself rather than a picture of one.
+ *  - **Ledges falling away east** (`DROP_LEDGES`), each deeper and fainter,
+ *    which is where the distance comes from.
+ *
+ * ...and a fifth part deliberately removed: the near layer is now EMPTY. Two
+ * replacements for the teeth were built and photographed before that was
+ * decided; the argument, and the parallax fact that killed the better of them,
+ * is at the bottom of this function.
  */
 function paintDropoff(
   ctx: CanvasRenderingContext2D, f: TerrainFrame, place: Place, cam: Camera, near: boolean,
 ): void {
   const r = place.r;
-  const edgeX = place.x + r * 0.15;
+  const edgeX = place.x + r * DROP_EDGE;
   if (!near) {
-    // The dark below and beyond the lip, as a radial so it has no edge.
-    const c = worldToScreen(cam, f.view, edgeX + r * 0.35, place.y + r * 0.9);
-    const rr = r * 2.3 * cam.scale;
-    const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, rr);
-    g.addColorStop(0, siltAt(place.y + r, ROCK_DARK, 1, 0.72));
-    g.addColorStop(0.45, siltAt(place.y + r, ROCK_DARK, 1, 0.4));
-    g.addColorStop(1, siltAt(place.y + r, ROCK_DARK, 1, 0));
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(c.x, c.y, rr, 0, Math.PI * 2);
-    ctx.fill();
+    // The water beyond the edge, thickening. A radial, so it has no boundary
+    // of its own anywhere — this is the only part of the old void kept, and
+    // it is kept BECAUSE it never had an edge. It is also pulled in from the
+    // 2.3-radius reach it used to have, which put its rim a third of a radius
+    // outside what `nearby` will draw at all: the void faded in and out on its
+    // own schedule as you swam toward the place.
+    {
+      const c = worldToScreen(cam, f.view, place.x + r * 0.55, place.y + r * 0.6);
+      const rr = r * 1.5 * cam.scale;
+      const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, rr);
+      g.addColorStop(0, siltAt(place.y + r * 0.6, ROCK_DARK, 1, 0.45));
+      g.addColorStop(0.5, siltAt(place.y + r * 0.6, ROCK_DARK, 1, 0.24));
+      g.addColorStop(1, siltAt(place.y + r * 0.6, ROCK_DARK, 1, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
-    // The plateau, clipped at the lip. The clip's straight edge is the cliff.
+    // OPEN WATER BEYOND THE EDGE — a barely-there lightening, out past the lip
+    // and level with it. It is here because contrast is what makes an edge an
+    // edge: with the face darkened and the water beyond it exactly as dark,
+    // there was nothing for the cliff to be a silhouette AGAINST, and at any
+    // distance the feature read as a pale floor that simply stopped. A real
+    // drop-off reads the other way round — the dark of the wall against open
+    // blue — and this is the smallest amount of that which works.
+    {
+      const c = worldToScreen(cam, f.view, place.x + r * 1.15, place.y - r * 0.15);
+      const rr = r * 1.15 * cam.scale;
+      const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, rr);
+      g.addColorStop(0, siltAt(place.y - r * 0.15, ROCK_LIT, 0.09, 0.2));
+      g.addColorStop(1, siltAt(place.y - r * 0.15, ROCK_LIT, 0.09, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // The ledges, DEEPEST FIRST so the nearer ones overlap them — the same
+    // order the eye reads them in.
+    for (let i = DROP_LEDGES.length - 1; i >= 0; i--) {
+      const L = DROP_LEDGES[i];
+      paintMass(
+        ctx, f, cam,
+        place.x + r * L.east, place.y + r * L.down,
+        r * L.wide, r * L.tall, L.lit, L.alpha, seedOf(place, 13_000 + i * 1_000), ROCK_DARK,
+      );
+    }
+
+    // The wall and the plateau, both cut by the same edge, so they read as one
+    // block of rock with a top surface and a face rather than as two objects.
     ctx.save();
-    const a = worldToScreen(cam, f.view, place.x - r * 4, place.y - r * 4);
-    const b = worldToScreen(cam, f.view, edgeX, place.y + r * 4);
-    ctx.beginPath();
-    ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y);
-    ctx.clip();
-    paintOutcrop(ctx, f, place, cam, DROP_WIDE, DROP_TALL, 0.8, 11);
+    cutAtLip(ctx, f, place, cam);
+    paintMass(
+      ctx, f, cam, place.x - r * 0.1, place.y + r * DROP_WALL.down,
+      r * DROP_WALL.wide, r * DROP_WALL.tall, DROP_WALL.lit, 1, seedOf(place, 12_000), ROCK_DARK,
+    );
+    paintOutcrop(ctx, f, place, cam, DROP_WIDE, DROP_TALL, 0.55, 11);
+
+    // RIPPLES ACROSS THE TOP, and they are the reason the whole thing reads as
+    // a floor rather than as a boulder. A dome with a bright rim is a rock; the
+    // same dome with a few surface lines running across it and STOPPING DEAD at
+    // the cut is a floor that ends. It is the Shelf's own trick (see
+    // `paintShelf`), pointed at a different job: there it says "this is a
+    // surface", here it says "this surface goes no further".
+    ctx.lineWidth = Math.max(0.6, 1.3 * cam.scale);
+    for (let i = 1; i <= 4; i++) {
+      const drop = r * DROP_TALL * (i / 4) * 0.6;
+      ctx.strokeStyle = siltAt(place.y + drop, ROCK_LIT, 0.7 * (1 - i / 6), 0.34 * (1 - i / 6));
+      ctx.beginPath();
+      for (let j = 0; j <= 14; j++) {
+        const t = j / 14;
+        const wx = place.x - r * DROP_WIDE * 0.94 + t * r * DROP_WIDE * 1.14;
+        const wy = crestY(place, DROP_WIDE, DROP_TALL, wx) + drop
+          + span(seedOf(place, 17_000 + i * 40 + j), -r * 0.012, r * 0.012);
+        const s = worldToScreen(cam, f.view, wx, wy);
+        if (j === 0) ctx.moveTo(s.x, s.y); else ctx.lineTo(s.x, s.y);
+      }
+      ctx.stroke();
+    }
+
+    // FISSURES DOWN THE FACE. A wall with no vertical rhythm has no height —
+    // it is a tone, and a tone has no scale. Half of these catch a little
+    // light, half are cracks; every one of them fades to nothing on the way
+    // down, so the face still has no bottom. Inside the cut, so none of them
+    // can stray out over the water where the floor has gone.
+    for (let i = 0; i < 7; i++) {
+      const sd = seedOf(place, 16_000 + i * 37);
+      const fx = place.x + span(sd, -r * 0.85, r * 0.13);
+      const top = crestY(place, DROP_WIDE, DROP_TALL, fx) + r * span(sd + 4, 0.04, 0.14);
+      const len = r * span(sd + 1, 0.45, 1.05);
+      const drift = span(sd + 2, -r * 0.14, r * 0.05);
+      const a = worldToScreen(cam, f.view, fx, top);
+      const b = worldToScreen(cam, f.view, fx + drift, top + len);
+      const mid = worldToScreen(cam, f.view, fx + drift * 0.35, top + len * 0.55);
+      const g = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+      const crack = i % 2 === 1;
+      g.addColorStop(0, crack
+        ? siltAt(top, ROCK_DARK, 1, 0.42)
+        : siltAt(top, ROCK_LIT, 0.34, 0.24));
+      g.addColorStop(0.55, crack
+        ? siltAt(top + len * 0.55, ROCK_DARK, 1, 0.2)
+        : siltAt(top + len * 0.55, ROCK_LIT, 0.22, 0.1));
+      g.addColorStop(1, siltAt(top + len, ROCK_DARK, 1, 0));
+      ctx.strokeStyle = g;
+      ctx.lineWidth = Math.max(0.8, r * span(sd + 3, 0.012, 0.03) * cam.scale);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.quadraticCurveTo(mid.x, mid.y, b.x, b.y);
+      ctx.stroke();
+    }
     ctx.restore();
 
+    // What the overhang keeps the light off: a soft darkening tucked under the
+    // lip, over the face. This is what sells the undercut — a cliff whose top
+    // metre is as lit as its middle is not a cliff, it is a wall.
+    {
+      const c = worldToScreen(cam, f.view, edgeX - r * 0.12, place.y + r * 0.02);
+      const rr = r * 0.7 * cam.scale;
+      const g = ctx.createRadialGradient(c.x, c.y, 0, c.x, c.y, rr);
+      g.addColorStop(0, siltAt(place.y, ROCK_DARK, 1, 0.5));
+      g.addColorStop(1, siltAt(place.y, ROCK_DARK, 1, 0));
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, rr, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
     // The lip: the one high-contrast line in the whole terrain set, because
-    // "the floor stops HERE" has to be readable from across the frame.
+    // "the floor stops HERE" has to be readable from across the frame. It
+    // stops a hair short of the cut so it can never overhang its own edge.
     ctx.strokeStyle = siltAt(place.y, ROCK_LIT, 0.95, 0.6);
     ctx.lineWidth = Math.max(1.4, r * 0.035 * cam.scale);
     ctx.lineCap = 'round';
     ctx.beginPath();
     for (let i = 0; i <= 14; i++) {
       const t = i / 14;
-      const wx = place.x - r * DROP_WIDE * 0.96 + t * (edgeX - (place.x - r * DROP_WIDE * 0.96));
+      const west = place.x - r * DROP_WIDE * 0.96;
+      const wx = west + t * (edgeX - r * 0.06 - west);
       const wy = crestY(place, DROP_WIDE, DROP_TALL, wx)
         + span(seedOf(place, 1300 + i), -r * 0.015, r * 0.03);
       const sp = worldToScreen(cam, f.view, wx, wy);
       if (i === 0) ctx.moveTo(sp.x, sp.y); else ctx.lineTo(sp.x, sp.y);
     }
     ctx.stroke();
-    // NO PAINTED CLIFF FACE. An earlier pass filled a rectangle down the lip
-    // to suggest the wall, and from two places away — the Shelf is 1_553 cu
-    // off — it was a pale rectangle hanging in open water with nothing around
-    // it. The clip edge above already IS the face; anything drawn on top of it
-    // has to be a shape with no straight sides, and there is nothing this
-    // feature needs that a hard rectangle was providing.
-  } else {
-    // Teeth of rock standing off the edge, in front of the fish. Jagged
-    // rather than clean triangles, which read as UI arrows.
-    for (let i = 0; i < 3; i++) {
-      const sd = seedOf(place, 1500 + i * 29);
-      const bx = place.x + span(sd, -r * 0.9, r * 0.02);
-      const by = crestY(place, DROP_WIDE, DROP_TALL, bx) + r * 0.06;
-      const h = r * span(sd + 1, 0.3, 0.55);
-      const w = r * span(sd + 2, 0.1, 0.19);
-      ctx.fillStyle = siltAt(by - h, ROCK_DARK, 0.78, 0.95);
-      ctx.beginPath();
-      const steps = 7;
-      for (let j = 0; j <= steps; j++) {
-        const t = j / steps;
-        // Up the left flank and down the right, kinked at hashed intervals.
-        const side = t < 0.5 ? -1 : 1;
-        const climb = t < 0.5 ? t * 2 : (1 - t) * 2;
-        const wx = bx + side * w * (1 - climb) + span(sd + 10 + j, -w * 0.22, w * 0.22);
-        const wy = by - h * climb;
-        const sp = worldToScreen(cam, f.view, wx, wy);
-        if (j === 0) ctx.moveTo(sp.x, sp.y); else ctx.lineTo(sp.x, sp.y);
-      }
-      const foot = worldToScreen(cam, f.view, bx - w, by + r * 0.4);
-      ctx.lineTo(foot.x, foot.y);
-      ctx.closePath();
-      ctx.fill();
-    }
   }
+  // NOTHING GOES IN FRONT OF THE FISH HERE, and that is a decision rather than
+  // an omission.
+  //
+  // The near layer exists for occlusion — a swimmer passing BEHIND something is
+  // the strongest depth cue this game has — and this feature had three of them:
+  // the "teeth", which were flat opaque straight-sided polygons and read as
+  // black slabs. Two replacements were built and photographed before this line
+  // was written:
+  //
+  //  - THREE ROUNDED KNUCKLES standing on the plateau. Better than slabs, and
+  //    they read as three dark eggs sitting on a floor.
+  //  - A BROKEN LINE OF LOW RUBBLE along the whole lip, which is the right idea
+  //    and cannot work here. The near layer is drawn through `layerCam` at
+  //    NEAR_P, anchored at the place's centre, so anything in it is displaced
+  //    from the far layer by 13% of the camera's distance from that centre —
+  //    around 40 px at a normal approach. A tall frond or a mast absorbs that
+  //    happily; rock sitting ON a surface does not, and the rubble came out as a
+  //    dark scalloped band floating below the edge it was supposed to be part
+  //    of.
+  //
+  // What the Drop-off is about is what is BEHIND you and BELOW you. Nothing at
+  // it belongs between the player and the water, so nothing is drawn there.
 }
 
 // ---------------------------------------------------------------------------
@@ -721,7 +988,7 @@ function paintDepthWash(ctx: CanvasRenderingContext2D, f: TerrainFrame, place: P
 
 /** Is any of this place within reach of the window? */
 function nearby(f: TerrainFrame, place: Place): boolean {
-  return isVisible(f.cam, f.view, place.x, place.y, (place.r * 2.4) * f.cam.scale);
+  return isVisible(f.cam, f.view, place.x, place.y, (place.r * PLACE_REACH) * f.cam.scale);
 }
 
 /**
