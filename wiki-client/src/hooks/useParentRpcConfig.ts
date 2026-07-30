@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { isConfigMessageTrusted, mergeTrustedConfig } from '@swimchain/frontend';
 
 interface ParentRpcConfig {
   rpcEndpoint: string;
@@ -28,38 +29,37 @@ interface ParentRpcConfig {
 let parentConfig: ParentRpcConfig | null = null;
 let listeners: Array<(config: ParentRpcConfig | null) => void> = [];
 
-// Allowed parent origins for postMessage security
-// Only accept RPC config from trusted origins
-const ALLOWED_PARENT_ORIGINS: string[] = [
-  'http://localhost:1420',      // Tauri dev
-  'http://127.0.0.1:1420',      // Tauri dev alt
-  'tauri://localhost',          // Tauri production
-  'https://app.swimchain.io',   // Production web app
-];
-
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
-    // Security: Validate origin before accepting config.
-    // Same-origin is always trusted: the desktop-app shell embeds clients as
-    // same-origin iframes (origin varies by platform, e.g. tauri://localhost
-    // on macOS/Linux, http://tauri.localhost on Windows).
-    const isSameOrigin = event.origin === window.location.origin;
-    if (!isSameOrigin && !ALLOWED_PARENT_ORIGINS.includes(event.origin)) {
+    const ctx = { selfOrigin: window.location.origin, parentWindow: window.parent };
+
+    // Security: validate origin + source before accepting any config (rejects
+    // lookalike origins and messages not sent by this frame's real parent —
+    // see @swimchain/frontend's configTrust.ts).
+    if (!isConfigMessageTrusted(event, ctx)) {
       console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
       return;
     }
 
     if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
-      parentConfig = {
+      const incoming: ParentRpcConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
-        nodeAddress: event.data.nodeAddress,
-        nodeDisplayName: event.data.nodeDisplayName,
+        ...(typeof event.data.nodeAddress === 'string'
+          ? { nodeAddress: event.data.nodeAddress }
+          : {}),
+        ...(typeof event.data.nodeDisplayName === 'string'
+          ? { nodeDisplayName: event.data.nodeDisplayName }
+          : {}),
       };
 
-      // Notify all listeners
-      listeners.forEach(fn => fn(parentConfig));
+      const next = mergeTrustedConfig(parentConfig, incoming);
+      if (next !== parentConfig) {
+        parentConfig = next;
+        // Notify all listeners only when the merge actually changed something.
+        listeners.forEach(fn => fn(parentConfig));
+      }
     }
   });
 }

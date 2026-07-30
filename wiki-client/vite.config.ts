@@ -1,8 +1,18 @@
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import path from 'path';
 export default defineConfig({
     plugins: [react()],
+    test: {
+        // src/lib/resolveSpaces.test.ts predates vitest here — it's a plain
+        // tsx-run script (`npx tsx src/lib/resolveSpaces.test.ts`, see its own
+        // header) that calls process.exit() directly, which vitest treats as a
+        // crash if it's swept up by the default include glob. Exclude it by
+        // name so it keeps running via tsx while `npx vitest run` covers the
+        // real vitest suite (e.g. src/hooks/__tests__/configListener.test.ts).
+        exclude: [...configDefaults.exclude, 'src/lib/resolveSpaces.test.ts'],
+    },
     resolve: {
         alias: {
             '@': path.resolve(__dirname, './src'),

@@ -10,6 +10,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { isConfigMessageTrusted, mergeTrustedConfig } from '@swimchain/frontend';
 
 interface ParentRpcConfig {
   rpcEndpoint: string;
@@ -28,34 +29,17 @@ interface ParentRpcConfig {
 let parentConfig: ParentRpcConfig | null = null;
 let listeners: Array<(config: ParentRpcConfig | null) => void> = [];
 
-// Allowed origins for postMessage (only accept config from trusted sources)
-// In production, this should be the exact origin of the desktop app wrapper
-const ALLOWED_ORIGINS: string[] = [
-  'http://localhost',       // Local development
-  'http://127.0.0.1',       // Local development (IP)
-  'tauri://localhost',      // Tauri desktop app
-  'https://localhost',      // Local HTTPS development
-];
-
-/**
- * Check if an origin is allowed to send RPC config
- */
-function isOriginAllowed(origin: string): boolean {
-  // Allow same-origin (empty string means same origin in some browsers)
-  if (!origin || origin === window.location.origin) {
-    return true;
-  }
-  // Check against allowlist (match prefix for port variations)
-  return ALLOWED_ORIGINS.some(allowed => origin.startsWith(allowed));
-}
-
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
-    // Validate origin before accepting any config
-    if (!isOriginAllowed(event.origin)) {
+    const ctx = { selfOrigin: window.location.origin, parentWindow: window.parent };
+
+    // Validate origin + source before accepting any config (rejects lookalike origins
+    // and messages not sent by this frame's real parent — see @swimchain/frontend's
+    // configTrust.ts).
+    if (!isConfigMessageTrusted(event, ctx)) {
       if (import.meta.env.DEV) {
-        console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
+        console.warn('[ParentConfig] Rejected untrusted message:', event.origin);
       }
       return;
     }
@@ -69,15 +53,23 @@ if (typeof window !== 'undefined') {
         });
       }
 
-      parentConfig = {
+      const incoming: ParentRpcConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
-        nodeAddress: event.data.nodeAddress,
-        nodeDisplayName: event.data.nodeDisplayName,
+        ...(typeof event.data.nodeAddress === 'string'
+          ? { nodeAddress: event.data.nodeAddress }
+          : {}),
+        ...(typeof event.data.nodeDisplayName === 'string'
+          ? { nodeDisplayName: event.data.nodeDisplayName }
+          : {}),
       };
 
-      // Notify all listeners
-      listeners.forEach(fn => fn(parentConfig));
+      const next = mergeTrustedConfig(parentConfig, incoming);
+      if (next !== parentConfig) {
+        parentConfig = next;
+        // Notify all listeners only when the merge actually changed something.
+        listeners.forEach(fn => fn(parentConfig));
+      }
     }
   });
 }
