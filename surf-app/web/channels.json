@@ -1,0 +1,17 @@
+{
+  "warmSize": 3,
+  "channels": [
+    {
+      "id": "feed",
+      "number": 2,
+      "name": "FEED",
+      "spaces": [
+        "01000f8857cd77a75d8fcd7951d99ede",
+        "01000da9416b0bd33114a11234a1397d",
+        "01000c35f149d92a466db1e1705d41cb"
+      ]
+    },
+    { "id": "wiki", "number": 4,  "name": "WIKI", "spaces": [] },
+    { "id": "reef", "number": 50, "name": "REEF", "spaces": [] }
+  ]
+}

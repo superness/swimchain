@@ -1,6 +1,6 @@
 [workspace]
 members = [".", "swimchain-wasm", "swimchain-core"]
-exclude = ["desktop-app/src-tauri", "tools/dns-seeder", "mobile-app/src-tauri", "launcher-apps/app-shell/src-tauri"]
+exclude = ["desktop-app/src-tauri", "tools/dns-seeder", "mobile-app/src-tauri", "launcher-apps/app-shell/src-tauri", "surf-app/src-tauri"]
 
 [package]
 name = "swimchain"
