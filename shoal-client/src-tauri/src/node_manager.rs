@@ -176,6 +176,28 @@ impl NodeManager {
 
         std::fs::create_dir_all(&self.data_dir)?;
 
+        // DROP THE PREVIOUS RUN'S HANDOFF FILES BEFORE SPAWNING, ALWAYS.
+        //
+        // `.rpc_addr`/`.cookie` are written by the node and are stale the instant it
+        // stops — but nothing deletes them when it stops, so they survive a clean exit
+        // and sit there for the NEXT launch to find. `get_rpc_config` polls
+        // `read_handoff` and breaks on the FIRST success, so on a relaunch it reads the
+        // dead cookie milliseconds after the window opens, long before the new node has
+        // written its own. `resolveAuth` caches that, and from then on every write is
+        // `403 Forbidden — Authentication failed: Invalid cookie`, forever, with nothing
+        // on screen: the player watches a sea they cannot join.
+        //
+        // MEASURED on the installed 0.1.0 build, 2026-07-30 (plan 4d, Task 3), twice
+        // each way: relaunch with these files present -> the client's swimmer never
+        // appears in the room while two other clients on the same node write normally;
+        // delete them first and the same build writes on its first emit.
+        //
+        // `restart_node` (main.rs) already did exactly this, with exactly this argument
+        // in its comment. It belongs here instead, because the startup path is the one
+        // every returning player takes.
+        let _ = std::fs::remove_file(self.data_dir_with_suffix.join(".cookie"));
+        let _ = std::fs::remove_file(self.data_dir_with_suffix.join(".rpc_addr"));
+
         let mut args = vec![];
         if self.network != "mainnet" {
             args.push(format!("--{}", self.network));
@@ -452,5 +474,56 @@ mod tests {
         assert!(!is_sled_lock("Error: incorrect password"));
         assert!(!is_sled_lock("Error: address already in use"));
         assert!(!is_sled_lock(""));
+    }
+
+    /// THE PREVIOUS RUN'S CREDENTIAL MUST NOT SURVIVE INTO THIS ONE.
+    ///
+    /// Measured on the installed build before this was fixed: a plain relaunch left
+    /// `.cookie`/`.rpc_addr` from the previous node on disk, `get_rpc_config` read them
+    /// before the new node had written its own, and every subsequent write answered
+    /// `403 Forbidden — Authentication failed: Invalid cookie`. Silently: the sea drew
+    /// the other swimmers and the player was simply never in it.
+    ///
+    /// The spawn itself is expected to FAIL here (the binary path is deliberately
+    /// nonsense, so no `sw` is started and no test needs one). That is the point: the
+    /// removal happens BEFORE the spawn, so the files must be gone even on the failing
+    /// path — and the assertion is on the files, not on the result.
+    #[tokio::test]
+    async fn start_removes_the_previous_runs_handoff_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "shoal-stale-handoff-test-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        // `NodeManager::new` appends the network suffix; regtest -> `<dir>-regtest`.
+        let with_suffix = PathBuf::from(format!("{}-regtest", dir.display()));
+        std::fs::create_dir_all(&with_suffix).unwrap();
+        std::fs::write(with_suffix.join(".cookie"), "deadcookiefromthelastrun").unwrap();
+        std::fs::write(with_suffix.join(".rpc_addr"), "127.0.0.1:29736").unwrap();
+
+        let mut manager = NodeManager::new(
+            PathBuf::from("this-binary-does-not-exist-and-must-not"),
+            dir.clone(),
+            "regtest".to_string(),
+        );
+        assert_eq!(manager.data_dir_with_suffix(), &with_suffix);
+
+        let started = manager.start_with_password("irrelevant").await;
+        assert!(started.is_err(), "the fake binary must not have spawned");
+
+        assert!(
+            !with_suffix.join(".cookie").exists(),
+            "the previous run's .cookie survived into this launch — \
+             get_rpc_config will hand the webview a dead credential"
+        );
+        assert!(
+            !with_suffix.join(".rpc_addr").exists(),
+            "the previous run's .rpc_addr survived into this launch"
+        );
+
+        let _ = std::fs::remove_dir_all(&with_suffix);
     }
 }

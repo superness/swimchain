@@ -112,6 +112,96 @@
  * published — so there is no optimistic row here to withdraw and nothing to
  * roll back if the write fails.
  *
+ * ## THE CROSSING: two rooms, one world (plan 4d Task 2)
+ *
+ * The room is a function of the hour (`shoalRoom.ts`, Task 1). This file is
+ * where that becomes something a client actually plays in, and it is three
+ * decisions.
+ *
+ * ### 1. WHICH ROOMS ARE READ — the epoch being folded, and the one before it
+ *
+ * Always two, for the whole hour. `water.roomEpochsFor` carries the argument in
+ * full and the proof that the union is the same log a single-room client
+ * folded; the short version is that a fold for epoch *E* begins 90 s BEFORE the
+ * hour and admits entries from 180 s before it, all of which are now in another
+ * room — and a fold missing that prefix cannot detect it. The old room is
+ * dropped at the instant this client rolls to *E+1* and not a millisecond
+ * earlier, because the admit floor is a function of the epoch and does not move
+ * within it.
+ *
+ * ### 2. WHICH ROOM A WRITE GOES INTO — the room of the fold that will read it
+ *
+ * A move is placed by its OWN authoring instant: `epochOf(vec.t)` for a vector,
+ * `epochOf(ms)` for an eat claim. Never by the wall clock at submit time, and
+ * that distinction is real rather than theoretical — mining is Argon2id and the
+ * measured median for one write is 1.6 s (seaChoice.ts), so a vector authored
+ * at 23:59:59.5 routinely LANDS in the next hour.
+ *
+ * Placing by the authoring instant is what makes the invariant
+ * `room(E) = { e : epochOf(e.ms) = E }` true, and that invariant is the whole
+ * of the union proof. Placing by landing time would make a room's contents a
+ * function of each writer's CPU, which is not a property of the entry at all
+ * and could not be reasoned about by anybody.
+ *
+ * **Nothing is lost across the boundary.** The straddling write lands in room
+ * *E-1* after this client has moved to room *E* — and every client folding
+ * epoch *E* is reading room *E-1* anyway, for the whole hour, because of
+ * decision 1. So the write is folded by exactly the clients that should fold
+ * it. The one client that could lose it is one reading only the current room,
+ * which is the mutation this task's agreement test is verified against.
+ *
+ * A write is only ever submitted to a room this client was PRESENT in, so it is
+ * a room this client has already minted (decision 3): a joiner's first authored
+ * vector carries the joining instant, which is in the epoch it joined.
+ *
+ * ### 3. THE CHECKPOINT GOES IN THE OPENING ROOM
+ *
+ * `advance` hands back `rolled` at the boundary between *E-1* and *E*. It is
+ * published into room ***E*** — the hour it opens — not room *E-1*, the hour it
+ * summarises. Both are defensible and the argument for the closing room is real:
+ * a checkpoint is a statement ABOUT epoch *E-1*, and anyone verifying it against
+ * the log it summarises would find both in one place.
+ *
+ * The opening room wins on three counts:
+ *
+ *  - **It is the same rule as decision 2.** A checkpoint is read by exactly one
+ *    fold — epoch *E*'s, as its seed (`adoptCheckpoint` takes only `epoch - 1`
+ *    payloads, and `foldShoal` REFUSES a seed from any other epoch). "The room
+ *    of the fold that will read it" is room *E*. No second placement rule.
+ *  - **The seed survives a client that reads one room.** A joiner whose fetch of
+ *    the previous room fails, is slow, or has been truncated still finds the
+ *    seed in the room it is definitely reading. Under the closing-room rule that
+ *    same joiner folds UNSEEDED and puts every swimmer back at `START_SIZE` —
+ *    Blocker 12 returning, silently, through a fetch failure. The failure mode
+ *    is asymmetric and this is the safe side of it.
+ *  - **Co-location buys nothing.** A verifier re-folding epoch *E-1* needs room
+ *    *E-2* as well (same warm-up rule), so it is reading two rooms either way.
+ *
+ * Task 1's review flagged (C2) that checkpoints did not survive the crossing at
+ * all. This is what closes it, and `adoptCheckpoint`'s epoch filter is what
+ * makes it exact: room *E* holds seeds for *E* and nothing else.
+ *
+ * ### AND WHO MINTS THE HOUR'S ROOM
+ *
+ * Every client, every hour, idempotently — see `mintRoom` for why a repeat is
+ * safe and why it is instant for the minter. `ensureRoom` below fires once per
+ * epoch for the current hour AND the next one, so a rollover never waits on a
+ * mine, and the write path re-attempts on demand if a mint failed. Nothing
+ * depends on any particular client being online, and an hour nobody played
+ * costs nothing: the next hour's joiner mints its own room and reads an empty
+ * previous one (`get_replies` on a parent that does not exist returns no
+ * replies rather than failing).
+ *
+ * ### A ROTATION IS INVISIBLE, WHICH IS BINDING
+ *
+ * Spec §1.1 and this plan's own constraint: nobody should ever learn the sea
+ * has hours. Two things would have announced it and neither does. The fold
+ * already crosses a boundary without a visible seam (`advance` re-enters through
+ * the same warm-up path a cold joiner uses, seeded by the checkpoint), and the
+ * WILD SHOAL — which would otherwise re-roll every ambient fish on the stroke of
+ * the hour, because its seed used to be the room's content id — is now seeded
+ * from `roomFamilyKey`, which is a function of the water and not of the hour.
+ *
  * ## The event races the read
  *
  * A `content_new` notification means "something happened", NOT "the log now
@@ -146,11 +236,14 @@
  */
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochOf } from '../lib/epoch';
-import { fetchRoom } from '../lib/shoalRoom';
+import { fetchRooms } from '../lib/shoalRoom';
+import {
+  roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, verifyWater, type Water,
+} from '../lib/water';
 import { adoptCheckpoint, type Adoption } from '../lib/adopt';
 import { DEFAULT_POLL_INTERVAL_MS, startLive } from '../lib/shoalLive';
 import {
-  classifySendFailure, powProfileFor, sendCheckpoint, sendEat, sendPresence,
+  classifySendFailure, mintRoom, powProfileFor, sendCheckpoint, sendEat, sendPresence,
   type SendCtx, type SendFailure, type SignFn,
 } from '../lib/shoalSend';
 import { PRESENCE_TTL_MS } from '../lib/shoalConst';
@@ -161,8 +254,37 @@ import { speechFrom, wildSeedFrom, type Sea } from './demoSea';
 
 export interface ChainSeaConfig {
   readonly auth: RpcAuth;
-  readonly spaceId: string;
-  readonly roomContentId: string;
+  /**
+   * The water — the space AND the name every room id is derived from, produced
+   * together by `water.waterNamed` (see that module on why they are one value
+   * and not two strings).
+   *
+   * IT REPLACES `spaceId` + `roomContentId`, and the room is gone from this
+   * interface entirely rather than being kept as "the current one": the room is
+   * a function of the hour now, so any single room named at construction time
+   * would be a lie by the next boundary at the latest.
+   */
+  readonly water: Water;
+  /**
+   * The wall clock when this sea was built — the ONLY reason this file needs
+   * one at all before its first frame, and it is a parameter rather than a
+   * `Date.now()` for the same reason every instant in `src/lib/` is.
+   *
+   * WHY A SEA HAS TO KNOW THE TIME BEFORE IT IS STEPPED. Which rooms to read is
+   * a function of which epoch is being folded (`roomEpochsFor`), so a sea that
+   * knew nothing until its first `step` could not issue its first read from the
+   * constructor — and the first read has to be in flight before the first frame
+   * or the ordinary cold start folds an unseeded epoch and only learns what the
+   * room holds a poll later (see `adoptInto`). It is also what makes the LIVE
+   * channel useful immediately: a `content_new` that arrived before the first
+   * frame would otherwise refetch nothing.
+   *
+   * It reaches exactly two things: which pair of rooms to read first, and the
+   * ACTION-envelope timestamp of the opening mints (checked by the node against
+   * a 600 s window). Nothing the fold reads ever comes from here — the fold's
+   * epoch is taken from `step`'s own clock and `advance` decides every rollover.
+   */
+  readonly openedAtMs: number;
   /** This client's public key, hex — the swimmer the camera follows. Passed in
    *  rather than derived, so the sea can be built synchronously while the
    *  signing key resolves in the background (WebCrypto's `importKey` is
@@ -186,6 +308,12 @@ export interface ChainSeaConfig {
    * part is what a shell needs and an error channel structurally cannot give:
    * being let into the water (spec §2.16) shows up as a write that stops being
    * refused, which is not an event any `onError` can ever report.
+   *
+   * IT FIRES FOR ROOM MINTS TOO (`noteMintFailure`), on failure only. A mint is
+   * a `submit_post` through the same gate, and it is the only call that can
+   * report -32014 — the water does not exist on this node's chain — which no
+   * reply failure can express. See `noteMintFailure` for why successes are
+   * deliberately not reported from that path.
    *
    * `chainSea` itself draws no conclusion from the kind. Deciding what a
    * refusal means to a player belongs to `wayIn.ts`, and the words belong to
@@ -216,6 +344,25 @@ const RECHECK_MS = 600;
  */
 const PENDING_TTL_MS = PRESENCE_TTL_MS;
 
+/**
+ * How long after a FAILED mint this client waits before mining another one.
+ *
+ * DERIVED, not chosen, and it is a CPU bound rather than a correctness one.
+ * `roomFor` writes whether or not the mint succeeded, so nothing waits on this;
+ * what it stops is a client whose mint keeps failing from mining a fresh
+ * Argon2id `Post` on every single write. A refused player writes every
+ * `MAX_EMIT_GAP_MS` (8 s) forever by design (`seaChoice.knockOn` measures what
+ * that already costs), and a Post is the heavier mine of the two — base
+ * difficulty 20 against a Reply's 18, so four times the expected work. Without
+ * a cooldown, being refused would cost five mines where it costs one.
+ *
+ * `PRESENCE_TTL_MS` is the same number `PENDING_TTL_MS` is derived from, and
+ * for a related reason: it is the longest window anything in this client waits
+ * on before deciding a write is not coming. A room that has not appeared in
+ * that long is worth one more try; a room that failed four seconds ago is not.
+ */
+const MINT_RETRY_MS = PRESENCE_TTL_MS;
+
 export interface ChainSea extends Sea {
   /** Tear down the live socket and the timers. */
   stop(): void;
@@ -235,6 +382,39 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
    */
   const noteWrite = (failure: SendFailure | null) => { cfg.onWrite?.(failure); };
 
+  /**
+   * A room mint that failed, on BOTH channels — and the second one is the point.
+   *
+   * A mint is a `submit_post`: a real write, to the same node, through the same
+   * ingestion gate as every reply. It used to be reported only to `onError`, a
+   * developer channel carrying a raw thrown value that nothing acts on, and
+   * that left one fact with nowhere to go.
+   *
+   * THE FACT: `submit_post` is the ONLY call in this client that can ever
+   * return -32014 (`SpaceNotFound`, methods.rs:2296-2310) — the water itself is
+   * not on this node's chain, because nobody has minted it on this network. The
+   * reply that follows fails too, but with `InvalidContentId`, which classifies
+   * as `'unknown'` and says nothing. So the shell saw a run of anonymous
+   * failures and an empty sea, with no way to tell "there is no water here"
+   * from "nobody is swimming". Reproduced end to end; the report's I4.
+   *
+   * FAILURES ONLY, NEVER SUCCESSES, and the asymmetry is deliberate.
+   * `noteWrite(null)` is what lifts the edge of the water (`wayIn.ts`), and a
+   * mint succeeds at most twice an hour on a schedule of its own — so lifting
+   * on one would put a second, slower, differently-timed path in front of the
+   * signal the whole design rests on. A successful mint proves the same thing a
+   * successful presence proves, and a presence follows within seconds anyway.
+   */
+  const noteMintFailure = (where: 'mintRoom' | 'mintRoomAhead') => (e: unknown) => {
+    // The two labels are kept apart on the DEVELOPER channel — an ahead-mint
+    // for an hour that has not started is a different event from the mint this
+    // client needs right now, and collapsing them cost a test its only precise
+    // wait. The TYPED channel does not distinguish them, because a shell acting
+    // on `no-water` does not care which hour could not be minted.
+    report(where, e);
+    noteWrite(classifySendFailure(e));
+  };
+
   let remote: LogEntry[] = [];
   let pending: LogEntry[] = [];
   let published: CheckpointEntry[] = [];
@@ -249,12 +429,61 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   let stopped = false;
   let serial = 0;
   let inFlight = false;
-  let ctx: SendCtx | null = null;
+  /** A `refetch` arrived while one was in flight. See `refetch` — this is
+   *  what stops a rollover's read being the one that gets dropped. */
+  let refetchQueued = false;
   const recheckTimers: ReturnType<typeof setTimeout>[] = [];
 
+  /**
+   * The epoch whose pair of rooms is being read, or `null` before the
+   * constructor has set it.
+   *
+   * THE ROOM SET FOLLOWS THE FOLD. It is seeded once from `cfg.openedAtMs` so
+   * the first read can leave the constructor, and from then on it is taken from
+   * `loop.epoch` — never from a clock read of this file's own. `advance` is the
+   * one thing that decides when an epoch ends, so sourcing it there is what
+   * makes "which rooms" and "which fold" incapable of answering differently
+   * about the same instant; it is the same discipline `roomIdAtMs` follows one
+   * level down.
+   */
+  let foldEpoch: number | null = null;
+  /**
+   * The most recent clock this sea was handed — `cfg.openedAtMs` until the first
+   * frame, then `step`'s own. Used for exactly one thing: the AHEAD-mint's
+   * action-envelope timestamp, which the node checks against a 600 s window and
+   * which therefore has to be roughly now rather than roughly the hour being
+   * minted. Every other mint takes its timestamp from the write that needed it.
+   * Nothing the fold reads ever comes from here.
+   */
+  let lastFrameMs = 0;
+  /** `epoch -> the room's derived content id`. Pure and constant per epoch, but
+   *  `hash-wasm` makes it async, so it is held rather than recomputed. */
+  const roomIds = new Map<number, Promise<string>>();
+  /** `epoch -> an in-flight or settled mint`. See `ensureRoom`. */
+  const mints = new Map<number, Promise<string>>();
+  /** `epoch -> the frame clock at which a mint for it last FAILED`. The
+   *  cooldown in `ensureRoom` reads it. */
+  const mintFailedAtMs = new Map<number, number>();
+
   // The signing context, built once. `powProfileFor` caches per endpoint, so
-  // this is one `get_info` round trip for the life of the window.
-  const ctxReady: Promise<SendCtx> = (async () => {
+  // this is one `get_info` round trip for the life of the window. `SendCtx`
+  // carries a room, and this one does not have one — the room depends on WHEN a
+  // write is authored, so each write builds its own from this base.
+  type BaseCtx = Omit<SendCtx, 'roomContentId'>;
+  const ctxReady: Promise<BaseCtx> = (async () => {
+    // THE WATER IS RE-DERIVED FROM ITS OWN NAME BEFORE ANYTHING IS WRITTEN.
+    //
+    // One sha256, once per sea. `Water` is branded, which stops an accidental
+    // hand-built one at compile time — and stops nothing that has passed
+    // through an `any` (`JSON.parse`, IPC, config, a generic helper), all four
+    // of which the whole-branch review used to produce a water deriving one
+    // water's rooms against another water's space. That is the symptomless fork
+    // this whole plan is about, so it is checked rather than trusted.
+    //
+    // It is HERE, in `ctxReady`, because every write and every mint awaits this
+    // promise: a water that fails writes nothing at all and says why, rather
+    // than writing everything into a sea nobody shares and saying nothing.
+    await verifyWater(cfg.water);
     const [signer, powProfile] = await Promise.all([cfg.signer, powProfileFor(cfg.auth)]);
     if (signer.publicKeyHex !== cfg.authorIdHex) {
       // Not fatal to rendering — the sea still folds and draws — but every
@@ -264,23 +493,203 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
         `the signing key derives ${signer.publicKeyHex} but the sea was told it is ${cfg.authorIdHex}`,
       ));
     }
-    ctx = {
+    return {
       auth: cfg.auth,
-      spaceId: cfg.spaceId,
-      roomContentId: cfg.roomContentId,
+      spaceId: cfg.water.spaceId,
       authorIdHex: cfg.authorIdHex,
       sign: signer.sign,
       powProfile,
     };
-    return ctx;
   })();
-  ctxReady.catch((e) => { report('signer', e); });
+  // `'context'` and not `'signer'`: this promise now carries the water check
+  // as well as the signing key, and a label that named only one of them
+  // would misdescribe half its failures.
+  ctxReady.catch((e) => { report('context', e); });
 
+  /** This water's room for `epoch`, derived once and held. */
+  function roomIdOf(epoch: number): Promise<string> {
+    let id = roomIds.get(epoch);
+    if (id === undefined) {
+      id = roomIdIn(cfg.water, epoch);
+      // A failed derivation must not be cached as a permanent answer.
+      id.catch(() => { roomIds.delete(epoch); });
+      roomIds.set(epoch, id);
+    }
+    return id;
+  }
+
+  /**
+   * Make sure `epoch`'s room POST exists, and answer with its content id.
+   *
+   * ONE ATTEMPT AT A TIME, AND NOT ONE PER FRAME. The promise is cached while
+   * it is in flight and after it succeeds, so the ordinary case is a single
+   * `submit_post` an hour. A FAILED mint is evicted so a later call can try
+   * again — but the callers are the ones that make that safe: `step` fires this
+   * exactly once per epoch change (never per frame), and every other caller is
+   * a write, which `shouldEmit`'s 3-8 s floor already rate-limits. Retrying on
+   * a schedule of this module's own would mine an Argon2id Post every frame for
+   * a player the water has refused, which is precisely the wrong answer.
+   *
+   * THE NODE'S ANSWER IS CHECKED AGAINST THE DERIVATION, and here is exactly
+   * what that is and is not worth. `submit_post` re-derives `content_id` from
+   * `sha256(title + "\n\n" + body)` itself (methods.rs:2221-2223), so a
+   * disagreement means this client's preimage and the node's have drifted —
+   * which is a fork with no symptom, and this is the one place in the client
+   * where the two meet.
+   *
+   * WHAT IT DOES NOT DO, because an earlier draft of this comment implied it
+   * did: it does not PROTECT the write. Two reasons, both real:
+   *
+   *  - it only runs when THIS client mints. A room a peer minted an hour ago is
+   *    never checked by anybody here, and that is the ordinary case;
+   *  - `roomFor` no longer waits on the mint (see its own doc), so a throw here
+   *    lands in a `report('mintRoom', …)` on the developer channel while the
+   *    write goes out regardless, addressed to the room this client derived.
+   *
+   * So it is a TRIPWIRE on a drift that would otherwise be invisible, not a
+   * gate in front of anything. It is worth the line it costs for that alone —
+   * a drifted grammar would show up in a log rather than never — and it should
+   * not be relied on for more.
+   */
+  function ensureRoom(epoch: number, nowMs: number): Promise<string> {
+    const held = mints.get(epoch);
+    if (held !== undefined) return held;
+    const failedAt = mintFailedAtMs.get(epoch);
+    if (failedAt !== undefined && nowMs - failedAt < MINT_RETRY_MS) {
+      // Cooling off: answer the derived id without mining. See MINT_RETRY_MS.
+      return roomIdOf(epoch);
+    }
+    const mint = (async () => {
+      const [base, derived] = await Promise.all([ctxReady, roomIdOf(epoch)]);
+      // TORN DOWN WHILE WE WAITED. `ctxReady` is a `get_info` round trip and a
+      // signer, so a sea built and stopped in quick succession — which is what
+      // `App.tsx` does every time the standing changes — can reach here after
+      // `stop()`. A stopped sea must not write, and `submit_post` is a write.
+      if (stopped) return derived;
+      const answered = await mintRoom(base, roomTextIn(cfg.water, epoch), nowMs);
+      if (answered !== derived) {
+        throw new Error(
+          `submit_post minted ${answered} for the room this client derives as ${derived}. `
+          + 'The node hashes `${title}\\n\\n${body}` (methods.rs:2221) and so does '
+          + '`roomPreimage`, so a disagreement means the grammar has drifted from the node — '
+          + 'every write would land in a room no other client derives, with no symptom.',
+        );
+      }
+      return derived;
+    })();
+    mint.catch(() => { mints.delete(epoch); mintFailedAtMs.set(epoch, nowMs); });
+    mints.set(epoch, mint);
+    return mint;
+  }
+
+  /**
+   * The room one write goes into. **The mint is fired and never waited on.**
+   *
+   * The room id is DERIVED, so it is known before anything is minted, and the
+   * whole of `ensureRoom`'s value is making the post EXIST — not telling this
+   * function anything it did not already know. Three reasons the write does not
+   * wait on it, and the third is why this changed:
+   *
+   *  - **A peer has almost certainly minted it already.** Everybody mints, and
+   *    everybody ahead-mints the next hour, so by the time an hour arrives its
+   *    room is usually an hour old. This client's own `submit_post` is then
+   *    pure redundancy, and waiting on redundancy is pure loss.
+   *  - **A player the water has REFUSED must go on knocking.** `submit_post`
+   *    runs `check_identity_sponsored` exactly as `submit_reply` does
+   *    (methods.rs:2204), so an unsponsored client's mint fails with the same
+   *    -32015. If that cancelled the write, `submit_reply` would never be
+   *    reached, `onWrite` would never see a write's outcome, and the one signal
+   *    that can ever lift the edge of the water (`wayIn.ts`) would be gone —
+   *    the silent permanent lockout `seaChoice.chooseWater` exists to prevent,
+   *    reintroduced from a new direction.
+   *  - **A NEWCOMER'S FIRST WRITE IS THE ONE THAT MATTERS MOST, and it was the
+   *    one being delayed.** `noteEpoch` fires the mint at construction and the
+   *    first vector is authored on the first frame ~16 ms later, so awaiting
+   *    the mint put a whole Argon2id `Post` in front of it — base difficulty 20
+   *    against a Reply's 18, four times the expected work, measured at roughly
+   *    6.5 s median at the mainnet profile. That is 6.5 s before anybody else
+   *    can see the new swimmer, and 6.5 s before the write that tells THEM they
+   *    are in the water.
+   *
+   * WHAT IT COSTS, stated rather than hidden: for the one client that really is
+   * first into an hour nobody has minted, the first write races its own mint
+   * and can lose. The node answers "Parent content not found"
+   * (methods.rs:3204-3218), `classifySendFailure` puts that in the `'unknown'`
+   * bucket, `'unknown'` moves no standing in either direction (`wayIn.ts`), the
+   * optimistic row is withdrawn, and the next emit — at most `MAX_EMIT_GAP_MS`
+   * later, by which time the mint has long since landed — carries the same
+   * swimmer. One vector, in the rarest case, against 6.5 s for every joiner.
+   */
+  async function roomFor(base: BaseCtx, authoredMs: number): Promise<SendCtx> {
+    const epoch = epochOf(authoredMs);
+    // FIRED, NEVER AWAITED. See the doc above on why the write does not wait.
+    // Its outcome still reaches BOTH channels — see `noteMintFailure`.
+    void ensureRoom(epoch, authoredMs).catch(noteMintFailure('mintRoom'));
+    return { ...base, roomContentId: await roomIdOf(epoch) };
+  }
+
+  /**
+   * The fold has reached `epoch` — point the reads at the right pair of rooms,
+   * and make sure this hour's room and the NEXT one exist.
+   *
+   * Called from `step` on every frame and cheap on all but the first of each
+   * epoch: the two mints are chained rather than raced so a joiner's first
+   * vector is not queued behind the mint for an hour that has not started, and
+   * the ahead-mint is what keeps a rollover from ever waiting on a mine.
+   */
+  function noteEpoch(epoch: number, nowMs: number): void {
+    if (foldEpoch === epoch) return;
+    foldEpoch = epoch;
+    // BOUNDED PER EPOCH, NOT PER SESSION — the same discipline `advance`'s
+    // rollover applies to `appliedHashes` (shoalLoop.ts section 4). One entry
+    // an hour is nothing on its own, but a window left open for a week is a
+    // week of them, and "nothing removed them" is exactly how that set grew.
+    // Everything below `epoch - 1` is a room this client will never read or
+    // write again: `roomEpochsFor` reaches back exactly one hour, and a write
+    // is placed by an authoring instant that cannot go backwards past the
+    // pending TTL. A re-derivation costs one sha256 if one were ever needed.
+    for (const held of [roomIds, mints, mintFailedAtMs]) {
+      for (const e of held.keys()) if (e < epoch - 1) held.delete(e);
+    }
+    void refetch(); // the pair of rooms has changed; read the new one now
+    void ensureRoom(epoch, nowMs)
+      .catch(noteMintFailure('mintRoom'))
+      .then(() => ensureRoom(epoch + 1, lastFrameMs))
+      .catch(noteMintFailure('mintRoomAhead'));
+  }
+
+  /**
+   * Read the pair of rooms and fold what comes back into `remote`.
+   *
+   * ## ONE AT A TIME, BUT NOT AT THE COST OF LOSING ONE
+   *
+   * `inFlight` stops N concurrent polls becoming N concurrent fetches of a room
+   * that can hold tens of thousands of rows. It used to do that by DROPPING the
+   * extra calls, and that was wrong at exactly one moment: the rollover.
+   * `noteEpoch` fires a read the instant the pair of rooms changes, and if a
+   * read was already in the air that call vanished — so a client that had just
+   * crossed the hour went on holding the OLD pair until something else asked,
+   * up to `RECHECK_MS` later and in the worst case a whole
+   * `DEFAULT_POLL_INTERVAL_MS`. The new room is where every write from that
+   * moment on is landing, so the window is a window of not seeing anybody.
+   *
+   * So a call that arrives mid-flight is COALESCED rather than dropped: it sets
+   * a flag, and the in-flight read runs once more when it finishes. A flag and
+   * not a counter, so ten dropped calls cost one extra fetch and not ten — the
+   * fetch storm `inFlight` exists to prevent is still prevented.
+   *
+   * It cannot spin: the flag is cleared when the follow-up STARTS, so only
+   * calls that arrive during that follow-up can queue another, and a client
+   * that is not being asked to refetch stops after one.
+   */
   async function refetch(): Promise<void> {
-    if (stopped || inFlight) return;
+    if (stopped || foldEpoch === null) return;
+    if (inFlight) { refetchQueued = true; return; }
     inFlight = true;
+    refetchQueued = false;
     try {
-      const room = await fetchRoom(cfg.auth, cfg.spaceId, cfg.roomContentId);
+      const ids = await Promise.all(roomEpochsFor(foldEpoch).map(roomIdOf));
+      const room = await fetchRooms(cfg.auth, ids);
       if (stopped) return;
       const next = room.log;
       remote = next;
@@ -299,11 +708,15 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     } finally {
       inFlight = false;
     }
+    // Somebody asked while that was in the air — most importantly `noteEpoch`
+    // at a rollover, whose read named a different pair of rooms from the one
+    // just fetched. Run it once more.
+    if (refetchQueued && !stopped) await refetch();
   }
 
   const live = startLive({
     auth: cfg.auth,
-    spaceId: cfg.spaceId,
+    spaceId: cfg.water.spaceId,
     onRefetch: () => {
       void refetch();
       const t = setTimeout(() => { void refetch(); }, RECHECK_MS);
@@ -312,7 +725,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       if (recheckTimers.length > 32) recheckTimers.splice(0, recheckTimers.length - 32);
     },
   });
-  void refetch(); // the first read, before any event
+  // The first read and the first mints, before any event and before any frame.
+  // `step` calls `noteEpoch` again with the epoch `advance` is actually folding,
+  // which is a no-op unless the boundary fell between construction and the first
+  // frame — in which case it corrects, which is the point of asking twice.
+  lastFrameMs = cfg.openedAtMs;
+  noteEpoch(epochOf(cfg.openedAtMs), cfg.openedAtMs);
 
   /** `remote` plus whatever this client has published and not yet read back. */
   function combined(): LogEntry[] {
@@ -433,11 +851,27 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
    * could land, the node's own timestamp window (600 s back) would be closing
    * on it, and a checkpoint published late is a checkpoint every joiner that
    * needed it has already done without.
+   *
+   * IT GOES IN THE ROOM OF THE EPOCH IT OPENS — `cp.epoch + 1` — not the one it
+   * summarises. The module header's decision 3 has the argument. Spelled from
+   * the PAYLOAD rather than from `epochOf(nowMs)` so that a client that had
+   * been asleep for hours (one `advance` rolls at most one epoch, by design)
+   * still publishes into the room its checkpoint is the seed for, rather than
+   * into whatever hour it happens to have woken up in.
    */
   function publishCheckpoint(cp: NonNullable<ReturnType<typeof advance>['rolled']>, nowMs: number): void {
     void ctxReady
-      .then((c) => sendCheckpoint(c, cp, nowMs))
-      .then(() => { noteWrite(null); return refetch(); })
+      .then(async (c) => {
+        // Into the room of the epoch it OPENS, minted best-effort like any
+        // other write — a checkpoint that could not mint its room is still
+        // worth attempting, because a peer has almost certainly minted it.
+        const ctx = { ...c, roomContentId: await roomIdOf(cp.epoch + 1) };
+        try { await ensureRoom(cp.epoch + 1, nowMs); } catch (e) { noteMintFailure('mintRoom')(e); }
+        if (stopped) return false;
+        await sendCheckpoint(ctx, cp, nowMs);
+        return true;
+      })
+      .then((sent) => { if (!sent) return undefined; noteWrite(null); return refetch(); })
       .catch((e) => {
         noteWrite(classifySendFailure(e));
         report('sendCheckpoint', e);
@@ -446,10 +880,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
 
   return {
     selfId: cfg.authorIdHex,
-    // The sea is a property of the ROOM (open item 13): every client pointed
-    // at this space and this room derives the identical wild shoal, and a
-    // client pointed at another room gets another one.
-    wildSeed: wildSeedFrom(cfg.spaceId, cfg.roomContentId),
+    // The sea is a property of the WATER, not of the hour (open item 13, and
+    // this plan's "a rotation must be invisible"): every client in this water
+    // derives the identical wild shoal and goes on seeing it across every
+    // boundary, and a client in another water gets another one. See
+    // `roomFamilyKey` for why the room's own id can no longer be the seed.
+    wildSeed: wildSeedFrom(cfg.water.spaceId, roomFamilyKey(cfg.water)),
     spawn: cfg.spawn,
     seaMs: (wallMs: number) => wallMs,
 
@@ -467,8 +903,18 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
         ...(say !== undefined ? { say } : {}),
       });
       void ctxReady
-        .then((c) => sendPresence(c, vec, say))
-        .then(() => { noteWrite(null); return refetch(); })
+        .then((c) => roomFor(c, vec.t))
+        .then(async (c) => {
+          // THE WHOLE TAIL IS SKIPPED, not just the send. Gating only the send
+          // left `noteWrite(null)` firing for a write that never happened —
+          // and `null` is what lifts the edge of the water (`wayIn.ts`), so a
+          // sea torn down mid-write would have told the shell this swimmer had
+          // been let in on the strength of a write it never made.
+          if (stopped) return;
+          await sendPresence(c, vec, say);
+          noteWrite(null);
+          await refetch();
+        })
         .catch((e) => {
           // A dart nobody was told about is not a dart. Take the claim back
           // before reporting, so the sea on screen is the sea that exists.
@@ -482,8 +928,13 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       const hash = `pending-${serial++}`;
       pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash });
       void ctxReady
-        .then((c) => sendEat(c, cell, ms))
-        .then(() => { noteWrite(null); return refetch(); })
+        .then((c) => roomFor(c, ms))
+        .then(async (c) => {
+          if (stopped) return; // see `publish` — the whole tail, not just the send
+          await sendEat(c, cell, ms);
+          noteWrite(null);
+          await refetch();
+        })
         .catch((e) => {
           // Otherwise this client alone believes it grew.
           withdraw((p) => p.hash === hash);
@@ -501,6 +952,9 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       // clock. The comparison is against the authoring instant the row carries,
       // never a second clock read.
       withdraw((p) => wallMs - p.ms >= PENDING_TTL_MS);
+      // The only clock this file keeps, and it reaches nothing the fold reads —
+      // see `lastFrameMs`.
+      lastFrameMs = wallMs;
 
       // The epoch is chosen from the first frame's clock, not at construction,
       // so a sea built a moment before a boundary still starts in the epoch it
@@ -517,6 +971,10 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
         if (outcome.seed !== null) seeded = true;
         loop = createLoop(epoch, outcome.seed);
       }
+      // WHICH ROOMS FOLLOW WHICH EPOCH, and nothing else decides it. On the
+      // first frame this fires the first read and the first mints; on every
+      // frame after that within one hour it returns immediately.
+      noteEpoch(loop.epoch, wallMs);
       const advanced = advance(loop, combined(), wallMs);
       loop = advanced.loop;
       if (advanced.rolled !== null) {
@@ -525,10 +983,24 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
         // the authority for the new epoch and there is nothing left to adopt.
         seeded = true;
         publishCheckpoint(advanced.rolled, wallMs);
+        // ...and the pair of rooms has moved on with it: from here the fold
+        // reads (E, E+1) and the room this client just left is dropped. This is
+        // the ONE instant at which dropping it is correct — see `roomEpochsFor`.
+        noteEpoch(loop.epoch, wallMs);
       }
       return loop.state;
     },
 
+    /**
+     * Tear down the live socket and the timers — AND STOP WRITING.
+     *
+     * The second half is not decoration. `App.tsx` rebuilds this sea whenever
+     * the standing changes, and a torn-down sea whose Argon2id mine was still
+     * running would go on to submit a post or a reply afterwards: a write from
+     * an object nothing holds any more, into a room the surviving sea may not
+     * even be reading. Every send path re-checks `stopped` after the awaits
+     * that precede it, which is the only point at which it can have changed.
+     */
     stop(): void {
       stopped = true;
       live.stop();

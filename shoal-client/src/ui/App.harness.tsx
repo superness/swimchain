@@ -58,6 +58,8 @@
  * say anything about the shipped gate is `dist/assets/*.js`, produced by
  * `npm run build` (rollup). See `devChainSea`'s comment in `App.tsx`.
  */
+import { createHash } from 'node:crypto';
+
 import { JSDOM } from 'jsdom';
 
 export interface Observation {
@@ -137,6 +139,16 @@ export interface Observation {
    */
   readonly rpcCalls: string[];
   /**
+   * Every room post the window MINTED, in order — `{title, body, space}` as
+   * `submit_post` received them.
+   *
+   * Plan 4d Task 2: the room is a function of the hour and every client mints
+   * the hour it needs rather than waiting for a peer to hand it one. That
+   * changed a fresh install's cold start from a measured 3 m 18 s wait into a
+   * write, and this is where a check can see it happen.
+   */
+  readonly minted: { title: string; body: string; space: string }[];
+  /**
    * Whether the edge of the water was on screen when the window was torn down.
    *
    * The only observation in this file that is about what a PLAYER sees, and it
@@ -186,6 +198,16 @@ export interface Scenario {
   /** Wait (up to a generous ceiling) for the first write before settling.
    *  Off for scenarios that expect no write at all. */
   readonly awaitWrite?: boolean;
+  /**
+   * Wait for the window to have MINTED an hour's room before tearing down.
+   *
+   * Separate from `awaitWrite` because since plan 4d Task 2's F4 the two no
+   * longer happen in that order: the room id is derived, so the reply goes out
+   * at once and the `submit_post` lands whenever its Argon2id finishes. A
+   * scenario that waited for a write and then read `minted` was measuring that
+   * ordering, and got an empty array whenever the mine ran long.
+   */
+  readonly awaitMint?: boolean;
   /** How long to keep the window open at the end, so a sea that was going to
    *  be rebuilt has had its chance to open a second socket. */
   readonly settleMs: number;
@@ -312,12 +334,13 @@ const NODE_ADDRESS = 'sw1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
  * the one rule this client is strictest about. Nothing in this harness answers
  * any sponsorship method, and `App.test.ts` §6 proves the window never asks.
  */
-export const SHOAL_SPACE = await waterSpaceId();
+export const SHOAL_WATER = await shellWater();
+export const SHOAL_SPACE = SHOAL_WATER.spaceId;
 const SIG_HEX = Array.from({ length: 64 }, (_, i) => (i * 5 + 11) & 0xff)
   .map((b) => b.toString(16).padStart(2, '0')).join('');
 
 /** The water's display name and namespace, imported rather than retyped. */
-import { WATER_APP, WATER_NAME, waterSpaceId } from './shellConfig';
+import { WATER_APP, WATER_NAME, shellWater } from './shellConfig';
 import { App } from './App';
 
 function sleep(ms: number): Promise<void> {
@@ -370,6 +393,10 @@ function fakeContext(canvas: unknown): unknown {
 /** Run one window, from mount to teardown, and report what reached the node. */
 export async function observe(s: Scenario): Promise<Observation> {
   const submitted: { author: string; parent: string; body: string; atMs: number }[] = [];
+  /** Every `submit_post` the window made — the hour's room, minted by the
+   *  client itself (plan 4d Task 2). Recorded so a check can prove the window
+   *  makes its own room rather than waiting for one to arrive. */
+  const minted: { title: string; body: string; space: string }[] = [];
   const rpcCalls: string[] = [];
   let sockets = 0;
   /** When a frame callback last actually ran. See the `requestAnimationFrame`
@@ -489,6 +516,23 @@ export async function observe(s: Scenario): Promise<Observation> {
         return ok({ network: 'regtest', min_pow_difficulty: 4 });
       case 'get_replies':
         return ok({ parent_id: req.params.content_id, replies: [], total_count: 0 });
+      case 'submit_post':
+        // MINTING AN HOUR'S ROOM. Answered exactly as the node answers it —
+        // `content_id = "sha256:" + hex(sha256(`${title}\n\n${body}`))`
+        // (methods.rs:2221-2223) — because `chainSea.ensureRoom` compares the
+        // answer with its own derivation and throws if they differ. A fake that
+        // echoed some other id would make every write in this file fail, which
+        // is exactly the tripwire working.
+        minted.push({
+          title: String(req.params.title ?? ''),
+          body: String(req.params.body ?? ''),
+          space: String(req.params.space_id ?? ''),
+        });
+        return ok({
+          content_id: 'sha256:' + createHash('sha256')
+            .update(`${String(req.params.title ?? '')}\n\n${String(req.params.body ?? '')}`, 'utf8')
+            .digest('hex'),
+        });
       case 'submit_reply':
         submitted.push({
           author: String(req.params.author_id ?? ''),
@@ -658,6 +702,7 @@ export async function observe(s: Scenario): Promise<Observation> {
   }
 
   if (s.awaitWrite) await waitFor(() => submitted.length > 0, PATIENCE_MS);
+  if (s.awaitMint) await waitFor(() => minted.length > 0, PATIENCE_MS);
   if (s.press?.when === 'afterFirstWrite') pressKey();
 
   await sleep(s.settleMs);
@@ -677,7 +722,7 @@ export async function observe(s: Scenario): Promise<Observation> {
   }
 
   return {
-    submitted, sockets, socketsClosed, maxSocketsOpen, askedShell, rpcCalls,
+    submitted, minted, sockets, socketsClosed, maxSocketsOpen, askedShell, rpcCalls,
     edgeAtEnd, edgeLine, edgeAppearances, liftAppearances,
     msSinceLastFrame: lastFrameMs === 0 ? -1 : Date.now() - lastFrameMs,
     msFromAcceptToLift: firstAcceptMs < 0 || firstLiftMs < 0 ? -1 : firstLiftMs - firstAcceptMs,

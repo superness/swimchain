@@ -54,7 +54,7 @@ export { ActionType, computePow, createChallenge, createPostChallenge, createRep
 export { signAction, actionSignaturePreimage, contentHashForPost, contentHashForReply, } from "./lib/signAction";
 // One-click onboarding: claim a standing auto-approve offer so a fresh identity
 // can act (shared by the reef/chess public pages).
-export { ensureSponsored, } from "./lib/ensureSponsored";
+export { ensureSponsored, selectClaimableOffer, } from "./lib/ensureSponsored";
 // Caching utilities
 export { getMediaFromCache, setMediaInCache, getContentFromCache, setContentInCache, deleteContentFromCache, getFromMemory, setInMemory, invalidateMemory, getFromStorage, setInStorage, removeFromStorage, getCacheStats, clearDecryptedMediaCache, clearAllCaches, } from "./lib/cache";
 // Encryption utilities

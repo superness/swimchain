@@ -13,10 +13,17 @@
  * Expected values are derived by hand in comments, never by calling `repliesToLog` or
  * `orderLog` twice and comparing the result to itself.
  */
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import {
   repliesToLog, splitRoomReplies, narrowRoomReplies, ROOM_FETCH_LIMIT,
+  ROOM_TITLE, roomTextFor, roomTextAtMs, roomPreimage, roomIdFor, roomIdAtMs,
   type RawReply, type NodeReply, type GetRepliesResult,
 } from './shoalRoom';
+import { epochOf, epochStartMs, epochEndMs } from './epoch';
 import { encodePresence, encodeEat, encodeCheckpoint } from './shoalWire';
 import type { Checkpoint, EatClaim } from './shoalTypes';
 
@@ -363,6 +370,523 @@ function result(replies: NodeReply[]): GetRepliesResult {
   check('ROOM_FETCH_LIMIT is a positive integer (fetchRoomLog passes it as both the ' +
         'request limit and the ceiling it checks against)',
     Number.isSafeInteger(ROOM_FETCH_LIMIT) && ROOM_FETCH_LIMIT > 0, ROOM_FETCH_LIMIT);
+}
+
+// ===================================================================================
+// THE ROOM IS A FUNCTION OF THE HOUR
+// ===================================================================================
+//
+// The single highest-consequence value in this client: two clients that derive
+// different rooms for the same hour are not degraded, they are in DIFFERENT WORLDS,
+// each seeing a calm and entirely healthy empty sea. There is no symptom. So this
+// section triangulates the derivation from three directions that cannot all be wrong
+// together:
+//
+//   1. the TEXT is asserted against hand-typed literals ('The Shoal',
+//      'room:shoal:v1:main:495936') — not against anything the module built;
+//   2. the ID is recomputed with **node:crypto**, a different SHA-256 implementation
+//      from the `hash-wasm` one `roomIdFor` uses, over a preimage this file spells
+//      out by hand (`handPreimage`) rather than getting from `roomPreimage`;
+//   3. two ids are PINNED as literals, hand-derived OFFLINE with three more
+//      implementations still (GNU `sha256sum`, `openssl dgst -sha256`, Python
+//      `hashlib`) — see the recipe below. A change to the grammar that someone
+//      "helpfully" mirrored into `handPreimage` above would still fail here, which
+//      is the whole point of pinning.
+//
+// THE PIN RECIPE, reproducible from any shell:
+//
+//   printf 'The Shoal\n\nroom:shoal:v1:main:0' | sha256sum
+//     -> f95e9c7505a6fef02757a5247e5e4d2595faf0033fdc033c66247356eeee30d2
+//   printf 'The Shoal\n\nroom:shoal:v1:main:495936' | sha256sum
+//     -> 9ec91781fb7827324bda796a0f731c3d6366f9195f1969e3585b74ab403ef528
+//
+// (`printf`, not `echo` — `echo` appends a trailing newline that is NOT in the
+// preimage. Confirmed byte-for-byte against `openssl dgst -sha256` and Python's
+// `hashlib.sha256` as well.)
+//
+// Epoch 495936 is not arbitrary: 495936 * 3_600_000 = 1_785_369_600_000 ms, which is
+// exactly 2026-07-30T00:00:00Z — a real hour of play, and one whose epoch number can
+// be re-derived from a date by anyone auditing this. Epoch 0 is pinned alongside it
+// because it needs no date arithmetic at all to check.
+{
+  console.log('\n--- the room is a function of the hour ---');
+
+  // Hand-typed, and DELIBERATELY NOT built from `roomTextFor`/`roomPreimage`: this is
+  // the grammar written out a second time by a human, so a change to the module's
+  // grammar has to be made here too before these checks can pass.
+  const handPreimage = (water: string, epoch: number) =>
+    `The Shoal\n\nroom:shoal:v1:${water}:${epoch}`;
+  const handRoomId = (water: string, epoch: number) =>
+    'sha256:' + createHash('sha256').update(handPreimage(water, epoch), 'utf8').digest('hex');
+
+  const MAIN = 'main';
+  const E = 495_936; // 2026-07-30T00:00:00Z, see above
+
+  // --- The pinned literals. Hand-derived offline; see the recipe above. ------------
+  const PINNED_EPOCH_0 = 'sha256:f95e9c7505a6fef02757a5247e5e4d2595faf0033fdc033c66247356eeee30d2';
+  const PINNED_EPOCH_495936 = 'sha256:9ec91781fb7827324bda796a0f731c3d6366f9195f1969e3585b74ab403ef528';
+
+  check('PINNED: the room for epoch 0 of the water `main` is the hand-derived literal',
+    (await roomIdFor(MAIN, 0)) === PINNED_EPOCH_0, await roomIdFor(MAIN, 0));
+  check('PINNED: the room for epoch 495936 (2026-07-30T00:00:00Z) is the hand-derived literal',
+    (await roomIdFor(MAIN, E)) === PINNED_EPOCH_495936, await roomIdFor(MAIN, E));
+
+  // The pin's own arithmetic, so the epoch number above is not taken on trust.
+  check('...and 495936 really is the epoch containing 2026-07-30T00:00:00Z (1785369600000 ms)',
+    epochOf(1_785_369_600_000) === E && epochStartMs(E) === 1_785_369_600_000,
+    { epochOf: epochOf(1_785_369_600_000), start: epochStartMs(E) });
+
+  // --- The identifying TEXT, against hand-typed literals ---------------------------
+  {
+    const text = roomTextFor(MAIN, E);
+    check('the room\'s title is the constant `The Shoal`', text.title === 'The Shoal', text.title);
+    check('the room\'s body names the grammar, the water and the epoch',
+      text.body === 'room:shoal:v1:main:495936', text.body);
+    check('the preimage is exactly what submit_post hashes: title, blank line, body',
+      roomPreimage(text) === 'The Shoal\n\nroom:shoal:v1:main:495936', roomPreimage(text));
+    check('ROOM_TITLE is that same constant, exported for whatever mints the post',
+      ROOM_TITLE === 'The Shoal', ROOM_TITLE);
+    check('the id is a content id the node would accept as a parent_id',
+      /^sha256:[0-9a-f]{64}$/.test(await roomIdFor(MAIN, E)), await roomIdFor(MAIN, E));
+  }
+
+  // --- A second SHA-256 implementation agrees, over a hand-spelled preimage --------
+  // `hash-wasm` agreeing with itself would be no evidence at all.
+  {
+    let allAgree = true;
+    const disagreed: unknown[] = [];
+    for (const epoch of [-1, 0, 1, 495_935, E, 495_937, 1_000_000]) {
+      const got = await roomIdFor(MAIN, epoch);
+      const want = handRoomId(MAIN, epoch);
+      if (got !== want) { allAgree = false; disagreed.push({ epoch, got, want }); }
+    }
+    check('node:crypto over a hand-spelled preimage agrees with hash-wasm for seven epochs',
+      allAgree, disagreed);
+  }
+
+  // --- The same epoch is the same room, from three instants inside that hour -------
+  // The property the whole rotation rests on: a client that opens the game at :00,
+  // one that opens it at :30 and one that opens it one millisecond before the hour
+  // ends must all be in the SAME room. `roomIdAtMs` composes `epochOf`, the fold's
+  // own clock — not a second one.
+  {
+    const first = epochStartMs(E);                 // 1_785_369_600_000, the hour's first ms
+    const middle = epochStartMs(E) + 1_800_000;    // + 30 minutes
+    const last = epochEndMs(E) - 1;                // 1_785_373_199_999, its last ms
+    const ids = [await roomIdAtMs(MAIN, first), await roomIdAtMs(MAIN, middle), await roomIdAtMs(MAIN, last)];
+    check('three different instants inside the same hour derive the SAME room',
+      ids[0] === ids[1] && ids[1] === ids[2], ids);
+    check('...and that room is the pinned literal for epoch 495936',
+      ids[0] === PINNED_EPOCH_495936, ids[0]);
+
+    // `roomTextAtMs` is the same composition one level down — the form whatever
+    // MINTS an hour's post needs, because the PoW miner hashes the preimage, not
+    // the id. Asserted against the hand-typed body, and against the pin through
+    // a second SHA-256 implementation, so it cannot drift from `roomIdAtMs`.
+    const texts = [roomTextAtMs(MAIN, first), roomTextAtMs(MAIN, middle), roomTextAtMs(MAIN, last)];
+    check('roomTextAtMs gives the same hand-typed body at all three instants',
+      texts.every((t) => t.body === 'room:shoal:v1:main:495936' && t.title === 'The Shoal'),
+      texts.map((t) => t.body));
+    check('...and its preimage hashes (node:crypto) to the pinned literal',
+      'sha256:' + createHash('sha256').update(roomPreimage(texts[1]), 'utf8').digest('hex')
+        === PINNED_EPOCH_495936, roomPreimage(texts[1]));
+
+    // The crossing (Task 2's job) is visible right here: one ms later is another world.
+    const across = await roomIdAtMs(MAIN, epochEndMs(E));
+    check('the first ms of the NEXT hour derives a different room',
+      across !== ids[0] && across === (await roomIdFor(MAIN, E + 1)), { across, inside: ids[0] });
+  }
+
+  // --- Adjacent epochs never collide ----------------------------------------------
+  {
+    const a = await roomIdFor(MAIN, E - 1);
+    const b = await roomIdFor(MAIN, E);
+    const c = await roomIdFor(MAIN, E + 1);
+    check('epoch E-1, E and E+1 are three distinct rooms',
+      a !== b && b !== c && a !== c, { a, b, c });
+
+    // Around zero too, where the decimal spelling changes sign.
+    const neg = await roomIdFor(MAIN, -1);
+    const zero = await roomIdFor(MAIN, 0);
+    const one = await roomIdFor(MAIN, 1);
+    check('epochs -1, 0 and 1 are three distinct rooms', neg !== zero && zero !== one && neg !== one,
+      { neg, zero, one });
+  }
+
+  // --- No two (water, epoch) pairs in a wide sweep collide -------------------------
+  // 300 consecutive epochs across four waters. Distinctness is asserted on the IDS,
+  // not the texts, so a hash-level collapse would show up as well as a grammar one.
+  {
+    const seen = new Set<string>();
+    let collisions = 0;
+    for (const water of ['main', 'smoke', 'two', 'cp']) {
+      for (let epoch = E - 150; epoch < E + 150; epoch++) {
+        const id = await roomIdFor(water, epoch);
+        if (seen.has(id)) collisions++;
+        seen.add(id);
+      }
+    }
+    check('1200 (water, epoch) pairs give 1200 distinct rooms',
+      collisions === 0 && seen.size === 1200, { collisions, distinct: seen.size });
+  }
+
+  // --- A DIFFERENT WATER IS A DIFFERENT ROOM, AND THIS IS LOAD-BEARING -------------
+  // `submit_post` does NOT put the space in the preimage (methods.rs:2221) and
+  // `get_replies` is keyed on the parent content id alone. So two waters whose room
+  // posts share a title and body share ONE room and one reply set: the smoke scripts'
+  // moves would land in the water people are playing in. The water name is in the
+  // body for exactly this reason.
+  {
+    const main = await roomIdFor('main', E);
+    const smoke = await roomIdFor('smoke', E);
+    check('the same hour in a different water is a different room',
+      main !== smoke, { main, smoke });
+  }
+
+  // --- The water name is checked, because the likely mistake is silent -------------
+  // Passing `@shoal:main` (WATER_SPACE_NAME) where `main` (WATER_NAME) belongs would
+  // derive a room that is real, healthy, reply-able and shared with nobody. A colon
+  // is also what makes the grammar's fields unambiguous, so banning it does both jobs.
+  //
+  // TASK 1 SHIPPED A DENYLIST — `''`, `:` and `\n` — and Task 2's review found
+  // four more ways past it in a minute of looking. A denylist over a permanent
+  // consensus preimage is a list of the mistakes somebody happened to think of,
+  // so it is an ALLOWLIST now (`assertWaterName`). Every case below is a string
+  // that used to derive a real, healthy, reply-able room shared with nobody.
+  {
+    const threwFor = async (water: unknown): Promise<boolean> => {
+      try { await roomIdFor(water as string, E); return false; } catch { return true; }
+    };
+    check('the marker form `@shoal:main` is REJECTED, not silently accepted',
+      await threwFor('@shoal:main'));
+    check('an empty water is rejected', await threwFor(''));
+    check('a water containing a newline is rejected', await threwFor('ma\nin'));
+    check('a plain water name is accepted', !(await threwFor('main')));
+
+    // 1. A NON-STRING. `['main:x'].includes(':')` asks whether any ELEMENT
+    // equals ':' — it does not — so an array sailed through Task 1's colon
+    // guard and interpolated as `room:shoal:v1:main:x:1`. This is why the
+    // typeof check is first and is the load-bearing one.
+    check('an ARRAY is rejected — it bypassed the colon guard and spelled its own room',
+      await threwFor(['main:x']));
+    check('a number is rejected', await threwFor(123));
+    check('null and undefined are rejected',
+      (await threwFor(null)) && (await threwFor(undefined)));
+
+    // 2. INVISIBLE CHARACTERS. Every one of these renders identically to
+    // `main` in every font and terminal, and derives a different room.
+    for (const [name, water] of [
+      ['a trailing space', 'main '],
+      ['a leading space', ' main'],
+      ['an inner space', 'ma in'],
+      ['a carriage return', 'main\r'],
+      ['a tab', 'main\t'],
+      ['a NUL', 'main\0'],
+    ] as [string, string][]) {
+      check(`${name} is rejected`, await threwFor(water), JSON.stringify(water));
+    }
+
+    // 3. UNICODE, NORMALIZED OR NOT. `máin` (NFC) and `máin` (NFD)
+    // are two different byte strings that are pixel-identical in every font, so
+    // a player told to join "máin" would land in one or the other depending on
+    // which keyboard, editor or clipboard produced the string — and the two
+    // would never see each other. Both are refused, which is the only answer
+    // that does not require picking a normalization form and defending it
+    // forever.
+    const NFC: string = 'máin';       // U+00E1, one code point
+    const NFD: string = 'máin';      // 'a' + U+0301 combining acute
+    check('an NFC accented name is rejected', await threwFor(NFC));
+    check('...and its NFD twin is rejected too', await threwFor(NFD));
+    check('...and they really were two different strings that render identically',
+      NFC !== NFD && NFD.normalize('NFC') === NFC, { NFC, NFD });
+    check('a zero-width joiner is rejected', await threwFor('ma‍in'));
+
+    // 4. CASE. `Main` is a different preimage, not a hint.
+    check('a capital letter is rejected', await threwFor('Main'));
+
+    // 5. LENGTH, and the shape of a hyphenated name.
+    check('a 32-character name is accepted', !(await threwFor('a'.repeat(32))));
+    check('a 33-character name is rejected', await threwFor('a'.repeat(33)));
+    check('hyphen-joined groups are accepted', !(await threwFor('deep-blue-2')));
+    check('a leading hyphen is rejected', await threwFor('-main'));
+    check('a trailing hyphen is rejected', await threwFor('main-'));
+    check('a doubled hyphen is rejected', await threwFor('ma--in'));
+
+    // 6. THE ALLOWLIST NARROWED WHAT IS ACCEPTED AND MOVED NOTHING. Every water
+    // this game has ever had still derives exactly the room it derived before,
+    // which is what makes this a safe change rather than a hard fork.
+    check('every water this game has ever used is still accepted, unchanged',
+      (await roomIdFor('main', E)) === PINNED_EPOCH_495936
+      && !(await threwFor('smoke')) && !(await threwFor('two')) && !(await threwFor('cp')));
+  }
+
+  // --- The epoch is checked too ----------------------------------------------------
+  // A float epoch would stringify as `495936.5` and derive a room of its own; NaN
+  // would derive one called `NaN`. Both are silent forks, so both throw. (Integer
+  // math only in src/lib is the standing rule; this is the tripwire for it.)
+  {
+    const threwFor = (epoch: number): boolean => {
+      try { roomTextFor(MAIN, epoch); return false; } catch { return true; }
+    };
+    check('a fractional epoch is rejected', threwFor(495_936.5));
+    check('NaN is rejected', threwFor(Number.NaN));
+    check('Infinity is rejected', threwFor(Number.POSITIVE_INFINITY));
+    check('an epoch past Number.MAX_SAFE_INTEGER is rejected', threwFor(2 ** 53));
+    check('a plain integer epoch is accepted', !threwFor(E));
+    check('a negative integer epoch is accepted (the grid is absolute, and floors below zero)',
+      !threwFor(-1));
+  }
+
+  // --- Two JavaScript number quirks that would fork the population silently --------
+  // `-0` is a real value `Math.floor` can produce, and `${-0}` is "0" — so the room
+  // for -0 and the room for 0 are the same room. Pinned so a future hand-rolled
+  // formatter that spelled it "-0" fails here.
+  {
+    check('epoch -0 derives the same room as epoch 0',
+      (await roomIdFor(MAIN, -0)) === (await roomIdFor(MAIN, 0)), await roomIdFor(MAIN, -0));
+
+    // Template-literal number formatting stays plain decimal for every safe integer
+    // (exponent notation only starts at 1e21, three orders past MAX_SAFE_INTEGER).
+    // An exponent in the body would make two different epochs spell the same bytes.
+    const huge = roomTextFor(MAIN, Number.MAX_SAFE_INTEGER);
+    check('a safe-integer epoch is spelled in plain decimal, never in exponent form',
+      huge.body === 'room:shoal:v1:main:9007199254740991' && !huge.body.includes('e'), huge.body);
+  }
+
+  // --- Purity: the derivation reads no clock and holds no state --------------------
+  // "The derivation needs no state a fresh client lacks" is the requirement. The
+  // observable form of it: the same arguments give the same answer with nothing else
+  // touched, and the answer depends on NOTHING but the arguments.
+  {
+    const once = await roomIdFor(MAIN, E);
+    const twice = await roomIdFor(MAIN, E);
+    check('called twice with the same arguments, byte-identical both times', once === twice, { once, twice });
+    check('...and still the pinned literal', twice === PINNED_EPOCH_495936, twice);
+
+    // NOT a source scan of this file — the other half of this module legitimately
+    // talks to a node, so a whole-file grep for `fetch` would be meaningless here.
+    // The globals themselves are replaced with throwing stubs for the duration of
+    // one call instead, which no future refactor or renamed helper can slip past.
+    // A `Date.now()` that crept into the derivation would make the room depend on
+    // the READING client's clock rather than on the instant it was handed — the
+    // same silent fork as a wrong grammar, arriving only when two clients' clocks
+    // differ, which is to say in production and never in a test.
+    //
+    // FOUR GLOBALS, NOT TWO. Task 2's review mutation-tested this and found the
+    // tripwire had two holes: `new Date()` and `performance.now()` are both
+    // wall clocks, neither goes through `Date.now`, and BOTH MUTATIONS SURVIVED
+    // — a derivation that read either would have passed this check unchanged.
+    // The whole `Date` binding and `performance.now` are replaced here as well,
+    // so there is no way left to ask this process what time it is.
+    const g = globalThis as unknown as Record<string, unknown>;
+    const realDate = g.Date as DateConstructor;
+    const realRandom = Math.random;
+    const realPerf = (g.performance as { now?: () => number } | undefined)?.now;
+
+    const boom = (why: string) => () => { throw new Error(why); };
+    // A `Date` that throws for BOTH spellings: `Date.now()` and `new Date()`.
+    // Subclassing rather than replacing wholesale, so anything that merely
+    // MENTIONS the type still typechecks and only a CALL trips it.
+    class TrippedDate extends realDate {
+      constructor(...args: unknown[]) {
+        super(...(args as []));
+        throw new Error('the room derivation constructed a Date');
+      }
+      static override now(): number {
+        throw new Error('the room derivation read Date.now');
+      }
+    }
+    g.Date = TrippedDate;
+    Math.random = boom('the room derivation rolled dice');
+    if (realPerf !== undefined) {
+      (g.performance as { now: () => number }).now = boom('the room derivation read performance.now');
+    }
+
+    let threw: unknown = null;
+    let clockless = '';
+    try {
+      clockless = await roomIdAtMs(MAIN, epochStartMs(E) + 12_345);
+    } catch (e) {
+      threw = e;
+    } finally {
+      g.Date = realDate;
+      Math.random = realRandom;
+      if (realPerf !== undefined) (g.performance as { now: () => number }).now = realPerf;
+    }
+    check('the derivation reads no clock and rolls no dice — Date.now, new Date, '
+      + 'performance.now and Math.random are ALL disabled', threw === null, threw);
+    check('...and with all four disabled still returns the pinned room',
+      clockless === PINNED_EPOCH_495936, clockless);
+
+    // THE TRIPWIRE IS ITSELF TRIPPED, because a stub that did not throw would
+    // make the two checks above pass for any implementation at all — which is
+    // exactly how the two holes survived. Each of the four is proved to fire.
+    {
+      const fired: string[] = [];
+      const trip = (what: string, run: () => unknown) => {
+        g.Date = TrippedDate;
+        Math.random = boom('dice');
+        if (realPerf !== undefined) (g.performance as { now: () => number }).now = boom('perf');
+        try { run(); } catch { fired.push(what); } finally {
+          g.Date = realDate;
+          Math.random = realRandom;
+          if (realPerf !== undefined) (g.performance as { now: () => number }).now = realPerf;
+        }
+      };
+      trip('Date.now', () => Date.now());
+      trip('new Date', () => new Date());
+      trip('Math.random', () => Math.random());
+      if (realPerf !== undefined) trip('performance.now', () => performance.now());
+      const want = realPerf === undefined
+        ? ['Date.now', 'new Date', 'Math.random']
+        : ['Date.now', 'new Date', 'Math.random', 'performance.now'];
+      check('MUTATION CHECK: every one of the disabled globals really does throw',
+        fired.length === want.length && want.every((w) => fired.includes(w)), fired);
+    }
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// NOTHING BUT `water.ts` DERIVES A ROOM FROM A BARE NAME
+//
+// Task 2's review, on Task 1: *"nothing binds the water name passed to
+// `roomIdFor` to the space actually written into — correct for Task 1, but it's
+// where the next symptomless fork lives."* `water.ts` is the binding: one
+// function derives the space id and every room id from ONE name, and everything
+// downstream takes the resulting `Water`, which is now a BRANDED type so a
+// hand-built one is a compile error (`water.ts`'s `waterBrand`, pinned by the
+// `@ts-expect-error` in water.test.ts §1).
+//
+// The brand stops a fake `Water`. It does NOT stop anyone calling
+// `roomIdFor(someString, epoch)` directly, because that function takes a
+// `string` — and it has to, it is the pinned primitive the literals above
+// protect. So this scan is still load-bearing, and it is the half the brand
+// cannot cover.
+//
+// ## ROUND 1's SCAN WAS WALKED AROUND THREE WAYS, ALL EXECUTED
+//
+//   1. a hand-built `Water` — closed by the brand, not by this scan;
+//   2. `import { roomIdFor as r }` then `r(name, e)` — the call-form regex
+//      never matched, because the call is spelled `r(`;
+//   3. a file in a SUBDIRECTORY of `src/lib` or `src/ui` — `readdirSync` was
+//      flat, so the file was never opened at all.
+//
+// Both 2 and 3 are fixed below, and the fix for 2 is a change of KIND rather
+// than a longer regex: **the scan reads import specifiers, not call sites.**
+// You cannot call a function you have not imported, and an import records the
+// ORIGINAL name whatever local name it is bound to. The call-form check is kept
+// as a second net (it catches a re-export through some other module, where the
+// import would not name `shoalRoom` at all).
+//
+// ## AND THE SCANNER IS ITSELF SCANNED
+//
+// A checker that silently matched nothing would report exactly what a pass
+// looks like — which is how round 1's holes survived. `offendersIn` is a pure
+// function of one file's text, so it is driven below against synthetic sources
+// for all three walk-arounds plus a legitimate import that must NOT trip it.
+// ---------------------------------------------------------------------------
+{
+  console.log('\n--- the string form of the derivation has exactly one caller ---');
+
+  /** The four functions that turn a bare NAME into a room. Everything else in
+   *  `shoalRoom.ts` (`fetchRooms`, `roomPreimage`, `ROOM_TITLE`, the types) is
+   *  free to be imported by anyone. */
+  const DERIVERS = ['roomIdFor', 'roomTextFor', 'roomIdAtMs', 'roomTextAtMs'];
+
+  /**
+   * Why one file is (or is not) an offender. Pure, so the controls below can
+   * drive it over text this file spells out rather than over the repo.
+   */
+  const offendersIn = (text: string): string[] => {
+    // A mention inside a comment or a doc block is how this codebase explains
+    // itself and must never fail a scan.
+    const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const found: string[] = [];
+
+    // (a) IMPORT SPECIFIERS — alias-proof, because `import { X as y }` still
+    // spells `X` on the left. Every `import { … } from '…'` in the file is
+    // parsed, whatever module it names: a re-export elsewhere would still have
+    // to name one of these somewhere.
+    for (const m of code.matchAll(/import\s*(?:type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g)) {
+      for (const raw of m[1].split(',')) {
+        const original = raw.trim().replace(/^type\s+/, '').split(/\s+as\s+/)[0].trim();
+        if (DERIVERS.includes(original)) found.push(`imports ${original} from '${m[2]}'`);
+      }
+    }
+    // (b) A NAMESPACE IMPORT of the module that defines them — `import * as R
+    // from './shoalRoom'` puts every one of them one property access away, and
+    // no specifier list records it.
+    for (const m of code.matchAll(/import\s*\*\s*as\s+(\w+)\s*from\s*['"]([^'"]*shoalRoom)['"]/g)) {
+      found.push(`namespace-imports ${m[2]} as ${m[1]}`);
+    }
+    // (c) THE CALL FORM, kept as a second net for a re-export path where the
+    // import names some other module entirely.
+    for (const d of DERIVERS) {
+      if (new RegExp(`\\b${d}\\s*\\(`).test(code)) found.push(`calls ${d}(`);
+    }
+    return found;
+  };
+
+  // --- the scanner, scanned ------------------------------------------------
+  const control = (what: string, text: string, shouldTrip: boolean) => {
+    const got = offendersIn(text);
+    check(`CONTROL: the scan ${shouldTrip ? 'CATCHES' : 'ignores'} ${what}`,
+      (got.length > 0) === shouldTrip, got);
+  };
+  control('a plain call', "import { roomIdFor } from './shoalRoom';\nawait roomIdFor('main', 1);", true);
+  control('an ALIASED import (round 1 walked past this)',
+    "import { roomIdFor as r } from './shoalRoom';\nawait r('main', 1);", true);
+  control('an aliased TYPE-ONLY-looking import',
+    "import { type RoomText, roomTextFor as t } from './shoalRoom';\nt('main', 1);", true);
+  control('a namespace import', "import * as R from '../lib/shoalRoom';\nR.roomIdFor('main', 1);", true);
+  control('a call reached through a re-export, with no shoalRoom import at all',
+    "import { helper } from './elsewhere';\nawait roomIdFor('main', 1);", true);
+  control('a legitimate import of the room FETCH path',
+    "import { fetchRooms, roomPreimage, ROOM_TITLE } from './shoalRoom';\nfetchRooms(a, b);", false);
+  control('the name inside a comment or a doc block',
+    "/** roomIdFor(water, epoch) is the primitive. */\n// see roomTextFor(\nconst x = 1;", false);
+
+  // --- the repo ------------------------------------------------------------
+  // RECURSIVE. Round 1's `readdirSync` was flat, so a file one directory down
+  // was never opened — which is walk-around 3, and it needed no cleverness at
+  // all, just a folder.
+  const walk = (dir: string, out: string[]): string[] => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        walk(full, out);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts') && !entry.name.endsWith('.tsx')) continue;
+      if (entry.name.endsWith('.test.ts')) continue;  // tests may call the primitive
+      if (entry.name === 'water.ts') continue;        // the one legal caller
+      if (entry.name === 'shoalRoom.ts') continue;    // where it is defined
+      out.push(full);
+    }
+    return out;
+  };
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const files = [
+    ...walk(join(here, '..'), []),                    // all of src/, at any depth
+    ...walk(join(here, '..', '..', 'scripts'), []),
+  ];
+  check('NON-DEGENERACY: the scan found the real source tree',
+    files.length > 25 && files.some((f) => f.replace(/\\/g, '/').endsWith('ui/chainSea.ts')),
+    files.length);
+  check('NON-DEGENERACY: ...and it descends, so a subdirectory cannot hide in it',
+    walk(join(here, '..'), []).length > readdirSync(join(here, '..', 'ui')).length,
+    { walked: walk(join(here, '..'), []).length });
+
+  const offenders: string[] = [];
+  for (const f of files) {
+    const found = offendersIn(readFileSync(f, 'utf8'));
+    if (found.length > 0) offenders.push(`${f.replace(/\\/g, '/').split('/').slice(-2).join('/')}: ${found.join('; ')}`);
+  }
+  check('no module but `water.ts` derives a room from a bare name — by import, by alias, '
+    + 'by namespace or by call', offenders.length === 0, offenders);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

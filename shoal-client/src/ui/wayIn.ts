@@ -185,6 +185,19 @@ export const CROSSING_MS = 2_600;
 export function afterWrite(prev: Standing, failure: SendFailure | null): Standing {
   if (failure === null) return prev.atTheEdge ? CROSSING : prev;
   if (failure.kind === 'not-sponsored') return prev.atTheEdge ? prev : AT_THE_EDGE;
+  // EVERY OTHER KIND LEAVES THE STANDING EXACTLY WHERE IT WAS, and `'no-water'`
+  // is deliberately among them.
+  //
+  // -32014 means the SPACE is not on this node's chain — nobody has minted the
+  // water on this network yet. It was reproduced as a silent dead end (the
+  // report's I4): every write fails, nothing moves here, and the player sees an
+  // empty sea with no explanation. Classifying it (`shoalSend.ts`) makes the
+  // fact available and is where that work stops on purpose: WHAT A PLAYER IS
+  // TOLD IS A DESIGN DECISION, this file's copy is spec §1.1 diegetic text, and
+  // inventing a fourth standing here would be deciding it alone. The edge of
+  // the water is specifically about being refused ENTRY by other players
+  // (§2.16); "there is no water" is not that, and reusing it would say
+  // something false.
   return prev;
 }
 
