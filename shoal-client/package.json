@@ -17,7 +17,7 @@
     "smoke:checkpoint": "tsx scripts/two-client-checkpoint.ts",
     "drive:two": "tsx scripts/two-client-drive.ts",
     "harness": "tsx scripts/harness.ts",
-    "test": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.ui.json && tsx src/lib/shoalConst.test.ts && tsx src/lib/fixed.test.ts && tsx src/lib/wild.test.ts && tsx src/lib/shelter.test.ts && tsx src/lib/wildShelter.test.ts && tsx src/lib/tension.test.ts && tsx src/lib/sweep.test.ts && tsx src/lib/bloom.test.ts && tsx src/lib/epoch.test.ts && tsx src/lib/water.test.ts && tsx src/lib/checkpoint.test.ts && tsx src/lib/adopt.test.ts && tsx src/lib/shoalWire.test.ts && tsx src/lib/shoalRpc.test.ts && tsx src/lib/shoalSend.test.ts && tsx src/lib/shoalEngine.test.ts && tsx src/lib/shoalEngine.determinism.test.ts && tsx src/lib/shoalEngine.incremental.test.ts && tsx src/lib/shoalRoom.test.ts && tsx src/lib/shoalLive.test.ts && tsx src/lib/shoalEmit.test.ts && tsx src/lib/shoalLoop.test.ts && tsx src/ui/render.test.ts && tsx src/ui/input.test.ts && tsx src/ui/tether.test.ts && tsx src/ui/terrain.test.ts && tsx src/ui/terrainPaint.test.ts && tsx src/ui/wildView.test.ts && tsx src/ui/chainSea.test.ts && tsx src/ui/wayIn.test.ts && tsx src/ui/shellConfig.test.ts && tsx src/ui/seaChoice.test.ts && tsx src/ui/shallows.test.ts && tsx src/ui/App.test.ts && tsx src/ui/shippedStyles.test.ts && tsx src/ui/shippedConfig.test.ts",
+    "test": "tsx scripts/run-tests.ts",
     "mint": "tsx scripts/mint-water.ts"
   },
   "dependencies": {

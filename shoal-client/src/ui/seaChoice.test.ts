@@ -508,13 +508,43 @@ async function aShellConfigurationBecomesASea(): Promise<void> {
       check('...and the neighbouring hours are different rooms',
         (await roomIdIn(cfg.water, epochOf(t) - 1)) !== submit?.params.parent_id
         && (await roomIdIn(cfg.water, epochOf(t) + 1)) !== submit?.params.parent_id);
-      // AND THE CLIENT MADE THAT ROOM ITSELF, first.
-      const posted = node.seen.find((c) => c.method === 'submit_post');
+      // AND THE CLIENT MADE THAT ROOM ITSELF — WHICH IS WAITED FOR, because
+      // since plan 4d Task 2's F4 the write does not wait for the mint. The
+      // room id is derived, so the reply goes out at once and the `submit_post`
+      // lands whenever its Argon2id finishes. Asserting on `node.seen` the
+      // instant the reply arrives measured that ordering and nothing else.
+      const minted = await waitFor(
+        () => node.seen.some((c) => c.method === 'submit_post'), 30_000);
+      check('the client mints the room, on its own schedule rather than before the write',
+        minted, node.seen.map((c) => c.method));
+      //
+      // `find` — the FIRST `submit_post` — was wrong and fired for real on a
+      // full-suite run. A window mints the hour it opened in AND the next one,
+      // so there is always more than one; and if the run crosses the top of an
+      // hour, the first is not the hour `t` falls in. What is actually being
+      // claimed is that the room this vector went to is one THIS CLIENT MINTED,
+      // so that is what is asserted.
+      const posts = node.seen.filter((c) => c.method === 'submit_post');
+      const wantBody = `room:shoal:v1:${cfg.water.name}:${epochOf(t)}`;
       check('...having minted that room itself rather than waiting for one',
-        posted?.params.title === 'The Shoal'
-        && posted?.params.body === `room:shoal:v1:${cfg.water.name}:${epochOf(t)}`
-        && posted?.params.space_id === cfg.water.spaceId,
-        posted?.params);
+        posts.some((c) => c.params.title === 'The Shoal' && c.params.body === wantBody
+          && c.params.space_id === cfg.water.spaceId),
+        { wantBody, posted: posts.map((c) => c.params.body) });
+      check('...and every room it minted is an hour of THIS water, in its own space',
+        // Spelled out rather than regexed. A `\d` inside a TEMPLATE literal is
+        // just `d` — an unrecognised escape, silently — so the first version of
+        // this check tested `-?d+$` and failed on a body that was perfectly
+        // correct. Splitting on the grammar's own delimiter cannot go wrong
+        // that way, and says what it means.
+        posts.length >= 1 && posts.every((c) => {
+          const parts = String(c.params.body).split(':');
+          return c.params.title === 'The Shoal'
+            && parts.length === 5
+            && parts.slice(0, 4).join(':') === `room:shoal:v1:${cfg.water.name}`
+            && Number.isSafeInteger(Number(parts[4]))
+            && c.params.space_id === cfg.water.spaceId;
+        }),
+        posts.map((c) => c.params.body));
       check('...authored by the node', submit?.params.author_id === NODE_PUBKEY, submit?.params.author_id);
 
       // NOT "a reply was sent" — the BODY is decoded back with the real wire

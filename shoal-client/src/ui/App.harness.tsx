@@ -198,6 +198,16 @@ export interface Scenario {
   /** Wait (up to a generous ceiling) for the first write before settling.
    *  Off for scenarios that expect no write at all. */
   readonly awaitWrite?: boolean;
+  /**
+   * Wait for the window to have MINTED an hour's room before tearing down.
+   *
+   * Separate from `awaitWrite` because since plan 4d Task 2's F4 the two no
+   * longer happen in that order: the room id is derived, so the reply goes out
+   * at once and the `submit_post` lands whenever its Argon2id finishes. A
+   * scenario that waited for a write and then read `minted` was measuring that
+   * ordering, and got an empty array whenever the mine ran long.
+   */
+  readonly awaitMint?: boolean;
   /** How long to keep the window open at the end, so a sea that was going to
    *  be rebuilt has had its chance to open a second socket. */
   readonly settleMs: number;
@@ -692,6 +702,7 @@ export async function observe(s: Scenario): Promise<Observation> {
   }
 
   if (s.awaitWrite) await waitFor(() => submitted.length > 0, PATIENCE_MS);
+  if (s.awaitMint) await waitFor(() => minted.length > 0, PATIENCE_MS);
   if (s.press?.when === 'afterFirstWrite') pressKey();
 
   await sleep(s.settleMs);

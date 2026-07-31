@@ -38,7 +38,7 @@
  * is in the water. `App.harness.tsx` documents the rest of the boundary.
  */
 import { build } from 'esbuild';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, rmSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -53,7 +53,18 @@ function check(name: string, cond: boolean, extra?: unknown) {
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** Inside `node_modules/` so `react`, `react-dom` and `jsdom` resolve from the
  *  bundle exactly as they do from source, and so nothing lands in the tree. */
-const OUT = resolve(HERE, '../../node_modules/.cache/shoal-app-harness.mjs');
+/**
+ * The esbuild bundle this file drives the window through.
+ *
+ * THE PID IS IN THE NAME, and that is not tidiness. It was a fixed path, so two
+ * `npm test` runs in the same checkout — which is exactly what happens when a
+ * previous run has been left in the background, and what happened here — wrote
+ * the same file while the other was importing it. The result was not a failed
+ * check: the runner was KILLED mid-file, no summary, and a log that stopped in
+ * the middle of a section. Twice, at the same place, and it read like a flake
+ * in whatever test happened to be running.
+ */
+const OUT = resolve(HERE, `../../node_modules/.cache/shoal-app-harness-${process.pid}.mjs`);
 
 /**
  * Compile the harness the way a release build compiles the component.
@@ -305,11 +316,16 @@ async function main(): Promise<void> {
     // `roomArrivesAfterAsks: 1` makes `get_content` fail the first time it is
     // asked — the old gate's trigger — so this scenario is the one that used to
     // need a retry to get in at all.
-    const late = await observe({ roomArrivesAfterAsks: 1, awaitWrite: true, settleMs: 200 });
+    const late = await observe({ roomArrivesAfterAsks: 1, awaitWrite: true, awaitMint: true, settleMs: 200 });
     check('a node holding NO room post still gets the player into the water',
       reachedWater(late, rooms), late.submitted);
     check('...because the window MINTED the room itself rather than waiting for one',
       late.minted.length >= 1, late.minted);
+    check('...and every mint it made names an hour of THIS water, in THIS water\'s space',
+      late.minted.every((m) => m.title === 'The Shoal'
+        && new RegExp('^room:shoal:v1:main:-?\\d+$').test(m.body)
+        && m.space === water.spaceId),
+      late.minted);
     check('...and it never asked the network for a room post at all',
       !late.rpcCalls.includes('request_content'), late.rpcCalls);
 
@@ -348,13 +364,32 @@ async function main(): Promise<void> {
       reachedWater(hiccup, rooms), hiccup.submitted);
 
     // NON-DEGENERACY: minting must not have become a per-frame Argon2id loop.
-    // A window plays one hour, mints that hour and the next, and stops.
-    const clean = await observe({ awaitWrite: true, settleMs: 200 });
+    //
+    // A window mints THE HOUR IT IS IN AND THE NEXT ONE, and stops — but "and
+    // stops" has to be stated against the hours the window actually lived
+    // through, not against the number two. A run that happens to cross the top
+    // of an hour legitimately mints three: the hour it opened in, that hour's
+    // successor, and the successor of the hour it crossed into. That is the
+    // rotation working, and a check that read it as a failure fired for real on
+    // a full-suite run at 495959→495960 and took `App.test.ts` down with it.
+    //
+    // So the bound is derived from the clock the run was observed on, and it is
+    // still a bound: at most one mint per hour touched, plus one ahead of each.
+    const cleanFrom = epochOf(Date.now());
+    const clean = await observe({ awaitWrite: true, awaitMint: true, settleMs: 200 });
+    const cleanTo = epochOf(Date.now());
+    const legalHours = new Set<string>();
+    for (let e = cleanFrom; e <= cleanTo + 1; e++) legalHours.add(`room:shoal:v1:main:${e}`);
     check('NON-DEGENERACY: a window mints the hour it is in and the next one, and no more',
-      clean.minted.length >= 1 && clean.minted.length <= 2, clean.minted.map((m) => m.body));
-    check('NON-DEGENERACY: the two minted rooms are two DIFFERENT hours',
+      clean.minted.length >= 1
+      && clean.minted.length <= (cleanTo - cleanFrom + 2)
+      && clean.minted.every((m) => legalHours.has(m.body)),
+      { minted: clean.minted.map((m) => m.body), legal: [...legalHours] });
+    check('NON-DEGENERACY: every minted room is a DIFFERENT hour — no hour is mined twice',
       new Set(clean.minted.map((m) => m.body)).size === clean.minted.length,
       clean.minted.map((m) => m.body));
+    check('NON-DEGENERACY: ...and the bound really is a bound — a per-frame loop would blow it',
+      clean.minted.length <= 3, clean.minted.length);
 
     // THE LOCAL READ IS GONE TOO. `roomReady` asked `get_content` on every
     // attempt; nothing on this path does now, which is why the wait went away.
@@ -824,6 +859,10 @@ async function main(): Promise<void> {
 
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
+  // The per-process bundle is this run's alone; leaving one behind per run would
+  // fill `.cache` over a week of work.
+  rmSync(OUT, { force: true });
+  rmSync(`${OUT}.map`, { force: true });
   process.exit(failures === 0 ? 0 : 1);
 }
 

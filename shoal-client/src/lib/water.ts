@@ -105,40 +105,53 @@ const APP_CLASS_BYTE = 0x05;
 /**
  * The phantom property that makes `Water` NOMINAL rather than structural.
  *
- * ## WHY A BRAND, AFTER A SOURCE SCAN WAS ALREADY IN PLACE
+ * ## WHAT IT STOPS
  *
- * The review of the first round walked around the binding three ways with the
- * suite staying green, and the first was the one that matters: **a hand-built
- * object type-checked.** `Water` was a plain interface, so
- * `{ name: 'main', app: 'shoal', spaceName: '@shoal:main', spaceId: someOtherId }`
+ * An OBJECT LITERAL of the right shape. Before it, `Water` was a plain
+ * interface, so
+ * `{ name: 'main', app: 'shoal', spaceName: '@shoal:main', spaceId: <smoke's id> }`
  * satisfied it — a water whose name and space have nothing to do with each
  * other, accepted everywhere, deriving rooms nobody else derives, with no
- * symptom. Every argument in this module's header was true and none of it was
- * ENFORCED.
+ * symptom. `unique symbol` makes that a compile error: the key is a
+ * `declare const` with no runtime value, it is not exported, and `waterNamed`
+ * is the one place that casts.
  *
- * `unique symbol` is what fixes that. The key is a `declare const`, so it has
- * no runtime value and cannot be written by anyone — including this file, which
- * is why `waterNamed` ends in the one type assertion in this module. The symbol
- * is not exported, so no other module can even name the key. An object literal
- * of the right shape is therefore a compile ERROR at every call site, which is
- * strictly stronger than any check that runs later:
- *
- *     const w: Water = { name: 'main', app: 'shoal', spaceName: '@shoal:main',
- *                        spaceId: 'sp1…' };
+ *     const w: Water = { name: 'main', … };
  *     //    ~ Property '[waterBrand]' is missing
  *
- * ## WHAT THE BRAND COSTS, AND THE ONE HOLE IT DOES NOT CLOSE
+ * ## WHAT IT DOES NOT STOP, MEASURED RATHER THAN GUESSED
  *
- * It costs nothing at runtime: the property does not exist, so `Object.keys`,
- * `JSON.stringify` and structural equality are all unaffected.
+ * The whole-branch review walked around it FOUR ways, no casts, `tsc` exit 0
+ * every time, and built a water deriving `main`'s room against `smoke`'s space:
  *
- * The hole it leaves is SPREADING an existing water — `{ ...realWater, name:
- * 'smoke' }` keeps the brand and still type-checks. That is narrower than what
- * it closes (you must already hold a genuine `Water`, which means you called
- * `waterNamed`), and it is not free to close: making the type opaque enough to
- * survive a spread would mean hiding the fields, and `name`/`spaceId` are read
- * by half a dozen legitimate callers. It is called out here rather than papered
- * over, and `water.test.ts` §1 pins the shape of what is and is not possible.
+ *   1. `JSON.parse(...)` — returns `any`, and `any` satisfies anything;
+ *   2. any other `any` at a boundary — config, IPC, an untyped RPC result;
+ *   3. `Object.assign(structuredClone(realWater), { spaceId: other })`;
+ *   4. a generic helper — `patch<T>(base: T, over: Partial<T>): T`.
+ *
+ * A SPREAD of a genuine water (`{ ...real, name: 'smoke' }`) is a fifth: it
+ * carries the brand along and type-checks.
+ *
+ * ## THE RULING: THE BRAND IS KEPT, AND IT IS NOT THE DEFENCE
+ *
+ * None of those five can be closed by any type. `any` is the language's own
+ * escape hatch and a generic `T` is indistinguishable from a real one at the
+ * type level; closing the spread would mean hiding `name` and `spaceId`, which
+ * half a dozen legitimate callers read. **So the honest claim is: the brand
+ * stops the mistake somebody makes by accident, and nothing else.** It is worth
+ * keeping for exactly that — an object literal is what a hurried caller writes
+ * — and it is worth NOT trusting for anything more.
+ *
+ * The defence that does hold is `verifyWater` below, which is a RUNTIME check
+ * and therefore blind to how the value was typed. `chainSea` runs it once per
+ * sea, before it will write anything. All five walk-arounds fail it, because
+ * none of them can make `sha256("app:shoal:v1:" + name)` come out as some other
+ * space's id.
+ *
+ * This paragraph replaces an earlier one claiming production was "enforced by
+ * the type". It was not, the review proved it was not, and a comment that
+ * claims more than the code delivers is how fourteen defects on this project
+ * started.
  */
 declare const waterBrand: unique symbol;
 
@@ -146,8 +159,11 @@ declare const waterBrand: unique symbol;
  * A named body of water and everything that name determines: the space every
  * write goes into, and (through `roomIdIn`) the room for any hour.
  *
- * PRODUCED ONLY BY `waterNamed`, and now that is enforced by the type rather
- * than asked for in a comment — see `waterBrand` above.
+ * EVERY PRODUCER IN THIS CLIENT IS `waterNamed`, and two separate things hold
+ * that: the brand above makes an accidental hand-built one a compile error, and
+ * `verifyWater` below catches a deliberate one at runtime. Neither is
+ * sufficient alone and the brand is the weaker of the two — see `waterBrand`
+ * for exactly what it does and does not cover.
  */
 export interface Water {
   /** The phantom brand. Not present at runtime; see `waterBrand`. */
@@ -217,6 +233,59 @@ export async function waterNamed(name: string): Promise<Water> {
     spaceName: `@${WATER_APP}:${name}`,
     spaceId: encodeWireSpaceId(id16),
   } as Water;
+}
+
+/**
+ * Re-derive a water from its OWN name and refuse it if the space disagrees.
+ *
+ * ## WHY A RUNTIME CHECK WHEN THERE IS A BRAND
+ *
+ * Because the brand is a type, and a type is exactly what `any` erases. The
+ * whole-branch review produced five `Water` values that no compiler objected to
+ * (see `waterBrand`), one of which derived `main`'s rooms against `smoke`'s
+ * space — the symptomless fork this module exists to prevent, reached without a
+ * single cast.
+ *
+ * This is blind to all of that. It takes the `name` the water is carrying, runs
+ * the one derivation over it, and compares. A forged water is one whose
+ * `spaceId` did not come from its own `name`, which is precisely the thing that
+ * fails here and precisely the thing that would fork the population.
+ *
+ * ## IT COSTS ONE SHA-256 PER SEA
+ *
+ * `chainSea` runs it once, in `ctxReady`, before any write or mint — so a
+ * forged water writes nothing at all and says why, instead of writing
+ * everything into a room nobody shares and saying nothing. Not per write:
+ * a `Water` is immutable and the answer cannot change.
+ *
+ * IT IS NOT A SECURITY BOUNDARY and does not pretend to be — a caller
+ * determined to write into the wrong space can call `submit_reply` directly.
+ * What it removes is the case that has no symptom: code that believed it held a
+ * genuine water and did not.
+ *
+ * Throws rather than repairing. A water whose two halves disagree is a caller
+ * that does not know which one it meant, and picking one for it would be
+ * choosing which of two seas to silently move somebody to.
+ */
+export async function verifyWater(water: Water): Promise<void> {
+  const derived = await waterNamed(water.name);
+  if (derived.spaceId !== water.spaceId) {
+    throw new RangeError(
+      `verifyWater: this water calls itself ${JSON.stringify(water.name)}, whose space is `
+      + `${derived.spaceId} — but it is carrying ${water.spaceId}. Its name and its space did `
+      + 'not come from the same string, so every room it derives belongs to a space its writes '
+      + 'are not going to: a sea that is real, healthy, reply-able and shared with nobody. A '
+      + '`Water` must come from `waterNamed` and nothing else (see the module header on why the '
+      + 'brand alone cannot enforce that).',
+    );
+  }
+  if (derived.app !== water.app || derived.spaceName !== water.spaceName) {
+    throw new RangeError(
+      `verifyWater: ${JSON.stringify(water.name)} derives app ${JSON.stringify(derived.app)} / `
+      + `${JSON.stringify(derived.spaceName)}, but this water carries `
+      + `${JSON.stringify(water.app)} / ${JSON.stringify(water.spaceName)}.`,
+    );
+  }
 }
 
 // ===================================================================================

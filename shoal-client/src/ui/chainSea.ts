@@ -237,7 +237,9 @@
 import { advance, createLoop, type LoopState } from '../lib/shoalLoop';
 import { epochOf } from '../lib/epoch';
 import { fetchRooms } from '../lib/shoalRoom';
-import { roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, type Water } from '../lib/water';
+import {
+  roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, verifyWater, type Water,
+} from '../lib/water';
 import { adoptCheckpoint, type Adoption } from '../lib/adopt';
 import { DEFAULT_POLL_INTERVAL_MS, startLive } from '../lib/shoalLive';
 import {
@@ -307,6 +309,12 @@ export interface ChainSeaConfig {
    * being let into the water (spec §2.16) shows up as a write that stops being
    * refused, which is not an event any `onError` can ever report.
    *
+   * IT FIRES FOR ROOM MINTS TOO (`noteMintFailure`), on failure only. A mint is
+   * a `submit_post` through the same gate, and it is the only call that can
+   * report -32014 — the water does not exist on this node's chain — which no
+   * reply failure can express. See `noteMintFailure` for why successes are
+   * deliberately not reported from that path.
+   *
    * `chainSea` itself draws no conclusion from the kind. Deciding what a
    * refusal means to a player belongs to `wayIn.ts`, and the words belong to
    * `TheEdge.tsx`; this file stays as free of player-facing copy as it was.
@@ -374,6 +382,39 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
    */
   const noteWrite = (failure: SendFailure | null) => { cfg.onWrite?.(failure); };
 
+  /**
+   * A room mint that failed, on BOTH channels — and the second one is the point.
+   *
+   * A mint is a `submit_post`: a real write, to the same node, through the same
+   * ingestion gate as every reply. It used to be reported only to `onError`, a
+   * developer channel carrying a raw thrown value that nothing acts on, and
+   * that left one fact with nowhere to go.
+   *
+   * THE FACT: `submit_post` is the ONLY call in this client that can ever
+   * return -32014 (`SpaceNotFound`, methods.rs:2296-2310) — the water itself is
+   * not on this node's chain, because nobody has minted it on this network. The
+   * reply that follows fails too, but with `InvalidContentId`, which classifies
+   * as `'unknown'` and says nothing. So the shell saw a run of anonymous
+   * failures and an empty sea, with no way to tell "there is no water here"
+   * from "nobody is swimming". Reproduced end to end; the report's I4.
+   *
+   * FAILURES ONLY, NEVER SUCCESSES, and the asymmetry is deliberate.
+   * `noteWrite(null)` is what lifts the edge of the water (`wayIn.ts`), and a
+   * mint succeeds at most twice an hour on a schedule of its own — so lifting
+   * on one would put a second, slower, differently-timed path in front of the
+   * signal the whole design rests on. A successful mint proves the same thing a
+   * successful presence proves, and a presence follows within seconds anyway.
+   */
+  const noteMintFailure = (where: 'mintRoom' | 'mintRoomAhead') => (e: unknown) => {
+    // The two labels are kept apart on the DEVELOPER channel — an ahead-mint
+    // for an hour that has not started is a different event from the mint this
+    // client needs right now, and collapsing them cost a test its only precise
+    // wait. The TYPED channel does not distinguish them, because a shell acting
+    // on `no-water` does not care which hour could not be minted.
+    report(where, e);
+    noteWrite(classifySendFailure(e));
+  };
+
   let remote: LogEntry[] = [];
   let pending: LogEntry[] = [];
   let published: CheckpointEntry[] = [];
@@ -430,6 +471,19 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   // write is authored, so each write builds its own from this base.
   type BaseCtx = Omit<SendCtx, 'roomContentId'>;
   const ctxReady: Promise<BaseCtx> = (async () => {
+    // THE WATER IS RE-DERIVED FROM ITS OWN NAME BEFORE ANYTHING IS WRITTEN.
+    //
+    // One sha256, once per sea. `Water` is branded, which stops an accidental
+    // hand-built one at compile time — and stops nothing that has passed
+    // through an `any` (`JSON.parse`, IPC, config, a generic helper), all four
+    // of which the whole-branch review used to produce a water deriving one
+    // water's rooms against another water's space. That is the symptomless fork
+    // this whole plan is about, so it is checked rather than trusted.
+    //
+    // It is HERE, in `ctxReady`, because every write and every mint awaits this
+    // promise: a water that fails writes nothing at all and says why, rather
+    // than writing everything into a sea nobody shares and saying nothing.
+    await verifyWater(cfg.water);
     const [signer, powProfile] = await Promise.all([cfg.signer, powProfileFor(cfg.auth)]);
     if (signer.publicKeyHex !== cfg.authorIdHex) {
       // Not fatal to rendering — the sea still folds and draws — but every
@@ -447,7 +501,10 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       powProfile,
     };
   })();
-  ctxReady.catch((e) => { report('signer', e); });
+  // `'context'` and not `'signer'`: this promise now carries the water check
+  // as well as the signing key, and a label that named only one of them
+  // would misdescribe half its failures.
+  ctxReady.catch((e) => { report('context', e); });
 
   /** This water's room for `epoch`, derived once and held. */
   function roomIdOf(epoch: number): Promise<string> {
@@ -473,13 +530,26 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
    * a schedule of this module's own would mine an Argon2id Post every frame for
    * a player the water has refused, which is precisely the wrong answer.
    *
-   * THE NODE'S ANSWER IS CHECKED AGAINST THE DERIVATION, and that check is not
-   * ceremony — it is the only place in this client where the room grammar meets
-   * a real node. `submit_post` re-derives `content_id` from
-   * `sha256(title + "\n\n" + body)` itself (methods.rs:2221-2223), so if this
-   * client's preimage ever stopped agreeing with the node's, every write would
-   * go to a room nobody else derives and NOTHING would look wrong. Here it
-   * throws instead.
+   * THE NODE'S ANSWER IS CHECKED AGAINST THE DERIVATION, and here is exactly
+   * what that is and is not worth. `submit_post` re-derives `content_id` from
+   * `sha256(title + "\n\n" + body)` itself (methods.rs:2221-2223), so a
+   * disagreement means this client's preimage and the node's have drifted —
+   * which is a fork with no symptom, and this is the one place in the client
+   * where the two meet.
+   *
+   * WHAT IT DOES NOT DO, because an earlier draft of this comment implied it
+   * did: it does not PROTECT the write. Two reasons, both real:
+   *
+   *  - it only runs when THIS client mints. A room a peer minted an hour ago is
+   *    never checked by anybody here, and that is the ordinary case;
+   *  - `roomFor` no longer waits on the mint (see its own doc), so a throw here
+   *    lands in a `report('mintRoom', …)` on the developer channel while the
+   *    write goes out regardless, addressed to the room this client derived.
+   *
+   * So it is a TRIPWIRE on a drift that would otherwise be invisible, not a
+   * gate in front of anything. It is worth the line it costs for that alone —
+   * a drifted grammar would show up in a log rather than never — and it should
+   * not be relied on for more.
    */
   function ensureRoom(epoch: number, nowMs: number): Promise<string> {
     const held = mints.get(epoch);
@@ -491,6 +561,11 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     }
     const mint = (async () => {
       const [base, derived] = await Promise.all([ctxReady, roomIdOf(epoch)]);
+      // TORN DOWN WHILE WE WAITED. `ctxReady` is a `get_info` round trip and a
+      // signer, so a sea built and stopped in quick succession — which is what
+      // `App.tsx` does every time the standing changes — can reach here after
+      // `stop()`. A stopped sea must not write, and `submit_post` is a write.
+      if (stopped) return derived;
       const answered = await mintRoom(base, roomTextIn(cfg.water, epoch), nowMs);
       if (answered !== derived) {
         throw new Error(
@@ -548,7 +623,8 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
   async function roomFor(base: BaseCtx, authoredMs: number): Promise<SendCtx> {
     const epoch = epochOf(authoredMs);
     // FIRED, NEVER AWAITED. See the doc above on why the write does not wait.
-    void ensureRoom(epoch, authoredMs).catch((e) => { report('mintRoom', e); });
+    // Its outcome still reaches BOTH channels — see `noteMintFailure`.
+    void ensureRoom(epoch, authoredMs).catch(noteMintFailure('mintRoom'));
     return { ...base, roomContentId: await roomIdOf(epoch) };
   }
 
@@ -577,9 +653,9 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
     }
     void refetch(); // the pair of rooms has changed; read the new one now
     void ensureRoom(epoch, nowMs)
-      .catch((e) => { report('mintRoom', e); })
+      .catch(noteMintFailure('mintRoom'))
       .then(() => ensureRoom(epoch + 1, lastFrameMs))
-      .catch((e) => { report('mintRoomAhead', e); });
+      .catch(noteMintFailure('mintRoomAhead'));
   }
 
   /**
@@ -790,10 +866,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
         // other write — a checkpoint that could not mint its room is still
         // worth attempting, because a peer has almost certainly minted it.
         const ctx = { ...c, roomContentId: await roomIdOf(cp.epoch + 1) };
-        try { await ensureRoom(cp.epoch + 1, nowMs); } catch (e) { report('mintRoom', e); }
-        return sendCheckpoint(ctx, cp, nowMs);
+        try { await ensureRoom(cp.epoch + 1, nowMs); } catch (e) { noteMintFailure('mintRoom')(e); }
+        if (stopped) return false;
+        await sendCheckpoint(ctx, cp, nowMs);
+        return true;
       })
-      .then(() => { noteWrite(null); return refetch(); })
+      .then((sent) => { if (!sent) return undefined; noteWrite(null); return refetch(); })
       .catch((e) => {
         noteWrite(classifySendFailure(e));
         report('sendCheckpoint', e);
@@ -826,8 +904,17 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       });
       void ctxReady
         .then((c) => roomFor(c, vec.t))
-        .then((c) => sendPresence(c, vec, say))
-        .then(() => { noteWrite(null); return refetch(); })
+        .then(async (c) => {
+          // THE WHOLE TAIL IS SKIPPED, not just the send. Gating only the send
+          // left `noteWrite(null)` firing for a write that never happened —
+          // and `null` is what lifts the edge of the water (`wayIn.ts`), so a
+          // sea torn down mid-write would have told the shell this swimmer had
+          // been let in on the strength of a write it never made.
+          if (stopped) return;
+          await sendPresence(c, vec, say);
+          noteWrite(null);
+          await refetch();
+        })
         .catch((e) => {
           // A dart nobody was told about is not a dart. Take the claim back
           // before reporting, so the sea on screen is the sea that exists.
@@ -842,8 +929,12 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       pending.push({ kind: 'eat', id: cfg.authorIdHex, cell, ms, hash });
       void ctxReady
         .then((c) => roomFor(c, ms))
-        .then((c) => sendEat(c, cell, ms))
-        .then(() => { noteWrite(null); return refetch(); })
+        .then(async (c) => {
+          if (stopped) return; // see `publish` — the whole tail, not just the send
+          await sendEat(c, cell, ms);
+          noteWrite(null);
+          await refetch();
+        })
         .catch((e) => {
           // Otherwise this client alone believes it grew.
           withdraw((p) => p.hash === hash);
@@ -900,6 +991,16 @@ export function chainSea(cfg: ChainSeaConfig): ChainSea {
       return loop.state;
     },
 
+    /**
+     * Tear down the live socket and the timers — AND STOP WRITING.
+     *
+     * The second half is not decoration. `App.tsx` rebuilds this sea whenever
+     * the standing changes, and a torn-down sea whose Argon2id mine was still
+     * running would go on to submit a post or a reply afterwards: a write from
+     * an object nothing holds any more, into a room the surviving sea may not
+     * even be reading. Every send path re-checks `stopped` after the awaits
+     * that precede it, which is the only point at which it can have changed.
+     */
     stop(): void {
       stopped = true;
       live.stop();

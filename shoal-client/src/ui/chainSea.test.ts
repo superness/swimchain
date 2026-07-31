@@ -145,6 +145,9 @@ interface Stub {
    *  node takes when this identity is not sponsored, or when the space is
    *  not one it will accept a post into. */
   rejectMint: boolean;
+  /** The JSON-RPC code a refused `submit_post` carries. -32015 by default (the
+   *  unsponsored gate); §9m sets -32014, which only `submit_post` can return. */
+  mintErrorCode: number;
   /**
    * The JSON-RPC `code` that rejection carries. Default -32000 is the shape of
    * open item 2's failure on a network that enforces the space gate at
@@ -159,11 +162,18 @@ interface Stub {
   /** Every room post the sea MINTED (`submit_post`), in order. Successes only —
    *  a `rejectMint` run pushes nothing here. */
   minted: { title: string; body: string; space: string }[];
-  /** Every `submit_post` ATTEMPT's body, in order, refused or not. Counted per
-   *  HOUR rather than in total: the ahead-mint for `epoch + 1` is chained
-   *  behind the current hour's and lands whenever it lands, so a total is a
-   *  race and a per-hour count is not. */
-  mintAttempts: string[];
+  /**
+   * Every `submit_post` ATTEMPT, in order, refused or not — body AND space.
+   *
+   * Counted per HOUR rather than in total, because the ahead-mint for
+   * `epoch + 1` is chained behind the current hour's and lands whenever it
+   * lands. And the SPACE is here because a sea that has been `stop()`ped can
+   * still have a mine in flight — `stop()` closes the socket and the timers, it
+   * cannot un-mine an Argon2id — so a late `submit_post` from a PREVIOUS
+   * section can land on this section's stub. Scoping a count to the space under
+   * test makes that impossible to mistake for the behaviour being measured.
+   */
+  mintAttempts: { body: string; space: string }[];
   /** Every `content_id` `get_replies` was asked for, in order. The crossing is
    *  visible here: a fold of epoch E asks for E-1's room and E's, every time. */
   roomsRead: string[];
@@ -186,6 +196,7 @@ function installStub(): { stub: Stub; restore: () => void } {
     replies: [],
     rejectSubmit: false,
     rejectMint: false,
+    mintErrorCode: -32_015,
     repliesDelayMs: 0,
     mintDelayMs: 0,
     submitDoneAtMs: [],
@@ -239,7 +250,9 @@ function installStub(): { stub: Stub; restore: () => void } {
     }
     if (req.method === 'submit_post') {
       stub.calls.submitPost++;
-      stub.mintAttempts.push(req.params?.body ?? '');
+      stub.mintAttempts.push({
+        body: req.params?.body ?? '', space: req.params?.space_id ?? '',
+      });
       if (stub.mintDelayMs > 0) {
         await new Promise((r) => setTimeout(r, stub.mintDelayMs));
       }
@@ -247,7 +260,7 @@ function installStub(): { stub: Stub; restore: () => void } {
       if (stub.rejectMint) {
         return json({
           jsonrpc: '2.0', id: req.id,
-          error: { code: -32_015, message: 'Identity is not sponsored' },
+          error: { code: stub.mintErrorCode, message: 'refused' },
         });
       }
       // MINTING AN HOUR'S ROOM. Answered exactly as the node answers it —
@@ -333,6 +346,7 @@ function makeSea(
   onError?: (where: string, err: unknown) => void,
   onWrite?: (failure: SendFailure | null) => void,
   openAtMs: number = EPOCH_START,
+  signerDelayMs = 0,
 ): ChainSea {
   return chainSea({
     openedAtMs: openAtMs,
@@ -340,12 +354,21 @@ function makeSea(
     auth: { endpoint: ENDPOINT, authHeader: null },
     water: WATER,
     authorIdHex: ID,
-    signer: Promise.resolve({
-      publicKeyHex: ID,
-      // The node is stubbed, so nothing verifies this — but it must be 64
-      // bytes or `mineAndSignAction` throws before the submit is reached.
-      sign: async () => new Uint8Array(64),
-    }),
+    // `signerDelayMs` HOLDS THE MINT BACK WITHOUT HOLDING THE READ BACK, which
+    // is the exact shape of the race §9i used to have. `refetch` never awaits
+    // `ctxReady`; `ensureRoom` does, and then mines Argon2id on top. So a slow
+    // signer models a slow mine faithfully, and deterministically.
+    signer: signerDelayMs === 0
+      ? Promise.resolve({
+        publicKeyHex: ID,
+        // The node is stubbed, so nothing verifies this — but it must be 64
+        // bytes or `mineAndSignAction` throws before the submit is reached.
+        sign: async () => new Uint8Array(64),
+      })
+      : new Promise((resolve) => {
+        setTimeout(() => resolve({ publicKeyHex: ID, sign: async () => new Uint8Array(64) }),
+          signerDelayMs);
+      }),
     spawn: { x: CENTRE.x, y: CENTRE.y },
     onError: onError ?? (() => { /* errors are the subject here, not a failure of the run */ }),
   });
@@ -363,6 +386,36 @@ async function until(pred: () => boolean, what: string, timeoutMs = 15_000): Pro
   // One more turn, so the continuation that follows the predicate's own
   // await (the refetch a successful send chains onto) has run too.
   await new Promise((r) => setTimeout(r, 30));
+}
+
+/**
+ * Wait until this stub has been quiet for `quietMs` — no new `submit_post` and
+ * no new `submit_reply`.
+ *
+ * ## WHY EVERY SECTION THAT PUBLISHES ENDS WITH THIS
+ *
+ * `sea.stop()` closes the socket and the timers, and since this branch it also
+ * refuses to send after the awaits it can reach — but it cannot un-mine an
+ * Argon2id that is already running. So a section that published could leave a
+ * mine in flight, and the NEXT section's `installStub` would then receive that
+ * write. Twice on this branch a section measuring "nothing was minted for hour
+ * X" read a 1 it did not cause, and both times the temptation was to loosen the
+ * assertion — which would have been throwing away the check to keep the run
+ * green.
+ *
+ * This drains instead. It is bounded, and a timeout is deliberately silent: it
+ * is hygiene between sections, not a claim any section is making.
+ */
+async function quiesce(stub: Stub, quietMs = 250, capMs = 8_000): Promise<void> {
+  const deadline = Date.now() + capMs;
+  let last = -1;
+  let quietSince = Date.now();
+  while (Date.now() < deadline) {
+    const n = stub.calls.submitPost + stub.calls.submit;
+    if (n !== last) { last = n; quietSince = Date.now(); }
+    else if (Date.now() - quietSince >= quietMs) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
 }
 
 // ===========================================================================
@@ -412,6 +465,7 @@ async function landedEatMustNotRetireAPendingVector(): Promise<void> {
     check('the pending vector survived the landed eat claim (heading 64, not 0)',
       me?.vec.heading === 64, { heading: me?.vec.heading });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -443,6 +497,7 @@ async function landedVectorMustNotRetireAPendingEat(): Promise<void> {
     check('the pending eat claim survived the landed vector (one bite credited)',
       state.bitesTaken.get(CELL) === 1, { bitesTaken: state.bitesTaken.get(CELL) });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -486,6 +541,7 @@ async function aRejectedWriteIsRolledBack(): Promise<void> {
     check('after the refusal the world is back on the vector that really landed (heading 0)',
       after.fish.get(ID)?.vec.heading === 0, { heading: after.fish.get(ID)?.vec.heading });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -538,6 +594,7 @@ async function anUnansweredRowExpires(): Promise<void> {
     check('...and the swimmer is still in the sea (the presences kept it alive)',
       atTheBound.fish.get(ID) !== undefined);
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -878,6 +935,7 @@ async function aClientThatCrossesTheBoundaryPublishesAndAJoinerAdopts(): Promise
         && unseededShelter < SHELTER_THRESHOLD,
       { adoptedShelter, unseededShelter, SHELTER_THRESHOLD });
   } finally {
+    await quiesce(stub);
     for (const s of seas) s.stop();
     restore();
   }
@@ -939,6 +997,7 @@ async function twoCheckpointsForOneEpochAreReported(): Promise<void> {
     check('hand-derived: the tie breaks on the lower content hash, and the sea folds on',
       state.fish.get(OTHER)?.size === 60, state.fish.get(OTHER)?.size);
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -965,6 +1024,7 @@ async function noCheckpointIsSkippedCleanly(): Promise<void> {
     check('...and the sea still folds — OTHER arrives as a stranger at 92',
       state.fish.get(OTHER)?.size === 92, state.fish.get(OTHER)?.size);
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1011,6 +1071,7 @@ async function adoptionCatchesUpWhenTheFirstFrameBeatsTheFetch(): Promise<void> 
       second.fish.get(OTHER)?.size === 60, second.fish.get(OTHER)?.size);
     check('...and ID is 98', second.fish.get(ID)?.size === 98, second.fish.get(ID)?.size);
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1059,6 +1120,7 @@ async function writeOnce(
     for (const f of seen) standing = afterWrite(standing, f);
     return { standing, seen, errors };
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1312,6 +1374,7 @@ async function theCrossingReadsExactlyTwoRooms(): Promise<void> {
       && admitFloorMs(EPOCH) > epochStartMs(EPOCH - 1),
       { floor: admitFloorMs(EPOCH), prevStart: epochStartMs(EPOCH - 1) });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1395,6 +1458,7 @@ async function theUnionIsThePreChangeFold(): Promise<void> {
       fingerprint(later) === fingerprint(singleRoomFold(WELL_INTO)),
       { union: fingerprint(later), before: fingerprint(singleRoomFold(WELL_INTO)) });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1428,6 +1492,7 @@ async function readingOnlyTheCurrentRoomDiverges(): Promise<void> {
       oneRoom.fish.get(ID)?.size !== before.fish.get(ID)?.size,
       { oneRoom: oneRoom.fish.get(ID)?.size, before: before.fish.get(ID)?.size });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1465,6 +1530,7 @@ async function aJoinerInTheWarmUpSeesTheSameSea(): Promise<void> {
       fingerprint(lateState) === fingerprint(singleRoomFold(WELL_INTO)),
       { late: fingerprint(lateState), before: fingerprint(singleRoomFold(WELL_INTO)) });
   } finally {
+    await quiesce(stub);
     for (const s of seas) s.stop();
     restore();
   }
@@ -1505,6 +1571,7 @@ async function everyWriteGoesToTheRoomOfItsOwnHour(): Promise<void> {
     check('the room it landed in is one of the pair a fold of epoch E reads',
       roomEpochsFor(EPOCH).includes(EPOCH - 1), roomEpochsFor(EPOCH));
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1583,6 +1650,7 @@ async function everyClientMintsItsOwnHour(): Promise<void> {
       stub.submitted[submittedBefore]?.parent === (await roomIdIn(WATER, EPOCH + 3)),
       { got: stub.submitted[submittedBefore]?.parent, want: await roomIdIn(WATER, EPOCH + 3) });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1621,6 +1689,7 @@ async function theCheckpointGoesIntoTheOpeningRoom(): Promise<void> {
     check('...so a client reading only epoch E+1\'s room can still adopt it',
       seeds.length === 1, seeds.map((r) => r.parent_id));
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1671,9 +1740,16 @@ async function aFailedMintDoesNotSwallowTheWrite(): Promise<void> {
     check('...into the room this client DERIVES for that hour, not into nothing',
       stub.submitted[0]?.parent === PREV_ROOM,
       { got: stub.submitted[0]?.parent, want: PREV_ROOM });
-    await until(() => seen.length >= 1, 'the write outcome', 10_000).catch(() => {});
+    await until(() => seen.includes(null), 'the write outcome', 10_000).catch(() => {});
+    // `includes` AND NOT `seen[0]`: the refused MINT is reported on this channel
+    // too now (see `noteMintFailure`), so the write's acceptance is no longer
+    // necessarily first. What matters is that it ARRIVES — `null` is the only
+    // signal that can ever lift the edge of the water.
     check('...and its outcome reached the way-in channel, which is the only signal that can '
-      + 'ever lift the edge of the water', seen[0] === null, seen[0]);
+      + 'ever lift the edge of the water', seen.includes(null),
+      seen.map((f) => f?.kind ?? 'accepted'));
+    check('...alongside the refused mint, which is a write to the same node through the same gate',
+      seen.some((f) => f?.kind === 'not-sponsored'), seen.map((f) => f?.kind ?? 'accepted'));
     check('the refused mint is still REPORTED, loudly, on the developer channel',
       errors.includes('mintRoom'), errors);
 
@@ -1683,6 +1759,7 @@ async function aFailedMintDoesNotSwallowTheWrite(): Promise<void> {
     check('NON-DEGENERACY: a mint really was attempted and really was refused',
       stub.minted.length === 0 && errors.filter((e) => e === 'mintRoom').length >= 1, errors);
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1697,11 +1774,31 @@ async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
   // `PRESENCE_TTL_MS` rather than a number somebody liked.
   const { stub, restore } = installStub();
   let sea: ChainSea | null = null;
+  const errors: string[] = [];
   try {
     stub.rejectMint = true;
     stub.replies = crossingReplies();
-    sea = makeSea(undefined, undefined, JUST_AFTER);
-    await until(() => stub.calls.getReplies >= 2, 'both rooms');
+    // THE SIGNER IS HELD BACK 300 ms, which holds the MINT back and not the
+    // READ. That is not decoration: it is this check's own former race, made
+    // deterministic and pointed the other way. See below.
+    sea = makeSea((where) => { errors.push(where); }, undefined, JUST_AFTER, 300);
+
+    // ── WAIT ON THE TRANSITION THIS CHECK ACTUALLY DEPENDS ON ─────────────
+    //
+    // It used to wait on `getReplies >= 2` and then count MINT ATTEMPTS. Those
+    // are two different clocks: `refetch` needs a sha256 and a stubbed fetch,
+    // while a mint needs `ctxReady` (a `get_info` round trip) AND an Argon2id
+    // mine on top — so the reads finish first essentially always, and "first"
+    // is not "before". Under a loaded full-suite run it lost, and because
+    // `npm test` was `&&`-chained a single loss took SIX LATER FILES with it:
+    // 354 of 2277 checks never ran. A flake that removes a sixth of the suite
+    // is worse than the thing it was flaking about.
+    //
+    // What the cooldown is armed by is the mint's REJECTION — `ensureRoom`'s
+    // own `.catch` writes `mintFailedAtMs` before the caller's `.catch`
+    // reports, so a reported 'mintRoom' means the state under test exists.
+    // That is what is waited on now, and there is no clock left to race.
+    await until(() => errors.includes('mintRoom'), 'the opening mint to be refused', 15_000);
     // COUNTED FOR THIS HOUR ONLY. A total over every `submit_post` races the
     // AHEAD-mint: `noteEpoch` chains `ensureRoom(epoch + 1)` behind
     // `ensureRoom(epoch)`, so the second attempt lands at some point after the
@@ -1709,10 +1806,11 @@ async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
     // authored in `epoch`. Counting the total made this test flaky and, worse,
     // made it flaky for a reason that was not the behaviour under test.
     const thisHour = `room:shoal:v1:main:${EPOCH}`;
-    const attemptsForThisHour = () => stub.mintAttempts.filter((b) => b === thisHour).length;
+    const attemptsForThisHour = () => stub.mintAttempts.filter((a) => a.body === thisHour).length;
     const attemptsAfterOpen = attemptsForThisHour();
-    check('NON-DEGENERACY: opening the sea did attempt a mint for this hour',
-      attemptsAfterOpen === 1, stub.mintAttempts);
+    check('NON-DEGENERACY: opening the sea did attempt a mint for this hour, and it was refused',
+      attemptsAfterOpen === 1 && errors.filter((e) => e === 'mintRoom').length === 1,
+      { attempts: stub.mintAttempts, errors });
 
     // Four writes inside the cooldown. None of them may mine another Post.
     for (let i = 1; i <= 4; i++) {
@@ -1733,6 +1831,7 @@ async function aRefusedMintIsNotRetriedOnEveryWrite(): Promise<void> {
     check('a write past the cooldown DOES try to mint again', retried,
       { before: attemptsAfterOpen, after: attemptsForThisHour() });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1791,6 +1890,7 @@ async function aRolloverReadIsNotDroppedByAReadInFlight(): Promise<void> {
       stub.calls.getReplies - roundsBefore <= 4,
       { before: roundsBefore, after: stub.calls.getReplies });
   } finally {
+    await quiesce(stub);
     sea?.stop();
     restore();
   }
@@ -1833,8 +1933,197 @@ async function theFirstWriteDoesNotQueueBehindItsOwnMint(): Promise<void> {
     check('NON-DEGENERACY: the mint really was in flight and really did land, later',
       minted && stub.mintDoneAtMs[0] - openedAt >= 600,
       { mint: (stub.mintDoneAtMs[0] ?? -1) - openedAt });
+
+    // DRAIN THE AHEAD-MINT BEFORE LEAVING. `stop()` closes the socket and the
+    // timers; it cannot un-mine an Argon2id, so the `epoch + 1` mint chained
+    // behind the one above would otherwise still be in flight when the next
+    // section installs its own stub — and land on it. That is how a section
+    // measuring "nothing was written" reads a 1 it did not cause.
+    await until(() => stub.minted.length >= 2, 'the ahead-mint to drain', 10_000).catch(() => {});
   } finally {
+    await quiesce(stub);
     sea?.stop();
+    restore();
+  }
+}
+
+async function aForgedWaterWritesNothing(): Promise<void> {
+  console.log('\n9l. a water whose space did not come from its own name writes NOTHING');
+  // The brand makes a hand-built `Water` a compile error and stops nothing that
+  // came through an `any`. `chainSea` therefore re-derives the water from its
+  // own name once, in `ctxReady`, before any write or mint — so a forged water
+  // fails closed and loudly, instead of writing every vector into a room that
+  // belongs to somebody else's space and looking perfectly healthy.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const errors: { where: string; err: unknown }[] = [];
+  try {
+    // Forged the way the review forged it: through `JSON.parse`, which is
+    // `any`, with no cast anywhere.
+    const other = await waterNamed('smoke');
+    const forged: typeof WATER = JSON.parse(JSON.stringify({ ...WATER, spaceId: other.spaceId }));
+    check('NON-DEGENERACY: the forgery really is one — same name, another space',
+      forged.name === WATER.name && forged.spaceId === other.spaceId
+      && forged.spaceId !== WATER.spaceId, { name: forged.name, spaceId: forged.spaceId });
+    check('NON-DEGENERACY: ...and it really would derive this water\'s rooms',
+      (await roomIdIn(forged, EPOCH)) === ROOM);
+
+    stub.replies = crossingReplies();
+    sea = chainSea({
+      openedAtMs: JUST_AFTER,
+      auth: { endpoint: ENDPOINT, authHeader: null },
+      water: forged,
+      authorIdHex: ID,
+      signer: Promise.resolve({ publicKeyHex: ID, sign: async () => new Uint8Array(64) }),
+      spawn: { x: CENTRE.x, y: CENTRE.y },
+      onError: (where, err) => { errors.push({ where, err }); },
+    });
+    sea.publish(vecAtOn(JUST_AFTER, CENTRE));
+
+    // Bounded, and A TIMEOUT IS A FAILED CHECK. The mutation this section exists
+    // for (neuter `verifyWater`) means the refusal never comes, and a suite that
+    // died of a timeout would report that as a crashed run rather than as the
+    // check it is — which is the third time on this branch that shape has cost
+    // a readable failure.
+    const wasRefused = await until(() => errors.some((e) => e.where === 'context'),
+      'the refusal', 10_000).then(() => true).catch(() => false);
+    await new Promise((r) => setTimeout(r, 400));
+    check('the forged water is REFUSED before anything is written', wasRefused,
+      errors.map((e) => e.where));
+
+    // SCOPED TO THE FORGED WATER'S SPACE, not to the stub's totals — see
+    // `mintAttempts`. A count of everything would be measuring whether some
+    // earlier section's mine had finished, which is not this section's subject.
+    check('nothing was written — not one reply', stub.calls.submit === 0, stub.calls.submit);
+    check('...and not one room post into the space the forgery names',
+      stub.mintAttempts.every((a) => a.space !== forged.spaceId), stub.mintAttempts);
+    check('the refusal is reported, and it names the two halves that disagree',
+      String((errors.find((e) => e.where === 'context')?.err as Error)?.message ?? '')
+        .includes('did not come from the same string'),
+      String((errors.find((e) => e.where === 'context')?.err as Error)?.message ?? '').slice(0, 140));
+
+    // NON-DEGENERACY: an HONEST water on the same stub writes immediately, so
+    // the zeros above are a refusal and not a broken fixture.
+    const honest = makeSea(undefined, undefined, JUST_AFTER);
+    try {
+      honest.publish(vecAtOn(JUST_AFTER, CENTRE));
+      const wrote = await until(() => stub.calls.submit >= 1, 'the honest write', 10_000)
+        .then(() => true).catch(() => false);
+      check('NON-DEGENERACY: the same sea, same stub, honest water — writes at once', wrote,
+        stub.calls.submit);
+    } finally {
+      honest.stop();
+    }
+  } finally {
+    await quiesce(stub);
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aMissingWaterReachesTheTypedChannel(): Promise<void> {
+  console.log('\n9m. a water that does not exist on the node is a TYPED fact, not silence');
+  // I4, reproduced end to end and then closed as far as it can be closed here.
+  //
+  // On a node where nobody has minted the water, `submit_post` returns -32014
+  // (`SpaceNotFound`, methods.rs:2296-2310) and the reply that follows returns
+  // -32006 (`InvalidContentId`) — which classifies as `'unknown'` and says
+  // nothing. So every write failed, no standing moved, and the player sat in a
+  // sea that would never populate with nothing on screen to say why. The mint's
+  // outcome used to reach only `onError`, a raw developer channel.
+  const { stub, restore } = installStub();
+  let sea: ChainSea | null = null;
+  const errors: string[] = [];
+  const outcomes: (SendFailure | null)[] = [];
+  try {
+    stub.rejectMint = true;
+    stub.mintErrorCode = -32_014;      // the node has never heard of this space
+    stub.rejectSubmit = true;
+    stub.submitErrorCode = -32_006;    // ...so the parent does not exist either
+    stub.replies = crossingReplies();
+    sea = makeSea((w) => { errors.push(w); }, (f) => { outcomes.push(f); }, JUST_AFTER);
+    sea.publish(vecAtOn(JUST_AFTER, CENTRE));
+
+    const told = await until(() => outcomes.some((o) => o?.kind === 'no-water'),
+      'the typed no-water outcome', 10_000).then(() => true).catch(() => false);
+    check('THE FACT REACHES THE TYPED CHANNEL: onWrite carries `no-water`', told,
+      outcomes.map((o) => o?.kind ?? 'accepted'));
+    check('...and the developer channel still fires too — this adds a channel, it does not '
+      + 'replace one', errors.includes('mintRoom'), errors);
+
+    // NON-DEGENERACY: the REPLY on its own could never have said this. It fails
+    // with a code that means "parent missing", which is true and useless.
+    await until(() => outcomes.some((o) => o?.kind === 'unknown'), 'the reply outcome', 10_000)
+      .catch(() => {});
+    check('NON-DEGENERACY: the reply failure alone classifies as `unknown` and says nothing — '
+      + 'which is exactly why the mint had to be reported',
+      outcomes.some((o) => o?.kind === 'unknown'), outcomes.map((o) => o?.kind));
+
+    // AND THE STANDING DOES NOT MOVE, deliberately. See wayIn.ts: the edge of
+    // the water is about being refused ENTRY by other players (§2.16), and
+    // "there is no water" is not that. What a player is told is a design
+    // decision and is not made here.
+    let standing = OPEN_WATER;
+    for (const o of outcomes) standing = afterWrite(standing, o);
+    check('the standing is unmoved — no edge is raised for a water that does not exist',
+      standing.atTheEdge === false && standing.crossing === false, standing);
+
+    // NON-DEGENERACY for that: the same fold DOES move on the kind that should.
+    check('NON-DEGENERACY: a not-sponsored outcome through the same fold raises the edge',
+      afterWrite(OPEN_WATER, { kind: 'not-sponsored', cause: new Error('x') }).atTheEdge === true);
+  } finally {
+    await quiesce(stub);
+    sea?.stop();
+    restore();
+  }
+}
+
+async function aStoppedSeaWritesNothingAndClaimsNothing(): Promise<void> {
+  console.log('\n9n. a sea that has been stopped writes nothing, and claims nothing');
+  // `stop()` closes the socket and the timers. It could not un-mine an
+  // Argon2id, so a sea torn down mid-write went on to submit afterwards —
+  // `App.tsx` rebuilds this sea every time the standing changes, so that is a
+  // write from an object nothing holds any more, into a room the surviving sea
+  // may not even be reading.
+  //
+  // AND THE SECOND HALF IS SHARPER THAN THE FIRST. Gating only the SEND left
+  // `noteWrite(null)` firing for a write that never happened — and `null` is
+  // the one signal that lifts the edge of the water (`wayIn.ts`). A teardown
+  // would have told the shell this swimmer had been let in, on the strength of
+  // a write it never made.
+  const { stub, restore } = installStub();
+  const outcomes: (SendFailure | null)[] = [];
+  try {
+    stub.replies = crossingReplies();
+    // A signer held back 400 ms, so `publish` is guaranteed to still be waiting
+    // on `ctxReady` when `stop()` lands — the exact window.
+    const sea = makeSea(undefined, (f) => { outcomes.push(f); }, JUST_AFTER, 400);
+    sea.publish(vecAtOn(JUST_AFTER, CENTRE));
+    sea.stop();
+    await quiesce(stub);
+    await new Promise((r) => setTimeout(r, 300));
+
+    check('the stopped sea submitted no reply', stub.calls.submit === 0, stub.calls.submit);
+    check('...and no room post', stub.calls.submitPost === 0, stub.calls.submitPost);
+    check('...and reported NO accepted write, which would have lifted the edge of the water',
+      !outcomes.includes(null), outcomes.map((o) => o?.kind ?? 'accepted'));
+
+    // NON-DEGENERACY: the identical sequence WITHOUT the stop writes and
+    // reports, so the three zeros above are a teardown and not a dead fixture.
+    const live = makeSea(undefined, (f) => { outcomes.push(f); }, JUST_AFTER, 400);
+    try {
+      live.publish(vecAtOn(JUST_AFTER, CENTRE));
+      const wrote = await until(() => stub.calls.submit >= 1, 'the live write', 10_000)
+        .then(() => true).catch(() => false);
+      await until(() => outcomes.includes(null), 'the acceptance', 10_000).catch(() => {});
+      check('NON-DEGENERACY: the same sea, not stopped, writes', wrote, stub.calls.submit);
+      check('NON-DEGENERACY: ...and reports the acceptance', outcomes.includes(null),
+        outcomes.map((o) => o?.kind ?? 'accepted'));
+    } finally {
+      live.stop();
+    }
+  } finally {
+    await quiesce(stub);
     restore();
   }
 }
@@ -1865,6 +2154,9 @@ async function main(): Promise<void> {
   await aRefusedMintIsNotRetriedOnEveryWrite();
   await aRolloverReadIsNotDroppedByAReadInFlight();
   await theFirstWriteDoesNotQueueBehindItsOwnMint();
+  await aForgedWaterWritesNothing();
+  await aMissingWaterReachesTheTypedChannel();
+  await aStoppedSeaWritesNothingAndClaimsNothing();
 
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);

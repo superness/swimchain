@@ -30,8 +30,8 @@ import { admitFloorMs } from './shoalLoop';
 import { encodeWireSpaceId } from './shoalRpc';
 import { roomPreimage } from './shoalRoom';
 import {
-  WATER_APP, assertWaterName, roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, waterNamed,
-  type Water,
+  WATER_APP, assertWaterName, roomEpochsFor, roomFamilyKey, roomIdIn, roomTextIn, verifyWater,
+  waterNamed, type Water,
 } from './water';
 
 let failures = 0;
@@ -218,8 +218,18 @@ function handSpaceId(app: string, name: string): string {
   // of the current instant, so a client at 00:05 needs the previous room
   // exactly as much as one at 00:00:30 — which is the answer to "when can it
   // stop reading the old one": when it rolls, and not before.
-  check('the floor is a function of the EPOCH and not of the instant',
-    admitFloorMs(E) === admitFloorMs(E), admitFloorMs(E));
+  // WAS `admitFloorMs(E) === admitFloorMs(E)`, which is true of every unary
+  // function ever written and was proved vacuous by moving the floor 123456 ms
+  // — the twentieth vacuous check across eleven plans. What it MEANT to say is
+  // that the floor tracks the epoch grid and nothing else, and that is a claim
+  // with content: it moves forward by exactly one epoch per epoch, so it cannot
+  // creep within one. (Its absolute position is pinned two checks above, which
+  // is what a shifted floor fails.)
+  check('the floor moves forward by exactly one EPOCH_MS per epoch, so it never creeps within one',
+    admitFloorMs(E + 1) - admitFloorMs(E) === EPOCH_MS
+    && admitFloorMs(E) - admitFloorMs(E - 1) === EPOCH_MS
+    && admitFloorMs(E) === epochStartMs(E) - 180_000,
+    { deltaUp: admitFloorMs(E + 1) - admitFloorMs(E), EPOCH_MS });
   check('...so the pair for E is the same at every instant inside E, and only '
     + 'changes when the fold rolls to E+1',
     roomEpochsFor(E)[0] === E - 1 && roomEpochsFor(E + 1)[0] === E
@@ -277,6 +287,77 @@ function handSpaceId(app: string, name: string): string {
   // one day by adding the epoch back.
   check('the family key is its own frozen tag, not the room grammar\'s',
     !roomFamilyKey(main).startsWith('room:'), roomFamilyKey(main));
+}
+
+
+// ===========================================================================
+// 5. `verifyWater` — the defence the brand is not
+//
+// The brand stops an object literal. It stops nothing that has passed through
+// an `any`, and the whole-branch review demonstrated four such routes plus a
+// spread, `tsc` exit 0 on every one, producing a water that derives `main`'s
+// rooms against `smoke`'s space. `waterBrand`'s header states that limit
+// honestly; this is what actually holds the line, and it holds it at runtime,
+// where the type system is not.
+//
+// All five forgeries are built HERE, the same way the review built them, and
+// every one must be refused. A test that checked only the literal would be
+// testing the thing that already fails to compile.
+// ===========================================================================
+{
+  console.log('\n5. a water whose space did not come from its own name is refused');
+
+  const real = await waterNamed('main');
+  const smoke = await waterNamed('smoke');
+
+  const refused = async (w: Water): Promise<boolean> => {
+    try { await verifyWater(w); return false; } catch { return true; }
+  };
+
+  // NON-DEGENERACY FIRST: an honest water passes, or "everything is refused"
+  // would satisfy every check below.
+  check('NON-DEGENERACY: a water from `waterNamed` is accepted', !(await refused(real)));
+  check('NON-DEGENERACY: ...and so is every other one', !(await refused(smoke)));
+
+  // 1. JSON.parse — the classic `any`.
+  const viaJson: Water = JSON.parse(JSON.stringify({ ...real, spaceId: smoke.spaceId }));
+  check('a water round-tripped through JSON.parse with another space is refused',
+    await refused(viaJson), viaJson.spaceId);
+
+  // 2. Any other `any` — config, IPC, an untyped RPC result.
+  const fromIpc = { ...real, spaceId: smoke.spaceId } as unknown as { x: unknown };
+  const viaAny: Water = (fromIpc as unknown) as Water;
+  check('a water arriving as an untyped value from IPC or config is refused',
+    await refused(viaAny));
+
+  // 3. structuredClone + Object.assign — carries the brand, changes the space.
+  const viaClone: Water = Object.assign(structuredClone(real) as Water, { spaceId: smoke.spaceId });
+  check('a structuredClone with the space swapped is refused', await refused(viaClone));
+
+  // 4. A generic helper — `T` is indistinguishable from a real one at the type
+  //    level, so no brand can ever see this coming.
+  function patch<T>(base: T, over: Partial<T>): T { return { ...base, ...over }; }
+  check('a water through a generic patch<T> helper is refused',
+    await refused(patch(real, { spaceId: smoke.spaceId })));
+
+  // 5. A plain SPREAD, which the brand explicitly does not cover.
+  check('a spread of a real water with the NAME swapped is refused',
+    await refused({ ...real, name: 'smoke', spaceName: '@shoal:smoke' }));
+  check('...and with the SPACE swapped', await refused({ ...real, spaceId: smoke.spaceId }));
+
+  // THE FORGERY IS THE ONE THAT MATTERS, spelled out: it derives `main`'s room
+  // for a real hour while its writes would go to `smoke`'s space. Both halves
+  // are asserted, so this is the actual fork rather than a stand-in for it.
+  check('THE FORK, named: the forged water derives main\'s room against smoke\'s space',
+    (await roomIdIn(viaJson, 495_936)) === (await roomIdIn(real, 495_936))
+    && viaJson.spaceId === smoke.spaceId && viaJson.spaceId !== real.spaceId,
+    { room: (await roomIdIn(viaJson, 495_936)).slice(0, 20), space: viaJson.spaceId });
+  check('...and that is exactly what `verifyWater` refuses', await refused(viaJson));
+
+  // The app/spaceName halves are checked too, so a forgery that got the space
+  // id right and the marker wrong does not slip through.
+  check('a water whose spaceName does not match its name is refused',
+    await refused({ ...real, spaceName: '@shoal:smoke' }));
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

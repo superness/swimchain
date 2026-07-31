@@ -150,7 +150,23 @@ import { assertWireSpaceId, JsonRpcCallError, NodeUnreachableError, rpcCall, typ
  *  (src/rpc/methods.rs:823-827); no other rejection reason shares it. */
 const IDENTITY_NOT_SPONSORED_CODE = -32015;
 
-export type SendFailureKind = 'not-sponsored' | 'unreachable' | 'unknown';
+/**
+ * `RpcErrorCode::SpaceNotFound` — src/rpc/error.rs:30.
+ *
+ * Returned from exactly one place for exactly one reason: `submit_post` checks
+ * `chain_store.space_exists` before it will accept a post and refuses with this
+ * code when the answer is no (methods.rs:2296-2310). Like -32015 it is not
+ * shared with any other rejection reason, so classifying on it is exact rather
+ * than a guess.
+ *
+ * IT MEANS THE WATER ITSELF IS NOT ON THIS NODE'S CHAIN — nobody has ever run
+ * `scripts/mint-water.ts` against this network, or the node has not synced the
+ * block that created it. That is a different thing from every other write
+ * failure this client can see, and it used to be indistinguishable from them.
+ */
+const SPACE_NOT_FOUND_CODE = -32014;
+
+export type SendFailureKind = 'not-sponsored' | 'no-water' | 'unreachable' | 'unknown';
 
 /** A typed answer to "why did this write fail?" `cause` is the original thrown
  *  value, kept for logging — nothing in this module reads text out of it. */
@@ -169,6 +185,13 @@ export interface SendFailure {
  *     signature, malformed params, whatever — is real protocol feedback from
  *     a reachable node and must NOT collapse into this bucket, or a "claim a
  *     sponsor" flow would fire on unrelated failures.
+ *   - `'no-water'` — the node answered and said the SPACE does not exist on
+ *     its chain (`JsonRpcCallError` whose `code` is exactly -32014). This is a
+ *     statement about the world, not about this swimmer: nobody has minted
+ *     `@shoal:main` on this network, or this node has not synced the block that
+ *     did. Separated from `'unknown'` because it was reproduced as a SILENT
+ *     DEAD END — every write failing, no standing moving, and nothing on screen
+ *     to say why (see this constant, and the report's I4).
  *   - `'unreachable'` — `fetch()` itself never got a response
  *     (`NodeUnreachableError`): offline, DNS failure, connection refused.
  *   - `'unknown'` — anything else: a different JSON-RPC error code, an HTTP
@@ -179,6 +202,9 @@ export interface SendFailure {
 export function classifySendFailure(err: unknown): SendFailure {
   if (err instanceof JsonRpcCallError && err.code === IDENTITY_NOT_SPONSORED_CODE) {
     return { kind: 'not-sponsored', cause: err };
+  }
+  if (err instanceof JsonRpcCallError && err.code === SPACE_NOT_FOUND_CODE) {
+    return { kind: 'no-water', cause: err };
   }
   if (err instanceof NodeUnreachableError) {
     return { kind: 'unreachable', cause: err };
