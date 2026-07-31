@@ -32,6 +32,7 @@
  */
 import { chainSea, type ChainSea } from './chainSea';
 import type { RpcAuth } from '../lib/shoalRpc';
+import type { Water } from '../lib/water';
 import type { SendFailure, SignFn } from '../lib/shoalSend';
 import type { Vec } from '../lib/shoalTypes';
 import { MAX_EMIT_GAP_MS, MIN_EMIT_GAP_MS } from '../lib/shoalEmit';
@@ -56,8 +57,11 @@ export type SeaSource = 'dev' | 'shell' | 'offline';
  */
 export interface WaterConfig {
   readonly auth: RpcAuth;
-  readonly spaceId: string;
-  readonly roomContentId: string;
+  /** The space AND the name every hour's room is derived from — one value, so
+   *  the two cannot disagree (`src/lib/water.ts`). It replaces the old
+   *  `spaceId` + `roomContentId` pair, which named a room that no longer
+   *  exists: the room is a function of the hour now. */
+  readonly water: Water;
   readonly authorIdHex: string;
   readonly signer: Promise<{ publicKeyHex: string; sign: SignFn }>;
 }
@@ -359,34 +363,30 @@ export function knockOn(
  *
  * ## WHY THERE IS A RETRY AT ALL
  *
- * `shellConfig` returns `null` for six different reasons and only one of them
+ * `shellConfig` returns `null` for four different reasons and only one of them
  * is permanent. The permanent one is "there is no shell at all" — a browser
- * tab — and `App.tsx` returns before ever reaching this schedule for it. Of the
- * rest, one cannot happen twice and the other four are the ordinary condition
- * of a node that has just started:
+ * tab — and `App.tsx` returns before ever reaching this schedule for it. The
+ * rest are the ordinary condition of a node that has just started:
  *
  *   - `get_rpc_config` failed, or named no endpoint — the node is up as a
  *     process but has not bound RPC yet, which takes up to 120 s from launch;
  *   - the node reported no identity — it is answering, but busy;
  *   - working out where the water is threw. This one is pure computation now
- *     (`waterSpaceId` and `roomContentId` are sha256 over two constants), so it
- *     cannot be a transient and a retry will not help it; it is retried anyway
- *     because a schedule that has to be told which failures are worth repeating
- *     is a schedule that will one day be told wrong;
- *   - THE ROOM'S BODY HAS NOT ARRIVED YET, which is not an error in any sense
- *     and is the reason this retry earns its place. Content on this network is
- *     fetched only when something asks: a fresh install's node holds the room's
- *     content BLOCK within seconds and its BODY only once `request_content` has
- *     been driven and a peer has answered. `shellConfig` drives that ask on
- *     every miss, so each turn of this schedule is a fresh attempt rather than
- *     the same question repeated.
+ *     (`waterNamed` is sha256 over one constant), so it cannot be a transient
+ *     and a retry will not help it; it is retried anyway because a schedule
+ *     that has to be told which failures are worth repeating is a schedule that
+ *     will one day be told wrong.
  *
- * "THE NODE HAS NEVER HEARD OF THIS WATER" USED TO BE ON THAT LIST AND IS GONE.
- * The space id was discovered by matching `list_spaces`, which is why a listing
- * call and a slow sync were both reasons to look again. It is derived now
- * (`shellConfig.waterSpaceId`) — sha256 over `WATER_APP`/`WATER_NAME` — so
- * there is no listing to throw and nothing left to not-find. `shellConfig`'s
- * own header says so by name.
+ * TWO REASONS HAVE LEFT THAT LIST AND BOTH ARE WORTH NAMING, because between
+ * them they were most of what this schedule ever waited for. "The node has
+ * never heard of this water" went when the space id became DERIVED rather than
+ * matched against `list_spaces` — there is no listing to throw and nothing left
+ * to not-find. "The room's body has not arrived yet" went with plan 4d Task 2:
+ * a fresh install used to sit here for a measured 3 m 18 s while
+ * `request_content` hunted for a peer holding the one fixed room post, and
+ * there is no fixed room any more — the room is a function of the hour and
+ * `chainSea` MINTS it rather than waiting for it. What is left is a node that
+ * has not finished starting, which passes in seconds.
  *
  * Asking once meant a first launch that lost any one of those coin flips
  * showed the offline sea FOREVER, until the player thought to restart — which
@@ -440,8 +440,12 @@ export const SEA_SPAWN = { x: Math.round(WORLD_W / 2), y: Math.round(WORLD_H / 2
 export function seaFrom(cfg: WaterConfig, onWrite: (failure: SendFailure | null) => void): ChainSea {
   return chainSea({
     auth: cfg.auth,
-    spaceId: cfg.spaceId,
-    roomContentId: cfg.roomContentId,
+    water: cfg.water,
+    // The one clock read on this path, and it is here rather than inside
+    // `chainSea` so that file stays as free of them as `src/lib/` is. It tells
+    // the sea which pair of rooms to read before its first frame — see
+    // `ChainSeaConfig.openedAtMs`.
+    openedAtMs: Date.now(),
     authorIdHex: cfg.authorIdHex,
     signer: cfg.signer,
     spawn: SEA_SPAWN,

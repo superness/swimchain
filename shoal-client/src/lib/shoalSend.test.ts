@@ -130,6 +130,37 @@ async function main() {
     check('...and lands in unknown, the honest bucket for a code this module does not recognise', result.kind === 'unknown', result);
   }
 
+  // --- THE WATER ITSELF IS NOT HERE: SpaceNotFound (-32014) ----------------------
+  //
+  // Returned from exactly one place, for exactly one reason: `submit_post`
+  // checks `chain_store.space_exists` and refuses when the answer is no
+  // (methods.rs:2296-2310). It used to land in `'unknown'`, which was
+  // REPRODUCED as a silent dead end — every write failing, no standing moving,
+  // and nothing on screen to say why (the report's I4). It is its own kind now
+  // so that the fact is at least available to whoever decides what to show.
+  //
+  // -32014 SITS NEXT TO -32015. That adjacency is the whole reason this pair of
+  // checks exists: a classifier keying off a range rather than an exact code
+  // would confuse "nobody has vouched for you" with "there is no water here",
+  // and those call for opposite answers.
+  {
+    const err = await caughtError(
+      fakeFetch(() => okResponse({
+        jsonrpc: '2.0',
+        error: { code: -32014, message: 'Space sp1qqz… does not exist. Create it first with \'space create\'.' },
+        id: 4,
+      })),
+      auth,
+    );
+    const result = classifySendFailure(err);
+    check('SpaceNotFound (-32014) classifies as no-water', result.kind === 'no-water', result);
+    check('...and NOT as not-sponsored, though the codes are adjacent',
+      result.kind !== 'not-sponsored', result);
+    check('...and not as unknown either — it used to be, and that was the dead end',
+      result.kind !== 'unknown', result);
+    check('the classified failure carries the original error as cause', result.cause === err);
+  }
+
   // A second distinct code, to make sure the classifier isn't accidentally keying off
   // "any negative code near -32015" or similar.
   {

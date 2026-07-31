@@ -136,6 +136,7 @@ import {
   chooseSeaSource, chooseWater, knockBackstopDue, knockOn, nodeWriteDue, retryDelayMs, seaFrom,
 } from './seaChoice';
 import { shellConfig, shellSurface, type ShellSeaConfig } from './shellConfig';
+import { waterNamed, type Water } from '../lib/water';
 import { TheEdge } from './TheEdge';
 import { afterWrite, CROSSING_MS, OPEN_WATER, settled, type Standing } from './wayIn';
 import { identityFromLabel } from './browserIdentity';
@@ -203,10 +204,17 @@ type SceneKind = 'shallows' | 'lively' | 'harness';
  *
  *   ?rpc=http://127.0.0.1:29736   the node's RPC endpoint
  *   &cookie=<hex>                 contents of that node's `.cookie` file
- *   &space=sp1…                   the room's space, bech32m wire form
- *   &room=sha256:…                the room post every swimmer replies into
+ *   &water=<name>                 the water's DISPLAY name (`two`, `smoke`)
  *   &id=<64 hex>                  this window's public key (the camera's fish)
  *   &who=<label>                  the passphrase that derives that key
+ *
+ * `&water=` REPLACED `&space=` AND `&room=`, and that is the same fix as
+ * everywhere else on this branch rather than a convenience. Two parameters
+ * meant a capture could be pointed at a space and a room that had nothing to do
+ * with each other — writes the node accepts, replies that come back, and a sea
+ * shared with nobody. One name derives both (`water.waterNamed`), so there is
+ * nothing left to mismatch; and the room rotates hourly now, so no single
+ * `&room=` could have stayed true for the length of a capture anyway.
  *
  * `scripts/two-client-smoke.ts` prints both windows' URLs, fully formed, at
  * the end of a successful run — the parameters are fiddly on purpose (they
@@ -222,8 +230,7 @@ type SceneKind = 'shallows' | 'lively' | 'harness';
 interface ChainParams {
   rpc: string;
   cookie: string | null;
-  space: string;
-  room: string;
+  water: string;
   id: string;
   who: string;
 }
@@ -250,10 +257,11 @@ interface ChainParams {
  */
 function buildChainSea(
   shell: ShellSeaConfig | null,
+  devWater: Water | null,
   onWrite: (failure: SendFailure | null) => void,
 ): ChainSea | null {
   switch (chooseSeaSource(import.meta.env.DEV, chainParams() !== null, shell !== null)) {
-    case 'dev': return devChainSea(onWrite);
+    case 'dev': return devChainSea(devWater, onWrite);
     // `chooseSeaSource` only answers `shell` when it was told there is one, so
     // this narrowing can never actually fall through — it is here because the
     // compiler cannot know that and a non-null assertion would be a worse way
@@ -267,7 +275,9 @@ function buildChainSea(
  * The DEV path: a real room on a real node, from query parameters — Task 7's
  * capture, and the first thing in this window that ever wrote to a chain.
  */
-function devChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea | null {
+function devChainSea(
+  devWater: Water | null, onWrite: (failure: SendFailure | null) => void,
+): ChainSea | null {
   // THE STATIC GATE, and it is here as well as inside `chainParams` on purpose.
   // `import.meta.env.DEV` is replaced by the literal `false` in a production
   // build, so this becomes `if (true) return null;` and everything below it —
@@ -293,13 +303,18 @@ function devChainSea(onWrite: (failure: SendFailure | null) => void): ChainSea |
   if (!import.meta.env.DEV) return null;
   const p = chainParams();
   if (p === null) return null;
+  // `&water=` names a water; turning that name into a space id is a sha256 and
+  // therefore async, while this function must stay synchronous (`Sea.selfId` is
+  // needed on the first frame). So it arrives as a resolved value from the
+  // effect below, exactly the way a `ShellSeaConfig` does, and this returns
+  // `null` for the frame or two before it lands.
+  if (devWater === null) return null;
   return seaFrom({
     auth: {
       endpoint: p.rpc,
       authHeader: p.cookie === null ? null : `Basic ${btoa(`__cookie__:${p.cookie}`)}`,
     },
-    spaceId: p.space,
-    roomContentId: p.room,
+    water: devWater,
     authorIdHex: p.id,
     signer: identityFromLabel(p.who),
   }, onWrite);
@@ -323,19 +338,18 @@ function chainParams(): ChainParams | null {
   if (!import.meta.env.DEV) return null;
   const rpc = devParam('rpc');
   if (rpc === null) return null;
-  const space = devParam('space');
-  const room = devParam('room');
+  const water = devParam('water');
   const id = devParam('id');
   const who = devParam('who');
-  if (space === null || room === null || id === null || who === null) {
+  if (water === null || id === null || who === null) {
     // Half a configuration would render an empty sea that looks exactly like a
     // node with nobody in it — the single most confusing failure available
     // here. Better to be unmistakable in the console than plausible on screen.
-    console.error('[shoal] ?rpc= needs &space=, &room=, &id= and &who= alongside it; '
+    console.error('[shoal] ?rpc= needs &water=, &id= and &who= alongside it; '
       + 'run scripts/two-client-smoke.ts, which prints both windows\' URLs.');
     return null;
   }
-  return { rpc, cookie: devParam('cookie'), space, room, id, who };
+  return { rpc, cookie: devParam('cookie'), water, id, who };
 }
 
 /**
@@ -519,6 +533,35 @@ export function App() {
   /** The same value, readable from the key handler's `[]`-deps closure. */
   const shellRef = useRef<ShellSeaConfig | null>(null);
   shellRef.current = shell;
+
+  /**
+   * THE DEV PATH'S WATER, resolved once from `&water=`.
+   *
+   * `waterNamed` derives the space id AND every hour's room from one name
+   * (`src/lib/water.ts`), which is the whole reason `&space=`/`&room=` are gone
+   * — but it hashes, so it is async, and `buildChainSea` has to stay
+   * synchronous. Held in state for the same reason `shell` is: the frame effect
+   * depends on it and rebuilds the sea when it lands.
+   *
+   * Behind the same static gate as everything else on this path: `chainParams`
+   * answers `null` in a release build however many parameters are in the URL,
+   * so this never runs there.
+   */
+  const [devWater, setDevWater] = useState<Water | null>(null);
+  useEffect(() => {
+    const p = chainParams();
+    if (p === null) return;
+    let alive = true;
+    void waterNamed(p.water)
+      .then((w) => { if (alive) setDevWater(w); })
+      .catch((e) => {
+        // A bad `&water=` is a developer typo and must be unmistakable rather
+        // than an empty sea: `assertWaterName` refuses anything but a plain
+        // lowercase display name, precisely because the near-misses are silent.
+        console.error('[shoal] ?water= is not a water name:', e);
+      });
+    return () => { alive = false; };
+  }, []);
   /** Is this window in water other people are in? Either path counts. */
   const inRealWater = () => chainParams() !== null || shellRef.current !== null;
 
@@ -771,7 +814,7 @@ export function App() {
     // when there is no water to be in — never as a way of REFUSING water that
     // exists. The reverse of that sentence is the lockout described on
     // `SceneKind`.
-    const chain = buildChainSea(shell, (failure) => { setStanding((s) => afterWrite(s, failure)); });
+    const chain = buildChainSea(shell, devWater, (failure) => { setStanding((s) => afterWrite(s, failure)); });
     // Reachable from outside the frame loop, so the backstop can knock on a
     // window that has stopped rendering. Cleared by this effect's cleanup, so
     // nothing ever writes into a sea that has been stopped.
@@ -1218,7 +1261,7 @@ export function App() {
     // `afterWrite` returns the SAME object unless the standing actually moved,
     // so the accepted or refused write every few seconds re-renders nothing and
     // re-runs nothing.
-  }, [scene, shell, standing.atTheEdge]);
+  }, [scene, shell, devWater, standing.atTheEdge]);
 
   return (
     <div style={S.page}>

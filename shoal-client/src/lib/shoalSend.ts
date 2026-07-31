@@ -114,6 +114,7 @@
 import { argon2id, createSHA256 } from 'hash-wasm';
 
 import type { Checkpoint, Vec } from './shoalTypes';
+import { roomPreimage, type RoomText } from './shoalRoom';
 import { encodeCheckpoint, encodeEat, encodePresence } from './shoalWire';
 import { assertWireSpaceId, JsonRpcCallError, NodeUnreachableError, rpcCall, type RpcAuth } from './shoalRpc';
 
@@ -149,7 +150,23 @@ import { assertWireSpaceId, JsonRpcCallError, NodeUnreachableError, rpcCall, typ
  *  (src/rpc/methods.rs:823-827); no other rejection reason shares it. */
 const IDENTITY_NOT_SPONSORED_CODE = -32015;
 
-export type SendFailureKind = 'not-sponsored' | 'unreachable' | 'unknown';
+/**
+ * `RpcErrorCode::SpaceNotFound` — src/rpc/error.rs:30.
+ *
+ * Returned from exactly one place for exactly one reason: `submit_post` checks
+ * `chain_store.space_exists` before it will accept a post and refuses with this
+ * code when the answer is no (methods.rs:2296-2310). Like -32015 it is not
+ * shared with any other rejection reason, so classifying on it is exact rather
+ * than a guess.
+ *
+ * IT MEANS THE WATER ITSELF IS NOT ON THIS NODE'S CHAIN — nobody has ever run
+ * `scripts/mint-water.ts` against this network, or the node has not synced the
+ * block that created it. That is a different thing from every other write
+ * failure this client can see, and it used to be indistinguishable from them.
+ */
+const SPACE_NOT_FOUND_CODE = -32014;
+
+export type SendFailureKind = 'not-sponsored' | 'no-water' | 'unreachable' | 'unknown';
 
 /** A typed answer to "why did this write fail?" `cause` is the original thrown
  *  value, kept for logging — nothing in this module reads text out of it. */
@@ -168,6 +185,13 @@ export interface SendFailure {
  *     signature, malformed params, whatever — is real protocol feedback from
  *     a reachable node and must NOT collapse into this bucket, or a "claim a
  *     sponsor" flow would fire on unrelated failures.
+ *   - `'no-water'` — the node answered and said the SPACE does not exist on
+ *     its chain (`JsonRpcCallError` whose `code` is exactly -32014). This is a
+ *     statement about the world, not about this swimmer: nobody has minted
+ *     `@shoal:main` on this network, or this node has not synced the block that
+ *     did. Separated from `'unknown'` because it was reproduced as a SILENT
+ *     DEAD END — every write failing, no standing moving, and nothing on screen
+ *     to say why (see this constant, and the report's I4).
  *   - `'unreachable'` — `fetch()` itself never got a response
  *     (`NodeUnreachableError`): offline, DNS failure, connection refused.
  *   - `'unknown'` — anything else: a different JSON-RPC error code, an HTTP
@@ -178,6 +202,9 @@ export interface SendFailure {
 export function classifySendFailure(err: unknown): SendFailure {
   if (err instanceof JsonRpcCallError && err.code === IDENTITY_NOT_SPONSORED_CODE) {
     return { kind: 'not-sponsored', cause: err };
+  }
+  if (err instanceof JsonRpcCallError && err.code === SPACE_NOT_FOUND_CODE) {
+    return { kind: 'no-water', cause: err };
   }
   if (err instanceof NodeUnreachableError) {
     return { kind: 'unreachable', cause: err };
@@ -662,6 +689,104 @@ export async function submitToRoom(ctx: SendCtx, body: string, ms: number): Prom
   if (typeof contentId !== 'string' || contentId.trim().length === 0 || /\s/.test(contentId)) {
     throw new Error(
       `submit_reply answered a success envelope with no usable content_id: ${JSON.stringify(result)}`,
+    );
+  }
+  return contentId;
+}
+
+interface SubmitPostResult {
+  content_id?: unknown;
+}
+
+/**
+ * MINT AN HOUR'S ROOM — the post every move that hour is a reply to.
+ *
+ * ## WHY EVERY CLIENT CALLS THIS, EVERY HOUR
+ *
+ * `submit_reply` rejects an unknown parent outright ("Orphan replies are not
+ * allowed", src/rpc/methods.rs:3204-3218), so an hour's room POST has to exist
+ * before that hour's first move can land. With a room per hour, somebody has to
+ * make one every hour, and the rule cannot be "whoever is around" — an hour
+ * nobody played leaves the next hour's joiner with nothing to reply to, and a
+ * rule that depends on a particular client being online is not a rule.
+ *
+ * So: EVERYBODY MINTS, IDEMPOTENTLY, AND NOBODY WAITS FOR ANYBODY.
+ *
+ * ## WHY THAT IS SAFE, READ OUT OF THE RUST RATHER THAN ASSUMED
+ *
+ * `submit_post` does not check whether the content already exists. It verifies
+ * PoW and the signature, adds the action to the block builder, tries
+ * `content_store.put`, and returns `{content_id}` — where the id is
+ * `sha256(title + "\n\n" + body)` and nothing else (methods.rs:2221-2223). A
+ * repeat therefore SUCCEEDS and answers the same id:
+ *
+ *  - the duplicate `put` returns `Err("content already exists")`, which the
+ *    method logs at debug and ignores (methods.rs:2599-2601) — it is not an
+ *    error path, and it is FIRST-WRITE-WINS: `ContentStore::put` refuses to
+ *    overwrite (src/storage/content.rs:86-95), so the stored row keeps the
+ *    first minter as its author. (This plan's brief said the author is
+ *    "whoever indexed last on that node". On the `submit_post` path it is the
+ *    first, not the last — recorded here because the conclusion is the same
+ *    either way and the reason is not: nothing in this game ever reads a room
+ *    post's author.)
+ *  - the block builder dedupes on the ACTION hash, which covers the actor,
+ *    timestamp and signature (builder.rs:539-543), so two minters produce two
+ *    genuinely different actions naming one content id. Both are accepted and
+ *    both propagate. That is harmless: `get_replies` is keyed on the parent
+ *    content id alone, so one room and one reply set either way.
+ *
+ * ## WHY IT IS ALSO INSTANT FOR THE MINTER, WHICH IS THE POINT
+ *
+ * `submit_reply` resolves a parent from the chain store, then the content
+ * store, then the block builder's PENDING actions (methods.rs:3153-3175). A
+ * client that has just minted has the post in the last two of those on its own
+ * node, so its very next write lands — no block, no gossip, no wait. That is
+ * what retires the 3 m 18 s `request_content` wait plan 4b measured: a fresh
+ * install no longer needs a peer to hand it the room, because it makes the room.
+ *
+ * ## THE CALLER SUPPLIES THE CLOCK, AND IT IS "NOW", NOT THE HOUR
+ *
+ * `nowMs` reaches only the ACTION envelope's timestamp, which the node checks
+ * against a window (600 s back, 60 s forward — action_pow.rs:79-82). It is NOT
+ * the epoch: the hour is in the BODY, which is what makes the id derivable.
+ * Minting an hour ahead of time is therefore ordinary and is exactly what
+ * `chainSea` does, so a rollover never waits on a mine.
+ */
+export async function mintRoom(
+  ctx: Omit<SendCtx, 'roomContentId'>, text: RoomText, nowMs: number,
+): Promise<string> {
+  assertWireSpaceId(ctx.spaceId, 'mintRoom: ctx.spaceId');
+
+  const profile = ctx.powProfile ?? (await powProfileFor(ctx.auth));
+  const timestamp = Math.floor(nowMs / 1000);
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new RangeError(`mintRoom: nowMs must be a non-negative safe integer ms, got ${nowMs}`);
+  }
+
+  // `submit_post` hashes `${title}\n\n${body}` and mines over the same bytes
+  // (methods.rs:2221 and the `verify_pow_submission` call just below it), so
+  // the preimage is taken from `roomPreimage` rather than re-spelled here.
+  const mined = await mineAndSignAction(
+    ACTION_TYPE_POST, new TextEncoder().encode(roomPreimage(text)),
+    ctx.authorIdHex, ctx.sign, timestamp, profile,
+  );
+
+  const result = await rpcCall<SubmitPostResult>(ctx.auth, 'submit_post', {
+    space_id: ctx.spaceId,
+    title: text.title,
+    body: text.body,
+    author_id: ctx.authorIdHex,
+    ...mined,
+  });
+
+  // Same rule as `submitToRoom`: a success ENVELOPE is not an accepted write,
+  // and the caller reads this promise resolving as "the room is there now".
+  // Deliberately not format-checked beyond "could be an identifier" — see
+  // `submitToRoom` on why over-validating here is the more dangerous mistake.
+  const contentId: unknown = result?.content_id;
+  if (typeof contentId !== 'string' || contentId.trim().length === 0 || /\s/.test(contentId)) {
+    throw new Error(
+      `submit_post answered a success envelope with no usable content_id: ${JSON.stringify(result)}`,
     );
   }
   return contentId;
