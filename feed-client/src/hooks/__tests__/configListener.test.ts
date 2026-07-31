@@ -119,6 +119,47 @@ describe('useParentRpcConfig listener (real handler)', () => {
   });
 });
 
+describe('launcher node-mode-flip survives the endpoint-merge (real listener, Task 5 Step 3)', () => {
+  it('an empty-nodeAddress first post followed by the real-nodeAddress re-post ends in NODE mode', async () => {
+    // Mirrors launcher-apps/app-shell/web/embed.js's pushConfig() exactly: it posts
+    // { type: 'SWIMCHAIN_RPC_CONFIG', rpcEndpoint, rpcAuth, nodeAddress: '', nodeDisplayName: '' }
+    // on iframe load (get_identity_info hasn't resolved yet), then re-posts up to 10x
+    // over 10s with the real nodeAddress once it does — the intended node-mode flip.
+    // A naive first-wins merge would lock the empty nodeAddress and strand the client
+    // in browser mode forever. This drives feed's REAL useParentRpcConfig listener
+    // through both posts and confirms selectIdentityMode resolves to 'node'.
+    vi.resetModules();
+    const { getParentConfig } = await import('../useParentRpcConfig');
+    const { selectIdentityMode } = await import('../identityMode');
+
+    // 1. First post: endpoint known, identity not resolved yet (embed.js's initial push).
+    post({
+      type: 'SWIMCHAIN_RPC_CONFIG',
+      rpcEndpoint: 'http://127.0.0.1:19736',
+      rpcAuth: 'Basic launcher',
+      nodeAddress: '',
+      nodeDisplayName: '',
+    });
+    expect(getParentConfig()?.nodeAddress).toBe('');
+    // Not yet node mode: empty nodeAddress means the client would fall back to browser.
+    expect(selectIdentityMode(getParentConfig(), true)).toBe('browser');
+
+    // 2. Second post, same endpoint, ~1s later: get_identity_info resolved — real nodeAddress.
+    post({
+      type: 'SWIMCHAIN_RPC_CONFIG',
+      rpcEndpoint: 'http://127.0.0.1:19736',
+      rpcAuth: 'Basic launcher',
+      nodeAddress: 'cs1launcheridentity',
+      nodeDisplayName: 'Alice',
+    });
+
+    const finalConfig = getParentConfig();
+    expect(finalConfig?.rpcEndpoint).toBe('http://127.0.0.1:19736'); // endpoint still locked
+    expect(finalConfig?.nodeAddress).toBe('cs1launcheridentity'); // late fill applied
+    expect(selectIdentityMode(finalConfig, true)).toBe('node'); // the flip: pending/browser -> node
+  });
+});
+
 describe('useRpc.tsx second config listener (real handler)', () => {
   afterEach(() => {
     cleanup();
