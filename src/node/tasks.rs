@@ -378,6 +378,48 @@ impl BackgroundTaskRunner {
                             );
                         }
 
+                        // WALK COMPETING BRANCHES BACKWARD, ON A RETRY.
+                        //
+                        // A locator sync only streams what comes AFTER a
+                        // common ancestor, so it can extend a fork branch we
+                        // hold but never fill in what sits BELOW it. Asking
+                        // for a missing parent used to happen only at the
+                        // instant a block arrived whose parent was unknown —
+                        // one lost request, or an idle chain with no further
+                        // gossip, and the branch stayed half-built for ever.
+                        // The mainnet seed sat exactly there on 2026-08-01:
+                        // 342 blocks of the fleet's chain, ~480 missing below
+                        // them, nothing asking, `sync now` reporting "synced".
+                        //
+                        // Bounded per tick and self-limiting: a linked store
+                        // returns no gaps, and each parent that lands removes
+                        // its gap and exposes the next one down.
+                        let gaps = store.fork_ancestry_gaps(8);
+                        if !gaps.is_empty() {
+                            let mut asked = 0;
+                            for parent in &gaps {
+                                let get_block =
+                                    crate::network::messages::GetBlockPayload::new(*parent);
+                                let envelope =
+                                    crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                        crate::types::network::MessageType::GetBlock,
+                                        get_block.to_bytes().to_vec(),
+                                    );
+                                for peer_id in peer_ids.iter().take(2) {
+                                    if connection_pool.send_to(peer_id, &envelope).await.is_ok() {
+                                        asked += 1;
+                                    }
+                                }
+                            }
+                            if asked > 0 {
+                                info!(
+                                    "[SYNC-LOOP] Requested {} missing fork ancestor(s) ({} sends)",
+                                    gaps.len(),
+                                    asked
+                                );
+                            }
+                        }
+
                         // Content backfill: headers-first sync leaves root headers whose
                         // space/content blocks were never downloaded — spaces then show
                         // placeholder names and zero posts. Locator sync can't repair this
