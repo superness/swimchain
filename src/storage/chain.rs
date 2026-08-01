@@ -752,12 +752,66 @@ impl ChainStore {
         }
     }
 
+    /// How many fork-branch tips a locator may carry. Bounded because a
+    /// hostile peer can manufacture branches cheaply and the locator is
+    /// attacker-visible; the canonical entries must never be crowded out.
+    const MAX_FORK_LOCATOR_TIPS: usize = 6;
+
+    /// Tips of the non-canonical branches we hold, highest height first.
+    ///
+    /// A "tip" is a stored block that is not on the canonical height index and
+    /// is not the parent of any other stored block — i.e. the deepest point of
+    /// a fork branch we have fetched so far.
+    ///
+    /// These exist so `generate_locator` can tell a peer where our ASSEMBLY of
+    /// its chain has got to. See the note there.
+    fn fork_branch_tips(&self) -> Result<Vec<BlockHash>, StorageError> {
+        let mut off_chain: Vec<(u64, BlockHash)> = Vec::new();
+        let mut has_child: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
+
+        for result in self.iter_root_blocks() {
+            let Ok(block) = result else { continue };
+            let hash = block.hash();
+            // Canonical blocks are already represented by the height walk.
+            if self.get_root_hash_at_height(block.height)? == Some(hash) {
+                continue;
+            }
+            has_child.insert(block.prev_root_hash);
+            off_chain.push((block.height, hash));
+        }
+
+        // Deepest first, hash as a deterministic tie-break so two nodes with
+        // the same store produce the same locator.
+        off_chain.retain(|(_, hash)| !has_child.contains(hash));
+        off_chain.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        off_chain.truncate(Self::MAX_FORK_LOCATOR_TIPS);
+        Ok(off_chain.into_iter().map(|(_, hash)| hash).collect())
+    }
+
     /// Generate a Bitcoin-style locator for the current chain.
     ///
     /// Returns block hashes at exponentially-spaced heights from tip to genesis:
-    /// `[tip, tip-1, tip-2, tip-4, tip-8, tip-16, ..., genesis]`
+    /// `[tip, tip-1, tip-2, <fork tips>, tip-4, tip-8, tip-16, ..., genesis]`
     ///
     /// This allows efficient common ancestor detection with ~log(N) hashes.
+    ///
+    /// FORK TIPS ARE INCLUDED, and that is what makes a deep fork survivable.
+    /// This walked only the canonical height index until 2026-08-01, which
+    /// deadlocked assembly: a peer's common-ancestor search always landed on
+    /// the fork POINT, so it always streamed the same first batch of its
+    /// branch. We stored those non-canonically (they cannot displace a
+    /// below-tip canonical block — see `deep_fork_blocked`), our canonical
+    /// chain therefore never moved, and the next locator was byte-identical.
+    /// A fork deeper than one batch could never be fetched, no matter how many
+    /// rounds ran — so its real weight stayed unknowable and it could never be
+    /// judged, let alone adopted. The 2026-07-28 fleet split (700+ blocks, 3.5
+    /// days, two live chains) sat in exactly that state.
+    ///
+    /// Ordering is deliberate: our canonical tip stays FIRST, so a peer on our
+    /// chain matches immediately and ordinary catch-up is untouched. A peer on
+    /// a competing chain does not know our tip, falls through to the fork tips,
+    /// and streams the blocks AFTER the deepest one we hold — so each round
+    /// advances instead of repeating.
     ///
     /// # Errors
     ///
@@ -782,6 +836,16 @@ impl ChainStore {
         // Add last 2 blocks before tip (high density near tip)
         for h in (tip_height.saturating_sub(2)..tip_height).rev() {
             if let Some(hash) = self.get_root_hash_at_height(h)? {
+                locator.push(hash);
+            }
+        }
+
+        // Where our assembly of any competing branch has reached — AFTER our
+        // own tip entries (so same-chain peers are unaffected) and before the
+        // backoff walk (so a fork-chain peer resumes from the deepest block we
+        // hold rather than from the fork point). See the doc comment.
+        for hash in self.fork_branch_tips()? {
+            if !locator.contains(&hash) {
                 locator.push(hash);
             }
         }
