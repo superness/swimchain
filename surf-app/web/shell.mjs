@@ -566,6 +566,7 @@ function showSignalLost(ch) {
 //      fresh gate, not a background retry loop.
 function showNodeDead(msg) {
   if (acquisitionPollHandle) { clearInterval(acquisitionPollHandle); acquisitionPollHandle = null; }
+  stopAcquireTicker();
   document.getElementById('acquire').hidden = true;
   if (powered) seamOn();
   const el = document.getElementById('node-dead');
@@ -621,6 +622,7 @@ async function syncTail() {
 
 function showSponsorGate() {
   document.getElementById('acquire').hidden = true;
+  stopAcquireTicker();
   staticCtl.stop();
   document.getElementById('sponsor-addr').textContent = myAddress ?? myPk ?? '(node identity unavailable)';
   document.getElementById('sponsor-gate').hidden = false;
@@ -990,6 +992,15 @@ function powerOn() {
   // checked on BOTH paths below — an install already `acquired` under an
   // older build must still face it.
   (async () => {
+    // The longest silence of a first run is HERE, before acquisitionBoot ever
+    // runs: `rpcReady` blocks on the node coming up, which on a fresh install
+    // means minting an identity at proof-of-work difficulty 20. Put the
+    // readout on screen before that await, or the newcomer watches unexplained
+    // static through the slowest part and cannot tell it from a hang.
+    if (!acquired) {
+      document.getElementById('acquire').hidden = false;
+      startAcquireTicker();
+    }
     try {
       await rpcReady;
     } catch (e) {
@@ -1028,10 +1039,46 @@ function powerOff() {
   off.classList.remove('collapsing'); void off.offsetWidth; off.classList.add('collapsing');
 }
 
+// --- the cold start has to SHOW something ---------------------------------
+// A first run is genuinely long: identity proof-of-work, then a mainnet sync,
+// then enough post bodies to fill a screen. A single blinking line over static
+// gives a newcomer no way to tell "working" from "hung", and the honest answer
+// (peers heard, chain %, pictures found) is data the set already has. Values
+// come from the node, never from a timer — nothing here fakes forward motion.
+let acqTicker = null;
+let acqItems = 0; // published by acquisitionBoot's own poll; not a second RPC
+
+async function paintAcquire() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('acq-identity', myPk ? 'forged' : 'forging…');
+  set('acq-picture', `${acqItems} of 3`);
+  try {
+    const s = await rpc('get_sync_status');
+    set('acq-peers', s?.peer_count === 1 ? '1 heard' : `${s?.peer_count ?? 0} heard`);
+    set('acq-chain', s?.state === 'synced' ? 'caught up' : `${s?.chain_percent ?? 0}%`);
+  } catch {
+    // rpcReady hasn't resolved yet (identity PoW still running) — say so
+    // rather than printing a stale or invented number.
+    set('acq-peers', '…');
+    set('acq-chain', '…');
+  }
+}
+
+function startAcquireTicker() {
+  if (acqTicker) return;
+  paintAcquire();
+  acqTicker = setInterval(paintAcquire, 1500);
+}
+
+function stopAcquireTicker() {
+  if (acqTicker) { clearInterval(acqTicker); acqTicker = null; }
+}
+
 // --- section 3.1: first-signal acquisition (runs once, then persisted) ---
 async function acquisitionBoot() {
   seamOn();
   document.getElementById('acquire').hidden = false;
+  startAcquireTicker();
   try {
     await rpcReady; // rpcAuth + myPk + rpcConfig (boot section below)
     const feed = FEED_ID;
@@ -1069,7 +1116,8 @@ async function acquisitionBoot() {
     await new Promise((resolve) => {
       acquisitionPollHandle = setInterval(async () => {
         try {
-          if ((await localItemCount(byId.get(feed).spaces)) >= N) {
+          acqItems = await localItemCount(byId.get(feed).spaces);
+          if (acqItems >= N) {
             clearInterval(acquisitionPollHandle);
             acquisitionPollHandle = null;
             resolve();
@@ -1080,6 +1128,7 @@ async function acquisitionBoot() {
       }, 2000);
     });
     acquired = true;
+    stopAcquireTicker();
     localStorage.setItem(ACQUIRED_KEY, '1');
     acquiring = false; // review fix 2: boot is done; a future power-off/on is a normal cycle
     // The feed's prefs sync and first load ran before the follows existed —
