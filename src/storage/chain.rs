@@ -837,6 +837,48 @@ impl ChainStore {
         gaps
     }
 
+    /// The heaviest fork branch we hold that is fully linked and outweighs our
+    /// tip — i.e. a chain we could adopt right now, if anything asked.
+    ///
+    /// NOTHING ASKED. Adoption ran only inside
+    /// `put_root_block_with_fork_resolution_reporting`, i.e. at the instant a
+    /// block is written. A branch assembles BOTTOM-UP (the ancestry backfill
+    /// walks downward), so the last block written is a low ancestor whose own
+    /// weight comparison is trivially false, while the branch TIP — written
+    /// minutes or hours earlier, when `chain_weight` still returned `None`
+    /// because the ancestry had holes — is never reconsidered. The node ends
+    /// up holding the entire heavier chain, perfectly linked, and stays on its
+    /// minority fork for ever. That is where the 2026-08-01 recovery came to
+    /// rest after seven fixes had cleared every step before it.
+    ///
+    /// Returns `None` when nothing is adoptable — no branches, none linked, or
+    /// none heavier — so a caller can poll this cheaply on a timer.
+    #[must_use]
+    pub fn heaviest_adoptable_fork_tip(&self) -> Option<RootBlock> {
+        let our_weight = self
+            .get_best_tip_block()
+            .ok()
+            .flatten()
+            .and_then(|tip| self.chain_weight(&tip).ok().flatten())
+            .unwrap_or(0);
+
+        let mut best: Option<(u64, RootBlock)> = None;
+        for hash in self.fork_branch_tips().ok()? {
+            let Ok(Some(block)) = self.get_root_block(&hash) else {
+                continue;
+            };
+            // Only a FULLY LINKED branch has a weight at all; an incomplete one
+            // yields None and is correctly ignored until its ancestry lands.
+            let Ok(Some(weight)) = self.chain_weight(&block) else {
+                continue;
+            };
+            if weight > our_weight && best.as_ref().is_none_or(|(w, _)| weight > *w) {
+                best = Some((weight, block));
+            }
+        }
+        best.map(|(_, block)| block)
+    }
+
     /// Generate a Bitcoin-style locator for the current chain.
     ///
     /// Returns block hashes at exponentially-spaced heights from tip to genesis:

@@ -1931,6 +1931,50 @@ impl MessageRouter {
     /// `Some` only for actions that ALSO live in a surviving block — re-mining
     /// one gets the block rejected as carrying an "already-finalized action",
     /// permanently forking this node off the network.
+    /// Adopt the heaviest fully-linked fork branch we hold, if it outweighs
+    /// our tip, and return the losing branch's actions to the mempool.
+    ///
+    /// This exists because adoption was otherwise only ever attempted at the
+    /// moment a block was WRITTEN. A branch assembles bottom-up, so the last
+    /// write is a low ancestor that cannot win on its own weight, while the
+    /// branch tip was written long before its ancestry completed. Without a
+    /// periodic pass, a node can hold the entire heavier chain, fully linked,
+    /// and never ask the question. Returns true if it reorged.
+    pub async fn adopt_heaviest_fork_if_any(&self) -> bool {
+        let Some(chain_store) = self.chain_store.as_ref() else {
+            return false;
+        };
+        let Some(tip) = chain_store.heaviest_adoptable_fork_tip() else {
+            return false;
+        };
+        let height = tip.height;
+        match chain_store.put_root_block_with_fork_resolution_reporting(&tip) {
+            Ok((hash, true, displaced)) => {
+                info!(
+                    "[REORG] Adopted stored fork branch {} at height {} ({} blocks displaced)",
+                    hex::encode(&hash[..8]),
+                    height,
+                    displaced.len()
+                );
+                if !displaced.is_empty() {
+                    let orphaned = chain_store.orphaned_actions_in_blocks(&displaced);
+                    info!(
+                        "[REORG] Re-anchoring {} actions from {} displaced blocks",
+                        orphaned.len(),
+                        displaced.len()
+                    );
+                    self.requeue_and_regossip_orphans(orphaned).await;
+                }
+                true
+            }
+            Ok((_, false, _)) => false,
+            Err(e) => {
+                warn!("[REORG] Failed to adopt stored fork branch: {}", e);
+                false
+            }
+        }
+    }
+
     async fn requeue_and_regossip_orphans(
         &self,
         orphaned_actions: Vec<(
@@ -3057,9 +3101,15 @@ impl MessageRouter {
             }
         }
 
-        // Validate height
-        if block_height > our_height + 1 {
-            return Ok(None); // Too far ahead
+        // Validate height. A block ABOVE our canonical height is not a defect —
+        // it is what a heavier branch looks like. Discarding one whose parent we
+        // hold is how the orphan cascade threw away entire fetched branches:
+        // process_orphans_for_block has already REMOVED them from the orphan
+        // pool by this point, so the loss was permanent and silent.
+        if block_height > our_height + 1
+            && far_ahead_disposition(chain_store, &root_block) != FarAheadDisposition::Store
+        {
+            return Ok(None);
         }
 
         // Validate prev_root_hash
@@ -3328,6 +3378,14 @@ impl MessageRouter {
             };
 
             total_bytes += block_data.len();
+
+            // Same 4 MiB ceiling the locator handler enforces. Without it a
+            // 100-block range request with content can build a response the
+            // RECEIVER rejects as MessageTooLarge, which kills the connection —
+            // turning the fork-ancestry range fetch into a peer-churn loop.
+            if total_bytes > 4 * 1024 * 1024 {
+                break;
+            }
             response.blocks.push(SerializedBlock { data: block_data });
         }
 
