@@ -33,4 +33,6 @@ mod router;
 mod tests;
 
 pub use error::RouteError;
-pub use router::{HolePunchRequest, MessageRouter, MessageRouterBuilder};
+pub use router::{
+    should_escalate_to_locator, HolePunchRequest, MessageRouter, MessageRouterBuilder,
+};
