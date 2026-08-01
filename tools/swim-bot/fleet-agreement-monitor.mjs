@@ -35,6 +35,16 @@
  *   INTERVAL_MS    poll period (default 300000 = 5 min)
  *   ONCE           set to "1" to run a single check and exit with a status
  *                  code — for cron, or a shell one-liner
+ *   ALERT_EMAIL    address to notify when the fleet DISAGREES, via ntfy.sh's
+ *                  email forwarding (no account, no credentials). Note this
+ *                  hands the address to a third-party relay; set ALERT_URL to
+ *                  your own endpoint instead if that matters.
+ *   ALERT_URL      POST the alert as JSON here instead of / as well as email —
+ *                  a Discord or Slack webhook, your own service, anything.
+ *
+ * Alerts fire ONLY on disagreement, and only on the TRANSITION into it: a
+ * check that mails every ten minutes for as long as a fork lasts is a check
+ * whose mail gets filtered.
  *
  * Exit codes in ONCE mode: 0 agreed, 1 DISAGREEMENT, 2 could not determine.
  */
@@ -44,7 +54,94 @@ const COOKIES = (process.env.COOKIES || '').split(',').map((s) => s.trim());
 const DEPTH = Number(process.env.INTERVAL_DEPTH || process.env.DEPTH || 50);
 const INTERVAL_MS = Number(process.env.INTERVAL_MS || 300000);
 const ONCE = process.env.ONCE === '1';
+const ALERT_EMAIL = (process.env.ALERT_EMAIL || '').trim();
+const ALERT_URL = (process.env.ALERT_URL || '').trim();
 const TAG = 'fleet';
+
+/** Where the last verdict is remembered, so we alert on the TRANSITION into
+ *  disagreement rather than every ten minutes for as long as it lasts. */
+const STATE_FILE = process.env.STATE_FILE || '/var/tmp/fleet-agreement.state';
+
+import { readFileSync, writeFileSync } from 'node:fs';
+
+function lastVerdict() {
+  try {
+    return readFileSync(STATE_FILE, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+function rememberVerdict(v) {
+  try {
+    writeFileSync(STATE_FILE, v);
+  } catch {
+    /* a monitor that cannot write its state still monitors */
+  }
+}
+
+/** HTTP headers are ByteStrings: a single non-ASCII character (an em dash in
+ *  a subject, say) makes fetch THROW rather than send. Found the hard way —
+ *  the first version of this alert died on its own title. */
+const asciiHeader = (v) => String(v).replace(/[^ -~]/g, '-');
+
+/** Shout, once, through whatever channels are configured.
+ *
+ * ntfy.sh is the default because it needs no account to PUSH. It refuses
+ * anonymous EMAIL though ("anonymous email sending is not allowed"), so a
+ * mail alert needs a token — supply it yourself in ALERT_TOKEN; this script
+ * never sees or stores a credential of its own. Without a token you still get
+ * push: subscribe to the topic in the ntfy app or at ntfy.sh/<topic>. */
+async function alert(subject, body) {
+  const topic = process.env.ALERT_TOPIC || 'swimchain-fleet-agreement';
+  const token = (process.env.ALERT_TOKEN || '').trim();
+  if (ALERT_EMAIL || token || process.env.ALERT_TOPIC) {
+    const headers = {
+      Title: asciiHeader(subject),
+      Priority: 'high',
+      Tags: 'rotating_light',
+      ...(ALERT_EMAIL && token ? { Email: asciiHeader(ALERT_EMAIL) } : {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    };
+    if (ALERT_EMAIL && !token) {
+      console.log(`[${TAG}] ALERT_EMAIL is set but ALERT_TOKEN is not — ntfy refuses anonymous email; sending push only`);
+    }
+    const post = async (h) =>
+      fetch('https://ntfy.sh/' + encodeURIComponent(topic), { method: 'POST', headers: h, body });
+    try {
+      let res = await post(headers);
+      if (!res.ok && headers.Email) {
+        // EMAIL TROUBLE MUST NOT COST US THE PUSH. ntfy rejects the whole
+        // request when the address is unverified or the plan disallows it —
+        // so the alert vanished entirely because of a delivery preference.
+        // Retry without the Email header: a notification that arrives by one
+        // channel beats one that arrives by none.
+        const why = (await res.text()).slice(0, 200);
+        console.log(`[${TAG}] email delivery refused (${res.status}): ${why} — retrying as push only`);
+        const { Email, ...pushOnly } = headers;
+        res = await post(pushOnly);
+      }
+      if (!res.ok) {
+        console.log(`[${TAG}] alert rejected (${res.status}): ${(await res.text()).slice(0, 200)}`);
+      } else {
+        console.log(`[${TAG}] alerted via ntfy topic ${topic}`);
+      }
+    } catch (e) {
+      console.log(`[${TAG}] could not send alert: ${e.message}`);
+    }
+  }
+  if (ALERT_URL) {
+    try {
+      await fetch(ALERT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subject, body, at: new Date().toISOString() }),
+      });
+      console.log(`[${TAG}] posted alert to ${ALERT_URL}`);
+    } catch (e) {
+      console.log(`[${TAG}] could not POST alert: ${e.message}`);
+    }
+  }
+}
 
 if (NODES.length < 2) {
   console.error(`[${TAG}] NODES must list at least two RPC endpoints — a fleet of one cannot disagree`);
@@ -193,14 +290,40 @@ async function check() {
   return 'disagreed';
 }
 
-if (ONCE) {
+/** Run a check and alert on the TRANSITION into (or out of) disagreement. */
+async function checkAndAlert() {
   const verdict = await check();
+  const previous = lastVerdict();
+
+  if (verdict === 'disagreed' && previous !== 'disagreed') {
+    await alert(
+      'Swimchain fleet DISAGREEMENT',
+      [
+        'The fleet is running more than one chain.',
+        'This is the 2026-07-28 condition, which is invisible to every',
+        'user-facing read because content and mempool gossip across chains.',
+        '',
+        'Check: journalctl -u fleet-agreement -n 50',
+      ].join(String.fromCharCode(10))
+    );
+  } else if (verdict === 'agreed' && previous === 'disagreed') {
+    await alert('Swimchain fleet agrees again', 'The fleet is back on one chain.');
+  }
+
+  // Only remember conclusive verdicts: an unreachable node must not be able to
+  // clear the alarm, or a fork plus a network blip reads as "resolved".
+  if (verdict !== 'unknown') rememberVerdict(verdict);
+  return verdict;
+}
+
+if (ONCE) {
+  const verdict = await checkAndAlert();
   process.exit(verdict === 'agreed' ? 0 : verdict === 'disagreed' ? 1 : 2);
 } else {
   console.log(`[${TAG}] watching ${NODES.length} nodes every ${INTERVAL_MS / 1000}s (compare depth ${DEPTH})`);
   for (;;) {
     try {
-      await check();
+      await checkAndAlert();
     } catch (e) {
       console.log(`[${TAG}] check failed: ${e.message}`);
     }
