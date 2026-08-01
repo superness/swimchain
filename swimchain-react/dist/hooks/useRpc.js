@@ -8,6 +8,7 @@ import { jsx as _jsx } from "react/jsx-runtime";
  */
 import { createContext, useContext, useState, useEffect, useCallback, useRef, } from 'react';
 import { SwimchainRpc, LOCAL_TESTNET, TESTNET_SEED_SF, } from '../lib/rpc';
+import { isInIframe, getParentConfig, subscribeParentConfig, } from '../lib/parentConfig';
 const RpcContext = createContext(null);
 /**
  * RPC Provider component
@@ -90,6 +91,72 @@ export function RpcProvider({ children, config, useRemoteSeed = false, signature
     useEffect(() => {
         if (!autoConnect)
             return;
+        // Iframed (embedded in Surf/desktop): the parent shell owns the node identity
+        // and hands the RPC endpoint + auth cookie over via SWIMCHAIN_RPC_CONFIG
+        // (postMessage). Never fall back to the static LOCAL_TESTNET/baked `config`
+        // prop in this mode — that would silently connect as a throwaway/local
+        // identity instead of the user's real node. Wait for the parent config
+        // instead, superseding any baked endpoint the game was built with.
+        if (isInIframe()) {
+            let cancelled = false;
+            let lastConnectKey = null;
+            const buildConfigFromParent = (parent) => {
+                if (!parent.rpcEndpoint)
+                    return null;
+                return { endpoint: parent.rpcEndpoint, authHeader: parent.rpcAuth, timeout: 30000 };
+            };
+            const connectIfChanged = (parent) => {
+                if (cancelled || !parent)
+                    return;
+                const cfg = buildConfigFromParent(parent);
+                if (!cfg)
+                    return;
+                // Skip if these are the same connect inputs we already connected (or are
+                // connecting) with — repoints are refused by mergeTrustedConfig, but a
+                // later trusted message may still fill previously-empty fields (e.g.
+                // nodeAddress), which replays here without changing endpoint/authHeader.
+                const key = `${cfg.endpoint}::${cfg.authHeader ?? ''}`;
+                if (key === lastConnectKey)
+                    return;
+                lastConnectKey = key;
+                if (retryIntervalRef.current) {
+                    clearInterval(retryIntervalRef.current);
+                    retryIntervalRef.current = null;
+                }
+                const attemptConnect = async () => {
+                    const success = await connect(cfg);
+                    if (!success && !cancelled && retryInterval > 0) {
+                        retryIntervalRef.current = setInterval(async () => {
+                            const retrySuccess = await connect(cfg);
+                            if (retrySuccess && retryIntervalRef.current) {
+                                clearInterval(retryIntervalRef.current);
+                                retryIntervalRef.current = null;
+                            }
+                        }, retryInterval);
+                    }
+                };
+                attemptConnect();
+            };
+            // Load-bearing mount read (review finding #2): the module-level listener in
+            // parentConfig.ts attaches at import time and can populate the singleton
+            // BEFORE this effect runs — the shell posts the handover on the iframe's
+            // `load` event, which can beat a post-commit React effect. Connect from it
+            // immediately when already present instead of only reacting to a future
+            // message.
+            connectIfChanged(getParentConfig());
+            // Subscribe for config that hasn't arrived yet, and for later trusted
+            // updates (e.g. a nodeAddress fill) once it has.
+            const unsubscribe = subscribeParentConfig(connectIfChanged);
+            return () => {
+                cancelled = true;
+                unsubscribe();
+                if (retryIntervalRef.current) {
+                    clearInterval(retryIntervalRef.current);
+                    retryIntervalRef.current = null;
+                }
+            };
+        }
+        // Standalone (not iframed): unchanged static-config auto-connect.
         const effectiveConfig = config ?? (useRemoteSeed ? TESTNET_SEED_SF : LOCAL_TESTNET);
         const doConnect = async () => {
             const success = await connect(effectiveConfig);

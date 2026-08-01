@@ -157,6 +157,13 @@ export interface RpcConfig {
     username: string;
     password: string;
   };
+  /**
+   * Raw `Authorization` header value (e.g. `'Basic base64...'`), already fully
+   * formed — emitted verbatim, never re-wrapped or re-encoded. Takes precedence
+   * over `auth`. Used for the node-identity cookie a Surf/desktop shell hands an
+   * embedded game via `SWIMCHAIN_RPC_CONFIG` (`parentConfig.ts`'s `rpcAuth`).
+   */
+  authHeader?: string;
   /** Request timeout in milliseconds */
   timeout?: number;
 }
@@ -200,6 +207,7 @@ async function sha256(data: Uint8Array): Promise<Uint8Array> {
 export class SwimchainRpc {
   private endpoint: string;
   private auth?: { username: string; password: string };
+  private authHeader?: string;
   private signatureAuth: SignatureAuth | null = null;
   private timeout: number;
   private requestId = 1;
@@ -209,6 +217,7 @@ export class SwimchainRpc {
   constructor(config: RpcConfig) {
     this.endpoint = config.endpoint;
     this.auth = config.auth;
+    this.authHeader = config.authHeader;
     this.timeout = config.timeout ?? 30000;
   }
 
@@ -257,6 +266,10 @@ export class SwimchainRpc {
       headers['X-CS-Identity'] = this.signatureAuth.publicKey;
       headers['X-CS-Timestamp'] = timestamp;
       headers['X-CS-Signature'] = signatureHex;
+    } else if (this.authHeader) {
+      // Raw auth header, already fully formed (e.g. from a parent frame's
+      // SWIMCHAIN_RPC_CONFIG cookie handover) — emit verbatim, no re-encoding.
+      headers['Authorization'] = this.authHeader;
     } else if (this.auth) {
       const credentials = `${this.auth.username}:${this.auth.password}`;
       headers['Authorization'] = `Basic ${btoa(credentials)}`;
