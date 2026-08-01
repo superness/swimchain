@@ -2463,9 +2463,20 @@ impl BackgroundTaskRunner {
             }
         }
 
-        // Cleanup: remove from pool and manager
-        connection_pool.remove(&peer_id).await;
-        connection_manager.remove_connection(&peer_id, DisconnectReason::Normal);
+        // Cleanup — guarded, because this loop owns exactly ONE connection:
+        // the one it was spawned with. If a redial replaced it, the pool entry
+        // (and the manager handle) now describe the REPLACEMENT, and removing
+        // by peer id here would tear that fresh connection down moments after
+        // it was added. Touch the manager only when we removed our own entry,
+        // or when no entry exists at all (strike eviction already emptied the
+        // slot and nobody else will clear the manager's metadata).
+        let was_current = connection_pool
+            .remove_if_same(&peer_id, &peer_conn)
+            .await
+            .is_some();
+        if was_current || connection_pool.get(&peer_id).await.is_none() {
+            connection_manager.remove_connection(&peer_id, DisconnectReason::Normal);
+        }
         info!("[MSG-LOOP] Cleanup complete for peer {}", peer_id_hex);
     }
 
