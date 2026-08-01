@@ -409,29 +409,28 @@ disabled until the set has acquired its first signal (`acquired` in
 | Dwell's "rendered" is an **approximation**: `dwell.mjs`'s `tuned()` snapshots `list_space_content` over `ch.spaces` at tune time and treats body-present items from that snapshot as "what's on screen" — but the channel's own iframe (feed-client) may apply its own follow-preferences/sorting/blocklist filtering and actually render a different set than a raw `list_space_content` call over `ch.spaces` would suggest. Flagged for operator sign-off, not fixed in B | flagged, operator sign-off |
 | Task 3's dwell ledger is write-only: `localStorage`'s `engage:<content_id>` keys accumulate forever (slow growth, no stale-key sweep), and `ledgerMark` has no `try`/`catch` around `setItem` (a quota-full rejection would reject `fire()`'s timer promise unhandled). Minor, deferred at Task 3's own review | minor, deferred |
 
-### Open items (not yet closed, need follow-up before calling A1 fully done)
+### A1 device obligations — CLOSED 2026-07-31 (see `surf-app/spike/RESULTS.md`)
 
-- **G2 60-minute WebView background soak** (RESULTS.md's obligation, D6) —
-  deliberately **not run** in Task 5; scheduling is with the operator. The
-  PID-based sampling method (find the renderer via `dumpsys activity
-  processes com.swimchain.surf`'s isolated-UID-matched `sandboxed_processN`
-  entry, then loop `dumpsys meminfo <pid>`) is documented and ready in the
-  Task 5 brief; results should land as a `## A1 addendum — G2 on the real
-  WebView` section in `surf-app/spike/RESULTS.md`, which has not been
-  touched yet.
-- **Long-press power-toggle movement slop** — Task 3's review flagged the
-  gesture as having zero slop tolerance (any finger drift during the 800ms
-  hold cancels it, since `touchmove` unconditionally clears the timer).
-  Task 5 attempted to confirm/refute this on the Pixel but was interrupted
-  when the physical device (shared with a concurrent session) was reclaimed
-  mid-check. The final-review fix wave landed a 10px Euclidean movement
-  threshold in `touchmove` (`shell.mjs`, `LONG_PRESS_SLOP_PX`) so touchmove
-  only cancels the power timer once the finger has actually moved off the
-  touchstart point; the flip-swipe threshold in `touchend` is untouched. A
-  DOM-harness simulation of the real `touchstart`/`touchmove`/`touchend`
-  handlers (not on-device, no Tauri runtime — see
-  `.superpowers/sdd/2026-07-29-surf-a1-the-set/final-review-fixes.md` for the
-  harness and results) confirms the branch logic: jitter under 10px held
-  900ms toggles power, jitter over 10px does not. Real-finger confirmation on
-  a physical device is still open — fold it into the next device session
-  alongside the G2 soak above.
+Both standing A1 device checks were run on the operator's Pixel 8 Pro against a
+fresh debug arm64 build (A1+B+C1). Full data in `RESULTS.md`.
+
+- **G2 60-minute WebView background soak — CLOSED: SURVIVED.** PID-verified: the
+  WebView renderer (PID 8399) and the main app process (PID 8347, which hosts the
+  in-process node) were **identical before and after** a full, clean 60-minute
+  background window (61 consecutive 60s PSS samples, zero gaps). Renderer PSS
+  compacted 105.5MB→42.0MB (−60%), main 412.6MB→184.3MB (−55%), no leak
+  signature; ports 9735/9736 stayed bound the whole time (the node never
+  stopped). On return all three channels (FEED/WIKI/REEF) resumed in their exact
+  prior state — a **warm** power-on, not a cold reload — and FEED's live
+  WebSocket resumed immediately. This closes the A0 caveat on the **real Android
+  WebView** (A0 had only a Chrome-tab proxy). A first attempt was invalidated
+  (not a technical failure) by the device's owner explicitly swiping Surf from
+  Recents ~3 min in — distinguished from an OS kill via the logcat trace.
+- **Long-press power-toggle movement slop — CLOSED: PASS.** On real hardware,
+  jitter under the 10px slop (measured 7.8px) during an 800–900ms hold does
+  **not** cancel power-off; jitter over it (28.3px) correctly **does** cancel —
+  confirming the `LONG_PRESS_SLOP_PX` fix. Incidental finding (not a regression):
+  a long **stationary** hold to power back **on** does not reliably fire on this
+  WebView (the native long-press gesture appears to swallow the click) — the
+  documented "tap anywhere while off" path works and is what to rely on for
+  power-on.
