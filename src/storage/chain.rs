@@ -2455,7 +2455,33 @@ impl ChainStore {
                     ),
                 }
             }
-            let _ = self.clear_side_effects_applied(old_hash);
+            if let Err(e) = self.clear_side_effects_applied(old_hash) {
+                log::warn!(
+                    "[REORG] Failed to clear applied flag for displaced block {}: {}",
+                    hex::encode(&old_hash[..8]),
+                    e
+                );
+            }
+        }
+
+        // Content-skip marks are judgements about the chain that just lost.
+        // See clear_content_skips_at_or_above: leaving them makes a block whose
+        // content we do not have read as complete, for ever.
+        if let Some(fork_height) = orphaned
+            .iter()
+            .filter_map(|h| self.get_root_block(h).ok().flatten())
+            .map(|b| b.height)
+            .min()
+        {
+            match self.clear_content_skips_at_or_above(fork_height) {
+                Ok(n) if n > 0 => log::info!(
+                    "[REORG] Cleared {} content-skip mark(s) at or above height {}",
+                    n,
+                    fork_height
+                ),
+                Ok(_) => {}
+                Err(e) => log::warn!("[REORG] Failed to clear content-skip marks: {}", e),
+            }
         }
 
         Ok(Some(orphaned))
@@ -3656,6 +3682,47 @@ impl ChainStore {
         self.skipped_content_blocks
             .insert(content_block_hash, &claiming_height.to_be_bytes())?;
         Ok(())
+    }
+
+    /// Forget every "deliberately skipped" mark made at or above `height`.
+    ///
+    /// A skip records a judgement about the CURRENT canonical chain: "these
+    /// actions are already finalized in another block, so this content block
+    /// need not be fetched". A reorg invalidates every such judgement at or
+    /// above the fork point — the block that supposedly already held those
+    /// actions may no longer be canonical.
+    ///
+    /// Nothing cleared this tree. It is persisted and was write-only (no
+    /// unmark function existed anywhere), while `root_content_complete` and
+    /// `find_content_gap_heights` both treat a skipped block as SATISFIED. So
+    /// after a reorg the node would consider a block complete whose content it
+    /// does not have, apply its side effects, mark it done, and never
+    /// re-request it: silent data loss, newly reachable now that deep reorgs
+    /// actually happen.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database operation fails.
+    pub fn clear_content_skips_at_or_above(&self, height: u64) -> Result<usize, StorageError> {
+        let mut stale: Vec<sled::IVec> = Vec::new();
+        for entry in self.skipped_content_blocks.iter() {
+            let (key, value) = entry?;
+            let claimed = value
+                .as_ref()
+                .try_into()
+                .map(u64::from_be_bytes)
+                // An unreadable mark cannot be trusted to be below the fork
+                // point either, so treat it as stale rather than keeping it.
+                .unwrap_or(u64::MAX);
+            if claimed >= height {
+                stale.push(key);
+            }
+        }
+        let cleared = stale.len();
+        for key in stale {
+            self.skipped_content_blocks.remove(key)?;
+        }
+        Ok(cleared)
     }
 
     /// Whether this content block was deliberately skipped as a canonical
