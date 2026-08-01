@@ -90,10 +90,17 @@ export async function isSponsored(rpc, pubkeyHex) {
  * @throws Error('no-unscoped-offer') when nothing unscoped has slots.
  */
 export async function requestSponsorship({
-  rpc, sign, pubkeyHex,
+  rpc, sign, pubkeyHex, applicationText,
   digest = (buf) => crypto.subtle.digest('SHA-256', buf),
   now = () => Date.now(),
 }) {
+  // A sponsor is a person deciding whether to vouch for a stranger. Nobody
+  // approves a blind claim with no message attached, and offers can require
+  // one outright (`requirements.application_required`, enforced node-side in
+  // offer_validation.rs). Refuse to send an empty one.
+  const application = (applicationText ?? '').trim();
+  if (!application) throw new Error('application-required');
+
   const list = await rpc('list_sponsorship_offers', { limit: 200 }).catch(() => ({ offers: [] }));
   const pick = selectSponsorOffer(list?.offers ?? []);
   if (!pick) throw new Error('no-unscoped-offer');
@@ -109,7 +116,7 @@ export async function requestSponsorship({
   await rpc('claim_sponsorship_offer', {
     offer_id: pick.offer_id,
     claimant_pubkey: pubkeyHex,
-    application_text: null,
+    application_text: application,
     pow_nonce: nonce,
     pow_difficulty: minDifficulty,
     pow_nonce_space: bytesToHex(nonceSpace),

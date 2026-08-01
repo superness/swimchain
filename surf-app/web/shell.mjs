@@ -612,21 +612,33 @@ function startSponsorPoll() {
   }, 8000);
 }
 
+// A sponsor is a person deciding whether to vouch for a stranger; nobody
+// approves a blind claim. The button stays dead until they've written
+// something, and sponsorship.mjs refuses an empty application anyway.
+document.getElementById('sponsor-note').addEventListener('input', (e) => {
+  document.getElementById('sponsor-btn').disabled = !e.target.value.trim();
+});
+
 document.getElementById('sponsor-btn').addEventListener('click', async () => {
   const btn = document.getElementById('sponsor-btn');
+  const note = document.getElementById('sponsor-note');
   btn.disabled = true;
   sponsorStatus('Proving this set is real…');
   try {
-    await requestSponsorship({ rpc, sign, pubkeyHex: myPk });
+    await requestSponsorship({ rpc, sign, pubkeyHex: myPk, applicationText: note.value });
+    note.disabled = true;
     btn.hidden = true;
     sponsorStatus('Request sent. A person has to approve it — this set tunes itself in the moment they do.');
     startSponsorPoll();
   } catch (e) {
-    btn.disabled = false;
+    btn.disabled = !note.value.trim();
+    const msg = String(e?.message);
     sponsorStatus(
-      String(e?.message) === 'no-unscoped-offer'
+      msg === 'no-unscoped-offer'
         ? 'No open sponsorship to request right now. Ask someone already on the network to sponsor the address above.'
-        : `Request failed: ${e?.message ?? e}`
+        : msg === 'application-required'
+          ? 'Say something first — a person reads this before they vouch for you.'
+          : `Request failed: ${e?.message ?? e}`
     );
   }
 });

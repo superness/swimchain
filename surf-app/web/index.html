@@ -88,6 +88,11 @@
                             margin-bottom: 6px; }
   #sponsor-addr { display: block; font: 12px/1.5 monospace; color: #cfe; word-break: break-all;
                   background: #0b1410; border: 1px solid #2a4a3a; padding: 8px 10px; }
+  #sponsor-gate .sg-say { margin-top: 18px; }
+  #sponsor-note { display: block; width: 100%; box-sizing: border-box; resize: none;
+                  font: 13px/1.5 monospace; color: #cfe; background: #0b1410;
+                  border: 1px solid #2a4a3a; padding: 8px 10px; }
+  #sponsor-note::placeholder { color: #5d7a6c; }
   #sponsor-gate .sg-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;
                               margin-top: 18px; }
   #sponsor-gate button { font: bold 14px monospace; padding: 10px 20px; background: #041;
@@ -249,8 +254,11 @@
         person, not a queue.</p>
       <div class="sg-label">THIS SET'S ADDRESS</div>
       <code id="sponsor-addr">&mdash;</code>
+      <div class="sg-label sg-say">SAY SOMETHING FOR YOURSELF</div>
+      <textarea id="sponsor-note" rows="3" maxlength="280"
+        placeholder="Who are you, and why do you want in? A person reads this."></textarea>
       <div class="sg-actions">
-        <button id="sponsor-btn">REQUEST SPONSORSHIP</button>
+        <button id="sponsor-btn" disabled>REQUEST SPONSORSHIP</button>
         <button id="sponsor-copy">COPY ADDRESS</button>
       </div>
       <div id="sponsor-status"></div>

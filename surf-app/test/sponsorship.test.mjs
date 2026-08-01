@@ -77,9 +77,45 @@ test('requestSponsorship throws no-unscoped-offer when only game offers exist', 
     throw new Error(`unexpected ${m}`);
   };
   await assert.rejects(
-    () => requestSponsorship({ rpc, sign: async () => 'ff', pubkeyHex: 'ab'.repeat(32), digest }),
+    () => requestSponsorship({
+      rpc, sign: async () => 'ff', pubkeyHex: 'ab'.repeat(32), digest,
+      applicationText: 'hello, I would like to join',
+    }),
     /no-unscoped-offer/
   );
+});
+
+// Nobody approves a blind claim. Refuse to send one — and refuse BEFORE
+// listing offers, so an empty application can't even burn an RPC round trip.
+test('requestSponsorship refuses an empty application', async () => {
+  let called = false;
+  const rpc = async () => { called = true; return { offers: [unscoped('b1', 5)] }; };
+  for (const text of [undefined, '', '   ', '\n\t ']) {
+    await assert.rejects(
+      () => requestSponsorship({
+        rpc, sign: async () => 'ff', pubkeyHex: 'ab'.repeat(32), digest, applicationText: text,
+      }),
+      /application-required/,
+      `expected rejection for ${JSON.stringify(text)}`
+    );
+  }
+  assert.equal(called, false, 'must reject before hitting the network');
+});
+
+test('requestSponsorship sends the trimmed application text with the claim', async () => {
+  const calls = [];
+  const rpc = async (m, p) => {
+    calls.push([m, p]);
+    if (m === 'list_sponsorship_offers') return { offers: [unscoped('b1', 5)] };
+    if (m === 'claim_sponsorship_offer') return { ok: true };
+    throw new Error(`unexpected ${m}`);
+  };
+  await requestSponsorship({
+    rpc, sign: async () => 'ee'.repeat(64), pubkeyHex: 'ab'.repeat(32), digest,
+    applicationText: '  I run a node and want to read the wiki.  ',
+  });
+  const claim = calls.find((c) => c[0] === 'claim_sponsorship_offer')[1];
+  assert.equal(claim.application_text, 'I run a node and want to read the wiki.');
 });
 
 test('requestSponsorship claims the unscoped offer and passes bit difficulty through', async () => {
@@ -92,7 +128,7 @@ test('requestSponsorship claims the unscoped offer and passes bit difficulty thr
   };
   const out = await requestSponsorship({
     rpc, sign: async () => 'ee'.repeat(64), pubkeyHex: 'ab'.repeat(32),
-    digest, now: () => 1_700_000_000_000,
+    digest, now: () => 1_700_000_000_000, applicationText: 'let me in please',
   });
   assert.equal(out.offerId, 'b1');
   const claim = calls.find((c) => c[0] === 'claim_sponsorship_offer')[1];
