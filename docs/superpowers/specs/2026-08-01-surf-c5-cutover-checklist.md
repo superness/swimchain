@@ -9,14 +9,22 @@ resolution order, CI env vars).
 
 **What "the cutover" means:** today `website/download-android.html` and the
 Android card on `website/download.html` both ship `mobile-app`
-(`com.swimchain.mobile`) as *the* Android download. The cutover repoints both
-pages at a signed **Surf** (`com.swimchain.surf`) release APK and rewrites
-their copy to Surf's channel/deck framing. `download-android.html`'s prose was
-pre-drafted for Surf in C5 (task 3) but its download link, version, size, and
-SHA-256 still point at the real `mobile-v0.1.10-alpha` artifact — see the
-`<!-- C5 TODO -->` HTML comment immediately above the download `<a>` in that
-file. Do not skip steps or reorder (g) ahead of (f) — that would 404 real
-users.
+(`com.swimchain.mobile`) as *the* Android download, and both pages are
+consistently "Swimchain"-branded end to end. The cutover repoints both pages
+at a signed **Surf** (`com.swimchain.surf`) release APK and rewrites their
+copy to Surf's channel/deck framing, atomically — link, meta, hero prose,
+walkthrough body text, and screenshots all flip together. C5 (task 3) drafted
+Surf's hero copy, then deliberately kept it **out** of the live file (round-1
+review: a Surf-branded hero above a mobile-app download button + a
+"Launch Swimchain" walkthrough was a self-contradictory, half-migrated page —
+a landmine if `website/` deploys before the real cutover). That drafted copy
+lives below under step (g)'s "Paste-ready Surf copy," ready to paste in
+during the same edit that fills the link/meta. Today the only trace of C5 in
+`download-android.html` is the `<!-- C5 TODO -->` HTML comment immediately
+above the download `<a>` — everything else in that file reads exactly as it
+did before C5. Do not skip steps or reorder (g) ahead of (f) — that would 404
+real users. Do not paste the Surf copy in ahead of (f)/(g) either — that
+would recreate the half-migrated state this runbook exists to avoid.
 
 ## Steps
 
@@ -116,9 +124,71 @@ Using the values recorded in (f):
 - Delete the TODO comment once every field is filled and verified against the
   actual uploaded asset (re-download and re-hash it — don't trust a copy-paste
   of what `gh release create` printed).
-- The page's prose (title, eyebrow, h1, lede, meta description) was already
-  rewritten to Surf's channel/deck framing in C5 task 3 — no further copy
-  changes needed there, only the link/meta block.
+- **Also flip the prose at this step, atomically with the link.** C5 task 3
+  drafted Surf's hero copy but then reverted it out of the live file (round-1
+  review finding: a Surf-branded hero above a mobile-app download button +
+  "Launch Swimchain" walkthrough was a self-contradictory, half-migrated page
+  — a landmine if `website/` ever deployed before the real cutover). The
+  drafted copy is preserved below in "Paste-ready Surf copy" — paste it back
+  in at this step, in the same edit that fills the link/meta, so the page
+  never spends any time in a half-Surf/half-Swimchain state. Today (pre-C5)
+  `download-android.html` is 100% "Swimchain"; post-(g) it should be 100%
+  "Surf" — never a mix.
+
+### Paste-ready Surf copy (drafted in C5 task 3, held here until (g) lands)
+
+**`<title>`** (line 1):
+```html
+<title>Install Surf on Android</title>
+```
+
+**`<meta name="description">`** (line 2):
+```html
+<meta name="description" content="Install Surf, Swimchain's channel-surfing app for Android — flip between FEED, WIKI, REEF, CHIPS, and CHESS like a TV, with your own node running behind it. Step-by-step sideload guide for the APK.">
+```
+
+**`.eyebrow` / `<h1>` / `.lede`** (inside `.page-hero`):
+```html
+<span class="eyebrow">Android · Surf</span>
+<h1>Install Surf on Android</h1>
+<p class="lede">
+  Surf turns Swimchain into <strong>a TV you flip through</strong> — FEED, WIKI,
+  REEF, CHIPS, CHESS — each channel a live client talking straight to
+  <strong>your own node</strong>, running in your pocket, no server, no account.
+  Because it's distributed as a sideloaded APK (not through the Play Store),
+  installing takes a few extra taps. Here's the whole thing.
+</p>
+```
+
+**Everything else in the file that says "Swimchain" and must ALSO flip to
+"Surf" at this same step** (catalogued by `grep -n -i swimchain
+website/download-android.html` against the pre-C5 file — the walkthrough body
+was deliberately left untouched by C5 task 3, so all of this is still
+pending):
+
+| Location | Current text | Change to |
+|---|---|---|
+| Play Protect screenshot alt (`/img/android-play-protect.png`) | `alt="Google Play Protect 'App scan recommended' dialog for Swimchain"` | `...for Surf` |
+| Scan-safe screenshot alt (`/img/android-scan-safe.png`) | `alt="Google Play Protect result: 'This app looks safe' for Swimchain, with an Install button"` | `...for Surf, with an Install button` |
+| "Open the app & allow notifications" step body | `Launch Swimchain and tap **Allow** on the notification prompt.` | `Launch Surf and tap **Allow**...` |
+| Notifications screenshot alt (`/img/android-notifications.png`) | `alt="Swimchain running (node synced, 1 peer) with the 'Allow Swimchain to send you notifications?' prompt"` | `alt="Surf running (node synced, 1 peer) with the 'Allow Surf to send you notifications?' prompt"` |
+| Reassurance paragraph | `...These warnings appear for **any** app installed outside the Play Store — they're not specific to Swimchain.` | `...specific to Surf.` |
+
+**Important — the screenshots are real OS dialogs, not just alt-text.** The
+three `<img>` sources (`android-play-protect.png`, `android-scan-safe.png`,
+`android-notifications.png`) are actual photos/captures of a device installing
+and running **mobile-app** — the OS-level Play Protect and notification
+dialogs literally render the app's display name ("Swimchain") on-screen, not
+just this page's alt-text. Swapping the alt-text alone would make the alt-text
+lie about what the screenshot shows. These three screenshots must be **retaken
+against a real Surf release build** (same install walkthrough, same device,
+same steps, but with Surf installed) before or as part of this step — treat
+stale screenshots the same as a stale download link: don't ship them.
+
+The `<a class="mark" href="/">swimchain<span class="tld">.io</span></a>` site
+mark, the footer's `swimchain.io — content that earns its place`, and the
+GitHub org link (`github.com/superness/swimchain`) are the **site's** brand,
+not the app's — these do not change; only app-identity copy does.
 
 ### (h) Flip `download.html`'s Android card
 
