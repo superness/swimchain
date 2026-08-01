@@ -2771,8 +2771,22 @@ impl MessageRouter {
         }
 
         // Store root block with fork resolution (Bitcoin-style heaviest chain wins)
-        match chain_store.put_root_block_with_fork_resolution(&root_block) {
-            Ok((hash, is_new_tip)) => {
+        match chain_store.put_root_block_with_fork_resolution_reporting(&root_block) {
+            Ok((hash, is_new_tip, displaced)) => {
+                // A DEEP REORG'S LOSERS ARE NOT LOST WORK. Their actions are
+                // signed and PoW-paid; they simply lost a chain race, so they
+                // go back to the mempool for the next forger — exactly what the
+                // same-height rollback path has always done. Skipping this is
+                // what cost one player 1,230 moves on 2026-08-01.
+                if !displaced.is_empty() {
+                    let orphaned = chain_store.orphaned_actions_in_blocks(&displaced);
+                    info!(
+                        "[REORG] Re-anchoring {} actions from {} displaced blocks",
+                        orphaned.len(),
+                        displaced.len()
+                    );
+                    self.requeue_and_regossip_orphans(orphaned).await;
+                }
                 // Tell the formation gate how high a VALIDATED block we
                 // have seen. This is the forgery-resistant "the network is
                 // ahead of me" signal (formation_gate.rs) — raising it costs
@@ -4177,9 +4191,20 @@ impl MessageRouter {
             }
 
             // Store the root block with fork resolution
-            match chain_store.put_root_block_with_fork_resolution(&root_block) {
-                Ok((hash, is_new_tip)) => {
+            match chain_store.put_root_block_with_fork_resolution_reporting(&root_block) {
+                Ok((hash, is_new_tip, displaced)) => {
                     stored_count += 1;
+                    // See the note at the handle_block_data site: a deep reorg
+                    // must return the losing branch's work to the mempool.
+                    if !displaced.is_empty() {
+                        let orphaned = chain_store.orphaned_actions_in_blocks(&displaced);
+                        info!(
+                            "[REORG] Re-anchoring {} actions from {} displaced blocks",
+                            orphaned.len(),
+                            displaced.len()
+                        );
+                        self.requeue_and_regossip_orphans(orphaned).await;
+                    }
                     // Tell the formation gate how high a VALIDATED block we
                     // have seen. This is the forgery-resistant "the network is
                     // ahead of me" signal (formation_gate.rs) — raising it costs

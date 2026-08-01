@@ -2374,13 +2374,102 @@ impl ChainStore {
         &self,
         block: &RootBlock,
     ) -> Result<(BlockHash, bool), StorageError> {
+        let (hash, is_new_tip, _displaced) =
+            self.put_root_block_with_fork_resolution_reporting(block)?;
+        Ok((hash, is_new_tip))
+    }
+
+    /// As `put_root_block_with_fork_resolution`, but also reports the blocks a
+    /// deep reorg displaced from the canonical chain.
+    ///
+    /// THE ACTIONS ON THOSE BLOCKS ARE NOT LOST WORK — they are signed,
+    /// PoW-paid moves that simply lost a chain race, and re-anchoring them is
+    /// the difference between a reorg and a data loss. The same-height path has
+    /// always done this (`rollback_block_at_height` hands its orphaned actions
+    /// to `requeue_and_regossip_orphans`); the deep path silently dropped them,
+    /// because `reorg_to_heavier_chain` returned the displaced list and this
+    /// function threw it away. On 2026-08-01 that cost one player 1,230 moves
+    /// when two mainnet chains were reconciled.
+    ///
+    /// Pair with [`actions_in_blocks`](Self::actions_in_blocks) to recover the
+    /// work; the caller decides what to do with it (the router requeues and
+    /// re-gossips, so any forger can seal it into the new chain).
+    pub fn put_root_block_with_fork_resolution_reporting(
+        &self,
+        block: &RootBlock,
+    ) -> Result<(BlockHash, bool, Vec<BlockHash>), StorageError> {
         // Always store the block (even if it's on a fork)
         let hash = self.put_root_block(block)?;
 
         // Update canonical chain if this block is heavier
-        let is_new_tip = self.update_best_tip_if_heavier(block)?;
+        let mut displaced = Vec::new();
+        let is_new_tip = if self.is_heavier_than_best_tip(block)? {
+            match self.make_canonical(block)? {
+                Some(orphaned) => {
+                    log::info!(
+                        "[CHAIN] New best tip: height={}, hash={}, cumulative_pow={} ({} blocks reorged out)",
+                        block.height,
+                        hex::encode(&hash[..8]),
+                        block.cumulative_pow,
+                        orphaned.len()
+                    );
+                    displaced = orphaned;
+                    true
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
 
-        Ok((hash, is_new_tip))
+        Ok((hash, is_new_tip, displaced))
+    }
+
+    /// Every action carried by `blocks`, in the shape the mempool wants
+    /// (`thread_id`, `space_id`, action, `branch_path`) — the same tuple
+    /// `get_actions_at_height` yields, so a reorg's recovery path and the
+    /// rollback path speak one language.
+    ///
+    /// By hash, NOT by height: after a reorg the height index already points
+    /// at the winning chain, so the losing blocks are only reachable this way.
+    ///
+    /// Blocks whose space/content bodies are missing locally contribute
+    /// nothing rather than failing the whole recovery — a partial re-anchor
+    /// beats none, and the missing bodies are what content sync fetches anyway.
+    #[must_use]
+    pub fn orphaned_actions_in_blocks(
+        &self,
+        blocks: &[BlockHash],
+    ) -> Vec<(
+        [u8; 32],
+        [u8; 32],
+        crate::blocks::action::Action,
+        crate::blocks::BranchPath,
+    )> {
+        let mut out = Vec::new();
+        for hash in blocks {
+            let Ok(Some(root)) = self.get_root_block(hash) else {
+                continue;
+            };
+            for sh in &root.space_block_hashes {
+                let Ok(Some(space)) = self.get_space_block(sh) else {
+                    continue;
+                };
+                for ch in &space.content_block_hashes {
+                    if let Ok(Some(content)) = self.get_content_block(ch) {
+                        for action in &content.actions {
+                            out.push((
+                                content.thread_root_id,
+                                content.space_id,
+                                action.clone(),
+                                content.branch_path.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// Reorg to a heavier chain
