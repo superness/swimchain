@@ -11,7 +11,7 @@ import {
   getLocalConfigWithAuth,
   isInTauri,
 } from '../lib/rpc';
-import { getParentConfig, isInIframe } from '@swimchain/frontend';
+import { getParentConfig, isInIframe, isConfigMessageTrusted } from '@swimchain/frontend';
 import type { Space, Reply, SyncStatus, StoredIdentity, Message, DecayInfo, PoolState } from '../types';
 
 /**
@@ -281,6 +281,12 @@ export function RpcProvider({ children }: { children: ReactNode }) {
       // Listen for parent config via message event
       // (the shared useParentRpcConfig listener stores it; we just trigger connect)
       const messageHandler = (event: MessageEvent) => {
+        // Drop any message that isn't from this frame's real parent at a trusted
+        // origin BEFORE touching the reconnect handler or unregistering — an
+        // untrusted message must not be able to consume the one-time listener.
+        if (!isConfigMessageTrusted(event, { selfOrigin: window.location.origin, parentWindow: window.parent })) {
+          return;
+        }
         if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
           handleParentConfig();
           window.removeEventListener('message', messageHandler);

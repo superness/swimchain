@@ -12,6 +12,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { isConfigMessageTrusted, mergeTrustedConfig } from '@swimchain/frontend';
 
 interface ParentRpcConfig {
   rpcEndpoint: string;
@@ -28,46 +29,33 @@ interface ParentRpcConfig {
 let parentConfig: ParentRpcConfig | null = null;
 let listeners: Array<(config: ParentRpcConfig | null) => void> = [];
 
-// Allowed parent origins for postMessage security
-// Only accept RPC config from trusted origins
-const ALLOWED_PARENT_ORIGINS: string[] = [
-  'http://localhost',           // Local development (any port)
-  'http://127.0.0.1',           // Local development (IP)
-  'tauri://localhost',          // Tauri v1 production
-  'http://tauri.localhost',     // Tauri v2 production (Windows webview origin)
-  'https://tauri.localhost',    // Tauri v2 production (macOS/Linux)
-  'https://localhost',          // Local HTTPS development
-  'https://app.swimchain.io',   // Production web app
-];
-
-// Accept same-origin (the desktop shell embeds clients under its own origin,
-// so the iframe's origin equals the shell's) plus the trusted prefixes above.
-// The prior exact .includes() match rejected Tauri v2's http://tauri.localhost,
-// which silently blocked search from ever receiving the node RPC config.
-function isOriginAllowed(origin: string): boolean {
-  if (!origin || origin === window.location.origin) return true;
-  return ALLOWED_PARENT_ORIGINS.some((allowed) => origin.startsWith(allowed));
-}
-
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
-    // Security: Validate origin before accepting config
-    if (!isOriginAllowed(event.origin)) {
+    const ctx = { selfOrigin: window.location.origin, parentWindow: window.parent };
+
+    // Security: validate origin + source before accepting any config (rejects
+    // lookalike origins and messages not sent by this frame's real parent —
+    // see @swimchain/frontend's configTrust.ts).
+    if (!isConfigMessageTrusted(event, ctx)) {
       console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
       return;
     }
 
     if (event.data?.type === 'SWIMCHAIN_RPC_CONFIG') {
-      parentConfig = {
+      const incoming: ParentRpcConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
         nodeAddress: typeof event.data.nodeAddress === 'string' ? event.data.nodeAddress : undefined,
         nodeDisplayName: typeof event.data.nodeDisplayName === 'string' ? event.data.nodeDisplayName : undefined,
       };
 
-      // Notify all listeners
-      listeners.forEach(fn => fn(parentConfig));
+      const next = mergeTrustedConfig(parentConfig, incoming);
+      if (next !== parentConfig) {
+        parentConfig = next;
+        // Notify all listeners only when the merge actually changed something.
+        listeners.forEach(fn => fn(parentConfig));
+      }
     }
   });
 }

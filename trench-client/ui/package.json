@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "test": "tsx src/lib/trenchEngine.test.ts && tsx src/lib/awayRecap.test.ts"
+    "test": "tsx src/lib/trenchEngine.test.ts && tsx src/lib/awayRecap.test.ts && tsx src/lib/configTrust.test.ts && tsx src/lib/nodeRpcListener.test.ts"
   },
   "dependencies": {
     "@swimchain/core": "file:../../swimchain-js",

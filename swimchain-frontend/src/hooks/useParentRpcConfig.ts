@@ -13,6 +13,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { isConfigMessageTrusted, mergeTrustedConfig } from './configTrust';
 
 interface ParentRpcConfig {
   rpcEndpoint: string;
@@ -27,27 +28,6 @@ interface ParentRpcConfig {
 let parentConfig: ParentRpcConfig | null = null;
 let listeners: Array<(config: ParentRpcConfig | null) => void> = [];
 
-// Allowed origins for postMessage (only accept config from trusted sources)
-// In production, this should be the exact origin of the desktop app wrapper
-const ALLOWED_ORIGINS: string[] = [
-  'http://localhost',       // Local development
-  'http://127.0.0.1',       // Local development (IP)
-  'tauri://localhost',      // Tauri desktop app
-  'https://localhost',      // Local HTTPS development
-];
-
-/**
- * Check if an origin is allowed to send RPC config
- */
-function isOriginAllowed(origin: string): boolean {
-  // Allow same-origin (empty string means same origin in some browsers)
-  if (!origin || origin === window.location.origin) {
-    return true;
-  }
-  // Check against allowlist (match prefix for port variations)
-  return ALLOWED_ORIGINS.some(allowed => origin.startsWith(allowed));
-}
-
 // Dev-mode detection that doesn't require Vite client types
 // (import.meta.env is injected by Vite; absent in other runtimes)
 const IS_DEV: boolean =
@@ -56,10 +36,13 @@ const IS_DEV: boolean =
 // Set up message listener once
 if (typeof window !== 'undefined') {
   window.addEventListener('message', (event) => {
-    // Validate origin before accepting any config
-    if (!isOriginAllowed(event.origin)) {
+    const ctx = { selfOrigin: window.location.origin, parentWindow: window.parent };
+
+    // Validate origin + source before accepting any config (rejects lookalike origins
+    // and messages not sent by this frame's real parent — see configTrust.ts).
+    if (!isConfigMessageTrusted(event, ctx)) {
       if (IS_DEV) {
-        console.warn('[ParentConfig] Rejected message from untrusted origin:', event.origin);
+        console.warn('[ParentConfig] Rejected untrusted message:', event.origin);
       }
       return;
     }
@@ -73,7 +56,7 @@ if (typeof window !== 'undefined') {
         });
       }
 
-      parentConfig = {
+      const incoming: ParentRpcConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
         ...(typeof event.data.nodeAddress === 'string'
@@ -84,8 +67,11 @@ if (typeof window !== 'undefined') {
           : {}),
       };
 
-      // Notify all listeners
-      listeners.forEach(fn => fn(parentConfig));
+      const next = mergeTrustedConfig(parentConfig, incoming);
+      if (next !== parentConfig) {
+        parentConfig = next;
+        listeners.forEach(fn => fn(parentConfig));
+      }
     }
   });
 }

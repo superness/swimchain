@@ -11,6 +11,7 @@
 
 import { useState, useEffect } from 'react';
 import { logger } from '../lib/logger';
+import { isConfigMessageTrusted, mergeTrustedConfig } from './configTrust';
 
 interface ParentRpcConfig {
   rpcEndpoint: string;
@@ -33,17 +34,12 @@ if (typeof window !== 'undefined') {
       hasData: !!event.data,
     });
 
-    // Validate origin to prevent credential interception from malicious sources
-    // Accept messages from same origin or from parent frame (tauri://localhost or http://localhost:*)
-    const validOrigins = [
-      window.location.origin,
-      'tauri://localhost',
-    ];
-    const isLocalhost = event.origin.startsWith('http://localhost:') ||
-                        event.origin.startsWith('https://localhost:');
-
-    if (!validOrigins.includes(event.origin) && !isLocalhost) {
-      logger.warn('[ParentConfig] Ignoring message from untrusted origin:', event.origin);
+    // Validate origin + source before accepting any config (rejects lookalike origins
+    // and messages not sent by this frame's real parent — see ./configTrust.ts, a
+    // byte-identical copy of @swimchain/frontend's canonical trust check).
+    const ctx = { selfOrigin: window.location.origin, parentWindow: window.parent };
+    if (!isConfigMessageTrusted(event, ctx)) {
+      logger.warn('[ParentConfig] Ignoring untrusted message:', event.origin);
       return;
     }
 
@@ -54,13 +50,17 @@ if (typeof window !== 'undefined') {
         origin: event.origin,
       });
 
-      parentConfig = {
+      const incoming: ParentRpcConfig = {
         rpcEndpoint: event.data.rpcEndpoint,
         rpcAuth: event.data.rpcAuth,
       };
 
-      // Notify all listeners
-      listeners.forEach(fn => fn(parentConfig));
+      const next = mergeTrustedConfig(parentConfig, incoming);
+      if (next !== parentConfig) {
+        parentConfig = next;
+        // Notify all listeners only when the merge actually changed something.
+        listeners.forEach(fn => fn(parentConfig));
+      }
     }
   });
 }
