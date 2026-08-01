@@ -13,7 +13,7 @@ use log::{debug, info, warn};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::network::{NetworkContext, WireError};
 use crate::transport::TransportError;
@@ -42,6 +42,16 @@ pub struct PeerConnection {
     /// this counts a peer that is persistently unreachable, not one that had a
     /// bad moment. At `MAX_SEND_STRIKES` the peer is dropped from the pool.
     send_strikes: std::sync::atomic::AtomicU32,
+    /// Set by [`close`](Self::close), observed by [`recv`](Self::recv). A
+    /// connection evicted from the pool (replaced by a redial, or dropped for
+    /// send strikes) has its read task parked in `recv()` holding the LAST Arc
+    /// — on a socket nobody will write to or close again. Without an abort
+    /// signal that task never exits, the Arc never drops, and the socket fd
+    /// leaks: ~33 fds/hour on the 2026-07-31 mainnet seed, EMFILE at the
+    /// 1024-fd rlimit, and no peer could join the network for two hours.
+    closed: std::sync::atomic::AtomicBool,
+    /// Wakes any parked `recv()` when `close()` fires (see `closed`).
+    close_signal: Notify,
 }
 
 impl PeerConnection {
@@ -60,7 +70,23 @@ impl PeerConnection {
             remote_addr,
             established: std::sync::atomic::AtomicBool::new(established),
             send_strikes: std::sync::atomic::AtomicU32::new(0),
+            closed: std::sync::atomic::AtomicBool::new(false),
+            close_signal: Notify::new(),
         }
+    }
+
+    /// Abort this connection: any parked or future `recv()` returns `Ok(None)`
+    /// so the owning read task exits and drops its Arc — which is what actually
+    /// releases the socket fd. Must be called whenever the connection leaves
+    /// the pool while its read task may still be alive (replacement by a
+    /// redial, strike eviction). Idempotent.
+    ///
+    /// Ordering contract with `recv()`: the flag is stored BEFORE the wakeup,
+    /// and `recv()` registers for the wakeup BEFORE loading the flag — so a
+    /// close can never fall between the load and the park and be missed.
+    pub fn close(&self) {
+        self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.close_signal.notify_waiters();
     }
 
     /// Get the peer ID
@@ -99,8 +125,27 @@ impl PeerConnection {
     /// Receive a message from this peer
     ///
     /// This only locks the read half, so it can run concurrently with send().
-    /// Returns `Ok(None)` if connection was closed cleanly.
+    /// Returns `Ok(None)` if the connection was closed cleanly — by the remote
+    /// end, or locally via [`close`](Self::close).
     pub async fn recv(&self) -> Result<Option<MessageEnvelope>, TransportError> {
+        // Register for the close wakeup BEFORE loading the flag (see close()'s
+        // ordering contract): a close between the load and the await would
+        // otherwise be missed and park this task forever — the exact leak this
+        // mechanism exists to end.
+        let closed = self.close_signal.notified();
+        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
+        }
+        tokio::select! {
+            _ = closed => Ok(None),
+            r = self.recv_inner() => r,
+        }
+    }
+
+    /// The blocking read path of [`recv`](Self::recv). Cancellation-unsafe
+    /// mid-message (a partial header read is lost), which is fine: the only
+    /// cancellation is `close()`, after which the socket is dead anyway.
+    async fn recv_inner(&self) -> Result<Option<MessageEnvelope>, TransportError> {
         let mut reader = self.reader.lock().await;
 
         // Read 46-byte header
@@ -247,7 +292,17 @@ impl PeerConnectionPool {
     ) -> Arc<PeerConnection> {
         let peer_conn = Arc::new(PeerConnection::new(stream, peer_id, established));
         let mut connections = self.connections.write().await;
-        connections.insert(peer_id, peer_conn.clone());
+        if let Some(replaced) = connections.insert(peer_id, peer_conn.clone()) {
+            // A redial to a peer we already hold. The map no longer references
+            // the old connection, but its read task does — abort it, or the
+            // socket fd leaks for the life of the process (2026-07-31 outage:
+            // the seed EMFILE'd after ~30h of this, one fd per redial).
+            replaced.close();
+            info!(
+                "[PEER-POOL] Replaced connection to {} — closed the old socket",
+                hex::encode(&peer_id[..8]),
+            );
+        }
         info!(
             "[PEER-POOL] Added peer {} (total: {})",
             hex::encode(&peer_id[..8]),
@@ -256,11 +311,16 @@ impl PeerConnectionPool {
         peer_conn
     }
 
-    /// Remove a connection from the pool
+    /// Remove a connection from the pool.
+    ///
+    /// Also closes it: eviction must release the socket fd, not just the map
+    /// entry — the connection's read task holds the last Arc and stays parked
+    /// in `recv()` until closed (see [`PeerConnection::close`]).
     pub async fn remove(&self, peer_id: &[u8; 32]) -> Option<Arc<PeerConnection>> {
         let mut connections = self.connections.write().await;
         let removed = connections.remove(peer_id);
-        if removed.is_some() {
+        if let Some(conn) = &removed {
+            conn.close();
             info!(
                 "[PEER-POOL] Removed peer {} (remaining: {})",
                 hex::encode(&peer_id[..8]),
@@ -268,6 +328,35 @@ impl PeerConnectionPool {
             );
         }
         removed
+    }
+
+    /// Remove `peer_id`'s entry ONLY if it is the very connection `conn` —
+    /// the read-loop cleanup path. A loop whose connection was REPLACED by a
+    /// redial must not touch the pool at all: removing by peer id alone would
+    /// evict (and, since eviction closes, kill) the replacement that just took
+    /// the slot. Returns the removed connection, or `None` if the entry is
+    /// absent or belongs to a different connection.
+    pub async fn remove_if_same(
+        &self,
+        peer_id: &[u8; 32],
+        conn: &Arc<PeerConnection>,
+    ) -> Option<Arc<PeerConnection>> {
+        let mut connections = self.connections.write().await;
+        match connections.get(peer_id) {
+            Some(current) if Arc::ptr_eq(current, conn) => {
+                let removed = connections.remove(peer_id);
+                if let Some(c) = &removed {
+                    c.close();
+                    info!(
+                        "[PEER-POOL] Removed peer {} (remaining: {})",
+                        hex::encode(&peer_id[..8]),
+                        connections.len()
+                    );
+                }
+                removed
+            }
+            _ => None,
+        }
     }
 
     /// Get a connection by peer ID
@@ -703,6 +792,128 @@ mod tests {
         assert!(
             elapsed < PEER_SEND_TIMEOUT * 2,
             "three stuck peers took {elapsed:?} — sends are serialised, so every              wedged peer costs a full timeout"
+        );
+    }
+
+    /// A REPLACED CONNECTION MUST DIE, NOT LINGER.
+    ///
+    /// 2026-07-31 mainnet outage: a redial to an already-connected peer replaces
+    /// the pool entry (`HashMap::insert`), but the OLD connection's read task
+    /// stays parked in `recv()` on a socket that nobody will ever write to or
+    /// close again — the task holds the last Arc, so the fd never closes. One
+    /// leaked fd per redial, per side; the seed hit its 1024-fd rlimit in ~30h
+    /// and EMFILE'd every accept. Replacing a connection must abort the replaced
+    /// connection's pending recv so its read task exits.
+    #[tokio::test]
+    async fn replacing_a_connection_aborts_the_replaced_read_task() {
+        let pool = PeerConnectionPool::new();
+        let (old, _keep_old) = pooled_peer(&pool, 1).await;
+
+        // Production shape: the read loop holds the only clone, parked in recv().
+        let parked = tokio::spawn(async move { old.recv().await });
+        tokio::time::sleep(Duration::from_millis(100)).await; // let it enter recv
+
+        // The redial: same peer id, fresh socket, replaces the pool entry.
+        let (_new, _keep_new) = pooled_peer(&pool, 1).await;
+
+        let joined = tokio::time::timeout(Duration::from_secs(2), parked).await;
+        let recv_result = joined
+            .expect(
+                "the replaced connection's recv() is still parked — its read task will hold                  the socket fd for the life of the process (the 2026-07-31 fd leak)",
+            )
+            .expect("read task panicked");
+        assert!(
+            matches!(recv_result, Ok(None)),
+            "aborted recv must report a clean close, got {recv_result:?}"
+        );
+    }
+
+    /// THE REPLACED SOCKET'S FD MUST ACTUALLY CLOSE — the remote end sees EOF.
+    ///
+    /// The companion to the test above: exiting the read task is only the means;
+    /// the outcome that ends the fd leak is the socket closing. The old
+    /// connection's remote end observing EOF proves the fd was released (which
+    /// is also what unwedges an UNPATCHED remote still parked on this socket).
+    #[tokio::test]
+    async fn replacing_a_connection_closes_the_replaced_socket() {
+        let pool = PeerConnectionPool::new();
+        let (old, mut old_server) = pooled_peer(&pool, 1).await;
+
+        let parked = tokio::spawn(async move { old.recv().await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let (_new, _keep_new) = pooled_peer(&pool, 1).await;
+
+        let mut buf = [0u8; 1];
+        let n = tokio::time::timeout(Duration::from_secs(2), old_server.read(&mut buf)).await;
+        assert!(
+            matches!(n, Ok(Ok(0))),
+            "the remote end of a replaced connection did not see EOF (got {n:?}) —              the old socket's fd is still open"
+        );
+        let _ = parked.await;
+    }
+
+    /// A DEAD READ LOOP'S CLEANUP MUST NOT EVICT ITS REPLACEMENT.
+    ///
+    /// Now that replaced connections close (tests above), their read tasks
+    /// EXIT — and the read loop's cleanup removed its peer id from the pool
+    /// unconditionally, which would tear down the REPLACEMENT that had just
+    /// taken the slot: every redial would kill the fresh connection moments
+    /// after it was added. Cleanup must remove the entry only if it is still
+    /// the very connection the exiting loop owned.
+    #[tokio::test]
+    async fn a_dead_read_loops_cleanup_does_not_evict_the_replacement() {
+        let pool = PeerConnectionPool::new();
+        let (old, _keep_old) = pooled_peer(&pool, 1).await;
+        let (new_conn, _keep_new) = pooled_peer(&pool, 1).await; // replaces `old`
+
+        // The OLD loop's cleanup must be a no-op: the entry is no longer its.
+        assert!(
+            pool.remove_if_same(&[1u8; 32], &old).await.is_none(),
+            "cleanup of a replaced connection removed the pool entry — it just              evicted its own replacement"
+        );
+        let current = pool
+            .get(&[1u8; 32])
+            .await
+            .expect("replacement missing from the pool after the old loop's cleanup");
+        assert!(
+            Arc::ptr_eq(&current, &new_conn),
+            "pool entry is not the replacement connection"
+        );
+
+        // The CURRENT connection's own cleanup must still remove it.
+        assert!(
+            pool.remove_if_same(&[1u8; 32], &new_conn).await.is_some(),
+            "a connection's own cleanup failed to remove it"
+        );
+        assert!(pool.get(&[1u8; 32]).await.is_none());
+    }
+
+    /// EVICTION MUST RELEASE THE FD, NOT JUST THE POOL ENTRY.
+    ///
+    /// `note_send` drops a peer after MAX_SEND_STRIKES by removing it from the
+    /// pool map — but the read task still holds the last Arc, parked in recv(),
+    /// so every strike-eviction leaks the connection's fd exactly like a
+    /// replacement does. remove() must abort the connection's pending recv.
+    #[tokio::test]
+    async fn removing_a_connection_aborts_its_read_task() {
+        let pool = PeerConnectionPool::new();
+        let (conn, _keep) = pooled_peer(&pool, 1).await;
+
+        let parked = tokio::spawn(async move { conn.recv().await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        pool.remove(&[1u8; 32]).await;
+
+        let joined = tokio::time::timeout(Duration::from_secs(2), parked).await;
+        let recv_result = joined
+            .expect(
+                "the removed connection's recv() is still parked — strike-eviction leaks                  the fd it was supposed to reclaim",
+            )
+            .expect("read task panicked");
+        assert!(
+            matches!(recv_result, Ok(None)),
+            "aborted recv must report a clean close, got {recv_result:?}"
         );
     }
 }

@@ -118,6 +118,12 @@ pub struct ConnectionHandle {
     pub connected_at: Instant,
     /// Remote socket address
     pub remote_addr: SocketAddr,
+    /// The peer's advertised LISTEN endpoint (from the VERSION handshake), when
+    /// known. For an inbound connection `remote_addr` is only the peer's
+    /// ephemeral source port — it never matches the address the peer is stored
+    /// under, so filtering dial candidates on `remote_addr` alone re-offers
+    /// peers we are already connected to, forever (the 2026-07-31 redial churn).
+    pub discovery_addr: Option<SocketAddr>,
 }
 
 /// State for reconnection with exponential backoff
@@ -424,6 +430,7 @@ impl ConnectionManager {
             direction,
             connected_at: Instant::now(),
             remote_addr: addr,
+            discovery_addr,
         };
         inner.connections.insert(peer_id, handle);
 
@@ -592,9 +599,17 @@ impl ConnectionManager {
         // Get all peers from store
         let mut candidates = self.peer_store.get_all().unwrap_or_default();
 
-        // Get connected peer addresses for filtering
-        let connected_addrs: std::collections::HashSet<SocketAddr> =
-            inner.connections.values().map(|c| c.remote_addr).collect();
+        // Get connected peer addresses for filtering. Both the socket address
+        // AND the advertised listen endpoint: for inbound connections
+        // `remote_addr` is the peer's ephemeral source port, and the stored
+        // candidate is its listen address — matching only `remote_addr` re-dials
+        // peers we already hold (the 2026-07-31 fd-leak driver).
+        let connected_addrs: std::collections::HashSet<SocketAddr> = inner
+            .connections
+            .values()
+            .flat_map(|c| [Some(c.remote_addr), c.discovery_addr])
+            .flatten()
+            .collect();
 
         // Filter out connected and banned peers
         // Note: We can't easily check banned by peer_id since PeerEntry doesn't have peer_id
@@ -906,6 +921,40 @@ mod tests {
         assert!(
             bare.seed_addrs().is_empty(),
             "default must stay empty so regtest is unaffected"
+        );
+    }
+
+    /// AN ALREADY-CONNECTED PEER MUST NOT BE A DIAL CANDIDATE.
+    ///
+    /// The 2026-07-31 fd leak's DRIVER: an INBOUND connection's `remote_addr`
+    /// is the peer's ephemeral source port, which never matches its stored
+    /// listen address — so `select_peers_to_connect` kept offering peers the
+    /// node was already connected to, and the three mainnet nodes redialled
+    /// each other every few minutes for 30 hours (461-532 duplicate
+    /// connections per pair when the seed hit EMFILE). The handle's
+    /// `discovery_addr` — the advertised listen endpoint learned from the
+    /// VERSION handshake — is what the filter must also match on.
+    #[test]
+    fn test_select_peers_excludes_connected_peers_by_listen_addr() {
+        let store = test_peer_store();
+        let mut entry = PeerEntry::new(make_wire_addr(9735), 1_700_000_000);
+        entry.score = 50;
+        store.put(&entry).unwrap();
+        let manager = ConnectionManager::new(ConnectionConfig::default(), store);
+
+        manager
+            .add_connection_with_discovery(
+                [1u8; 32],
+                "127.0.0.1:54321".parse().unwrap(), // inbound: ephemeral source port
+                ConnectionDirection::Inbound,
+                Some("127.0.0.1:9735".parse().unwrap()), // its advertised listen endpoint
+            )
+            .unwrap();
+
+        let candidates = manager.select_peers_to_connect();
+        assert!(
+            candidates.is_empty(),
+            "a peer we are connected to is offered as a dial candidate — the discovery              loop will redial it every tick for the life of the process"
         );
     }
 
