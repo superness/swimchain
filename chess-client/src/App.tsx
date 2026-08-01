@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Keypair } from '@swimchain/core';
 import {
   useRpc,
-  useStoredIdentity,
-  useStoredKeypair,
+  useGameIdentity,
   createNewIdentity,
 } from '@swimchain/react';
 import { Board } from './Board';
@@ -62,8 +61,13 @@ function markIntroSeen(kind: 'play' | 'watch'): void {
 
 export function App() {
   const { rpc, connected, connecting, error: rpcError } = useRpc();
-  const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
-  const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
+  // Identity source: the node's identity when embedded (Surf/desktop), a
+  // localStorage-backed browser keypair when standalone. The hook owns
+  // `setAuth` entirely — see its module docstring (SEAM 1 vs SEAM 2) — so
+  // chess must not call `setAuth` itself (that old effect used to live here).
+  const { mode, identity, hasIdentity, isLoading, sign, saveIdentity } = useGameIdentity();
+  const publicKeyHex = identity?.publicKeyHex;
+  const address = identity?.address;
 
   const [games, setGames] = useState<GameSummary[]>([]);
   // Folded state per listed game, so the lobby can segregate open / in-progress /
@@ -88,27 +92,17 @@ export function App() {
   // Bumped when a one-time intro card is dismissed, to re-render past it.
   const [, setIntroTick] = useState(0);
 
-  // Authenticate RPC requests as this identity once the keypair is ready.
-  const { setAuth } = useRpc();
-  useEffect(() => {
-    if (keypair && publicKeyHex) {
-      setAuth({
-        publicKey: publicKeyHex,
-        sign: (m: Uint8Array) => {
-          const s = keypair.sign(m);
-          if (!s) throw new Error('signing failed');
-          return s;
-        },
-      });
-    }
-  }, [keypair, publicKeyHex, setAuth]);
+  // Transport auth (SEAM 1: signature headers on every RPC call) is owned
+  // entirely by useGameIdentity — it calls setAuth in browser mode and
+  // clears it on the browser→node flip, and never calls it in node mode
+  // (transport = the node's cookie). chess must not set up its own setAuth
+  // effect; `sign` above is SEAM 2 (action-payload signing) only.
 
   const me: Identity | null = useMemo(
     () =>
       publicKeyHex && address
         ? { publicKeyHex, address, sign: (m: Uint8Array) => sign(m) }
         : null,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [publicKeyHex, address, sign]
   );
 
@@ -251,9 +245,17 @@ export function App() {
 
   // --- render ---
 
-  if (idLoading) return <div className="center muted">Loading…</div>;
+  // Node-vs-browser mode (and, in node mode, the async get_identity_info
+  // fetch) resolve here BEFORE the mint gate below, so the "creates a game
+  // key stored only in this browser" copy — and the localStorage-keypair
+  // mint flow it triggers — never has a chance to render while embedded.
+  if (isLoading) return <div className="center muted">Loading…</div>;
 
-  if (!hasIdentity || !me) {
+  // The mint CTA ("Play" → creates a localStorage keypair) is a BROWSER-ONLY
+  // path — `newIdentity()` calls `saveIdentity()`, which useGameIdentity makes
+  // a no-op outside browser mode, so showing this CTA while embedded would be
+  // a dead button. Gate it on mode, not just hasIdentity/me.
+  if (mode === 'browser' && (!hasIdentity || !me)) {
     return (
       <div className="center col">
         <Ocean />
@@ -264,6 +266,22 @@ export function App() {
         </p>
         <button className="btn primary" onClick={newIdentity}>Play</button>
         <p className="fine">Playing creates a game key stored only in this browser — no account, no email.</p>
+      </div>
+    );
+  }
+
+  // Embedded (node/pending mode) but past isLoading with no usable identity:
+  // the node's get_identity_info fetch ran out of retries (or the node has no
+  // identity loaded). Not the loading window, not browser mode — so neither
+  // gate above fires. Say so plainly rather than falling through to the
+  // browser-key mint copy or the game itself with no identity.
+  if (mode !== 'browser' && (!hasIdentity || !me)) {
+    return (
+      <div className="center col">
+        <Ocean />
+        <h1>♟ Swimchain Chess</h1>
+        <p className="muted">Couldn't reach your node identity — retrying…</p>
+        <p className="fine">Make sure the app is connected to your node, then reopen the game.</p>
       </div>
     );
   }
