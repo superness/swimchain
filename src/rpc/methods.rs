@@ -1433,13 +1433,14 @@ impl RpcMethods {
         // That single lie is why a two-chain fleet went unnoticed for three
         // and a half days. These three facts are cheap, already computed
         // elsewhere, and cannot be fooled by an unwritten enum.
-        let (fork_branches, fork_gaps, adoptable) = match &self.node.chain_store {
+        let (fork_branches, fork_gaps, adoptable, live_branch) = match &self.node.chain_store {
             Some(cs) => (
                 cs.fork_branch_count(),
                 cs.fork_ancestry_gaps(64).len() as u64,
                 cs.heaviest_adoptable_fork_tip().map(|b| b.height),
+                cs.has_competing_branch_above_tip(),
             ),
-            None => (0, 0, None),
+            None => (0, 0, None, false),
         };
 
         // Calculate chain sync percentage
@@ -1451,9 +1452,14 @@ impl RpcMethods {
                     // We are holding a heavier chain we have not adopted. This
                     // is never "synced" — it is the deadlock state.
                     ("forked".to_string(), 0)
-                } else if fork_gaps > 0 {
-                    // Assembling a competing branch: we know we do not have
-                    // the whole picture yet.
+                } else if live_branch {
+                    // Assembling a branch that could still overtake us. Gaps
+                    // alone are NOT enough: a store keeps fragments of dead
+                    // branches for ever (six per node after the 2026-08-01
+                    // reconciliation), and letting those flip the state gives
+                    // a healthy fleet a permanent alarm — the same
+                    // uselessness as the "synced" lie, pointing the other way.
+                    // The counts are still reported for anyone who wants them.
                     ("assembling".to_string(), 0)
                 } else {
                     ("synced".to_string(), 100)

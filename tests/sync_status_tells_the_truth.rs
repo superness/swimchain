@@ -149,3 +149,58 @@ fn the_signals_clear_once_the_branch_is_adopted() {
     );
     assert!(store.fork_ancestry_gaps(64).is_empty());
 }
+
+#[test]
+fn dead_branch_fragments_do_not_make_a_healthy_node_look_unsynced() {
+    // SHIPPED AND CAUGHT THE SAME HOUR. The first version of this fix flipped
+    // state to "assembling" whenever ANY ancestry gap existed. After the
+    // 2026-08-01 reconciliation every fleet node held six fragments of the
+    // abandoned chain whose ancestors nobody has any more — so all three
+    // healthy, converged nodes reported "assembling" permanently. An alarm
+    // that is always on is exactly as useless as the "synced" lie it replaced.
+    //
+    // A branch entirely BELOW our tip cannot overtake us: adopting it needs
+    // new blocks, and new blocks would raise its tip above ours.
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path().join("chain")).unwrap();
+    canonical(&store, 40, 100);
+
+    // Fragments far below the tip, unlinked and unfillable.
+    let mut prev = [0xEE; 32];
+    for h in 5..=8u64 {
+        let b = block(h, prev, 1, 0xBB);
+        prev = b.hash();
+        store.put_root_block(&b).unwrap();
+    }
+
+    assert!(
+        !store.fork_ancestry_gaps(64).is_empty(),
+        "the fragments are still reported as gaps — an operator may want to know"
+    );
+    assert!(
+        !store.has_competing_branch_above_tip(),
+        "but nothing here can overtake us, so the node is not 'assembling'"
+    );
+    assert!(store.heaviest_adoptable_fork_tip().is_none());
+}
+
+#[test]
+fn a_branch_above_our_tip_still_counts_as_assembling() {
+    // The signal must not be blunted into uselessness either: a branch that
+    // COULD overtake us is exactly what "assembling" is for.
+    let dir = tempdir().unwrap();
+    let store = ChainStore::open(dir.path().join("chain")).unwrap();
+    canonical(&store, 10, 5);
+
+    let mut prev = [0xEE; 32];
+    for h in 50..=54u64 {
+        let b = block(h, prev, 40, 0xBB);
+        prev = b.hash();
+        store.put_root_block(&b).unwrap();
+    }
+
+    assert!(
+        store.has_competing_branch_above_tip(),
+        "a branch whose tip is above ours must keep the node honest about          still assembling"
+    );
+}
