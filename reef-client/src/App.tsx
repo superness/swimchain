@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Keypair } from '@swimchain/core';
 import {
   useRpc,
-  useStoredIdentity,
-  useStoredKeypair,
+  useGameIdentity,
   createNewIdentity,
 } from '@swimchain/react';
 import { Reef } from './Reef';
@@ -134,9 +133,14 @@ function Ocean() {
 }
 
 export function App() {
-  const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
-  const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
-  const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
+  const { rpc, connected, connecting, error: rpcError } = useRpc();
+  // Identity source: the node's identity when embedded (Surf/desktop), a
+  // localStorage-backed browser keypair when standalone. The hook owns
+  // `setAuth` entirely — see its module docstring (SEAM 1 vs SEAM 2) — so
+  // reef must not call `setAuth` itself (that old effect used to live here).
+  const { identity, hasIdentity, isLoading, sign, saveIdentity } = useGameIdentity();
+  const publicKeyHex = identity?.publicKeyHex;
+  const address = identity?.address;
 
   const [regions, setRegions] = useState<RegionSummary[]>([]);
   // The open reef lives in the URL (?r=<id>): Back/Forward return to the reef
@@ -265,19 +269,11 @@ export function App() {
     }
   }, [state]);
 
-  // Authenticate RPC requests as this identity once the keypair is ready.
-  useEffect(() => {
-    if (keypair && publicKeyHex) {
-      setAuth({
-        publicKey: publicKeyHex,
-        sign: (m: Uint8Array) => {
-          const s = keypair.sign(m);
-          if (!s) throw new Error('signing failed');
-          return s;
-        },
-      });
-    }
-  }, [keypair, publicKeyHex, setAuth]);
+  // Transport auth (SEAM 1: signature headers on every RPC call) is owned
+  // entirely by useGameIdentity — it calls setAuth in browser mode and
+  // clears it on the browser→node flip, and never calls it in node mode
+  // (transport = the node's cookie). reef must not set up its own setAuth
+  // effect; `sign` above is SEAM 2 (action-payload signing) only.
 
   const me: Identity | null = useMemo(
     () =>
@@ -638,7 +634,11 @@ export function App() {
 
   // --- render ---
 
-  if (idLoading) return <div className="center muted">Loading…</div>;
+  // Node-vs-browser mode (and, in node mode, the async get_identity_info
+  // fetch) resolve here BEFORE the mint gate below, so the "creates a game
+  // key stored only in this browser" copy — and the localStorage-keypair
+  // mint flow it triggers — never has a chance to render while embedded.
+  if (isLoading) return <div className="center muted">Loading…</div>;
 
   if (!hasIdentity || !me) {
     return (
