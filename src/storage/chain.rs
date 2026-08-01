@@ -788,6 +788,49 @@ impl ChainStore {
         Ok(off_chain.into_iter().map(|(_, hash)| hash).collect())
     }
 
+    /// Parents we are MISSING for fork branches we hold — the hashes that must
+    /// be fetched for a competing branch's ancestry to complete.
+    ///
+    /// A branch assembles from the top down: gossip and locator syncs deliver
+    /// its recent blocks, each stored non-canonically, and the deepest one we
+    /// hold points at a parent we do not have. Until that parent (and its
+    /// parents) arrive, the branch's real weight is not computable and fork
+    /// choice cannot consider it at all.
+    ///
+    /// Fetching those parents was purely EVENT-DRIVEN: the router asked for a
+    /// missing parent only at the moment a block arrived whose parent was
+    /// unknown. One lost request, or an idle chain that sends no further
+    /// gossip, and the branch is stranded for ever. Measured on the mainnet
+    /// seed 2026-08-01: it held 342 blocks of the fleet's chain, needed ~480
+    /// more BELOW them, requested nothing, and reported itself "synced" at its
+    /// own lower tip. A periodic caller can now walk this list and retry.
+    ///
+    /// Bounded, deepest branch first, deterministic on ties — a peer that
+    /// manufactures branches must not turn this into an unbounded fetch list.
+    #[must_use]
+    pub fn fork_ancestry_gaps(&self, limit: usize) -> Vec<BlockHash> {
+        let mut gaps: Vec<(u64, BlockHash)> = Vec::new();
+        let mut seen: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
+
+        for result in self.iter_root_blocks() {
+            let Ok(block) = result else { continue };
+            let prev = block.prev_root_hash;
+            if prev == [0u8; 32] {
+                continue; // genesis has no parent to want
+            }
+            if self.get_root_block(&prev).ok().flatten().is_some() {
+                continue; // ancestry already linked here
+            }
+            if seen.insert(prev) {
+                gaps.push((block.height, prev));
+            }
+        }
+
+        gaps.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        gaps.truncate(limit);
+        gaps.into_iter().map(|(_, hash)| hash).collect()
+    }
+
     /// Generate a Bitcoin-style locator for the current chain.
     ///
     /// Returns block hashes at exponentially-spaced heights from tip to genesis:
