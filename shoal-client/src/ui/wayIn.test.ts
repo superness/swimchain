@@ -434,7 +434,50 @@ async function main(): Promise<void> {
   anAcceptedWriteLiftsTheEdge();
   theCopyIsDiegeticAndPinned();
 
-  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
+  // ---------------------------------------------------------------------------
+// `'no-water'` MOVES NOTHING, AND THAT IS THE DECISION
+//
+// -32014 means the SPACE is not on this node's chain — nobody has minted the
+// water on this network. It was reproduced as a silent dead end (the report's
+// I4) and it is a typed kind now, but it deliberately does NOT move the
+// standing:
+//
+//   - the edge of the water is specifically about being refused ENTRY by other
+//     players (spec §2.16). "There is no water" is not that, and reusing the
+//     edge for it would put a sentence about vouching in front of somebody
+//     whose problem is that nothing exists to be vouched into;
+//   - what a player is told is a DESIGN decision and this file's copy is
+//     diegetic text (spec §1.1). Inventing a fourth standing here would be
+//     making that call unilaterally.
+//
+// So this pins the current, deliberate behaviour — including that it is not an
+// accident of `afterWrite` ignoring anything it does not recognise, which is
+// why the `'not-sponsored'` control sits right next to it.
+// ---------------------------------------------------------------------------
+{
+  console.log('\n--- a missing water moves no standing, on purpose ---');
+  const noWater: SendFailure = { kind: 'no-water', cause: new Error('space not found') };
+
+  check('from open water, a no-water refusal leaves the player in open water',
+    afterWrite(OPEN_WATER, noWater) === OPEN_WATER);
+  check('...and it does not raise the edge, which would say something false',
+    afterWrite(OPEN_WATER, noWater).atTheEdge === false);
+  check('from the edge, it does not lower it either',
+    afterWrite(AT_THE_EDGE, noWater) === AT_THE_EDGE);
+  check('the object is returned unchanged, so nothing re-renders',
+    afterWrite(AT_THE_EDGE, noWater) === AT_THE_EDGE
+    && afterWrite(OPEN_WATER, noWater) === OPEN_WATER);
+
+  // NON-DEGENERACY: `afterWrite` is not simply inert. The one kind that DOES
+  // move it still does, measured the same way in the same block.
+  const refused: SendFailure = { kind: 'not-sponsored', cause: new Error('no sponsor') };
+  check('NON-DEGENERACY: a not-sponsored refusal DOES raise the edge',
+    afterWrite(OPEN_WATER, refused).atTheEdge === true);
+  check('NON-DEGENERACY: ...and an accepted write from the edge starts the crossing',
+    afterWrite(AT_THE_EDGE, null).crossing === true);
+}
+
+console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 }
 

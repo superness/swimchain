@@ -1,0 +1,373 @@
+:root {
+  --ink: #071e26;
+  --surface: #0c2a33;
+  --surface-2: #10333e;
+  --line: #1b4450;
+  --foam: #e8f1ef;
+  --muted: #8fb0ac;
+  --heat: #ff9e5e;
+  --heat-deep: #e07b3a;
+  --shallow: #6ed3c2;
+  --cold: #3e7c8a;
+  --serif: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', Consolas, 'SF Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--ink);
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 70% -10%, rgba(110, 211, 194, 0.07), transparent 60%),
+    radial-gradient(900px 500px at 10% 110%, rgba(255, 158, 94, 0.05), transparent 55%),
+    var(--ink);
+  color: var(--foam);
+  font-family: var(--serif);
+  font-size: 18px;
+  line-height: 1.65;
+  /* No page-level horizontal scroll, ever — any wide content (the command
+     block) scrolls inside its own overflow-x:auto container instead. */
+  overflow-x: hidden;
+}
+
+a {
+  color: var(--shallow);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+a:hover {
+  color: var(--foam);
+}
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--heat);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* The page is deliberately plain block flow (no CSS grid) end to end: the
+   .term/.cmd command block's unbreakable `white-space: pre` line is exactly
+   the content that blew out a grid column at 390px on the marketing site
+   (regression fixed in commit ad54d031 — a mobile override that collapsed a
+   grid track to a bare 1fr/minmax(auto,1fr) let the pre's min-content force
+   the whole page to pan sideways; the fix was minmax(0, 1fr)). Plain block
+   layout has no track-sizing step to get wrong, so nothing here needs that
+   fix — the .cmd-scroll wrapper below still gets its own overflow-x:auto as
+   defense in depth, in case a future edit nests it inside a grid. */
+.wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+header.site {
+  display: flex;
+  align-items: baseline;
+  padding: 24px 24px 0;
+}
+.mark {
+  font-family: var(--mono);
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: var(--foam);
+  text-decoration: none;
+}
+.mark .tld {
+  color: var(--muted);
+}
+
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--shallow);
+}
+
+section {
+  padding: 48px 0;
+  border-top: 1px solid var(--line);
+}
+.hero {
+  border-top: none;
+  padding-top: 56px;
+}
+
+h1 {
+  margin: 16px 0 20px;
+  font-size: clamp(30px, 7vw, 48px);
+  line-height: 1.12;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-wrap: balance;
+}
+h1 em {
+  font-style: italic;
+  color: var(--heat);
+}
+h2 {
+  font-size: clamp(22px, 5vw, 30px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 10px 0 12px;
+  text-wrap: balance;
+}
+.lede {
+  max-width: 40em;
+  color: var(--muted);
+  font-size: 18px;
+  margin: 0 0 20px;
+}
+.fine-print {
+  font-size: 14px;
+  color: var(--muted);
+  margin-top: 18px;
+  max-width: 44em;
+}
+
+.btn {
+  display: inline-block;
+  padding: 12px 22px;
+  font-family: var(--mono);
+  font-size: 14px;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  color: var(--foam);
+  border-radius: 3px;
+  background: transparent;
+  cursor: pointer;
+}
+.btn.primary {
+  background: var(--heat);
+  border-color: var(--heat);
+  color: #241205;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  background: var(--heat-deep);
+  border-color: var(--heat-deep);
+  color: #241205;
+}
+.btn:hover:not(:disabled) {
+  border-color: var(--shallow);
+  color: var(--foam);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Command block — same shape as website's .term, ported so a long
+   `sw sponsor claim <offer-id> --application "..."` line can never force the
+   page wider than the viewport: it scrolls INSIDE this box instead. */
+.cmd-scroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.cmd {
+  background: #04141a;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.8;
+  padding: 18px 20px;
+  white-space: pre;
+  margin: 20px 0;
+  width: max-content;
+  min-width: 100%;
+}
+
+form {
+  max-width: 480px;
+}
+label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.join-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.join-row input {
+  flex: 1 1 220px;
+  min-width: 0;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--foam);
+  border-radius: 3px;
+  padding: 11px 12px;
+  font-family: var(--mono);
+  font-size: 15px;
+}
+.join-row input::placeholder {
+  color: var(--muted);
+}
+.join-row .btn {
+  flex: 0 0 auto;
+}
+
+.status {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--muted);
+  margin-top: 14px;
+}
+.status.error {
+  color: var(--heat);
+}
+.status.warn {
+  color: var(--heat);
+}
+
+.link-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--shallow);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  font: inherit;
+  font-size: 14px;
+  cursor: pointer;
+}
+.link-btn:hover {
+  color: var(--foam);
+}
+
+/* ── Wall ──────────────────────────────────────────────────────────────── */
+
+textarea {
+  display: block;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--foam);
+  border-radius: 3px;
+  padding: 11px 12px;
+  font-family: var(--serif);
+  font-size: 15px;
+  line-height: 1.5;
+  resize: vertical;
+}
+textarea::placeholder {
+  color: var(--muted);
+}
+textarea:disabled {
+  opacity: 0.6;
+}
+
+.wall-composer {
+  max-width: none;
+  margin: 20px 0 8px;
+}
+.wall-composer .btn {
+  margin-top: 10px;
+}
+
+.wall-mining {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--shallow);
+  margin: 10px 0 0;
+  line-height: 1.6;
+}
+.wall-mining-stats {
+  color: var(--muted);
+}
+
+.wall-empty {
+  margin-top: 24px;
+}
+
+.wall-posts {
+  margin-top: 12px;
+}
+
+.wall-post {
+  border-top: 1px solid var(--line);
+  padding: 22px 0;
+}
+.wall-post:first-child {
+  border-top: none;
+}
+
+.wall-post-meta,
+.wall-reply-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.wall-author {
+  color: var(--shallow);
+}
+
+.wall-post-title {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.wall-post-body,
+.wall-reply-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.wall-post-replies-block {
+  margin-top: 14px;
+}
+
+.wall-replies-toggle {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.wall-replies {
+  margin-top: 12px;
+  padding-left: 16px;
+  border-left: 2px solid var(--line);
+}
+
+.wall-reply {
+  margin-bottom: 14px;
+}
+
+.wall-reply-form {
+  max-width: none;
+  margin-top: 10px;
+}
+.wall-reply-form .btn {
+  margin-top: 8px;
+}
+
+.boot {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--mono);
+  color: var(--muted);
+  padding: 24px;
+  text-align: center;
+}
+.boot.bad {
+  color: var(--heat);
+}

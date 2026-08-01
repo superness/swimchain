@@ -65,11 +65,10 @@ import { readFileSync } from 'node:fs';
 
 import { nodeIdentity, rpcCall, type RpcAuth } from '../src/lib/shoalRpc';
 import {
-  ACTION_TYPE_POST, ACTION_TYPE_SPACE_CREATION, mineAndSignAction, powProfileFor,
+  ACTION_TYPE_SPACE_CREATION, mineAndSignAction, powProfileFor,
 } from '../src/lib/shoalSend';
 import {
-  ROOM_BODY, ROOM_TITLE, WATER_APP, WATER_NAME, WATER_SPACE_NAME,
-  roomContentId, shellConfig,
+  WATER_APP, WATER_NAME, WATER_SPACE_NAME, shellConfig, shellWater,
 } from '../src/ui/shellConfig';
 
 let failures = 0;
@@ -121,46 +120,10 @@ async function mintSpace(auth: RpcAuth, who: Minter, nowMs: number): Promise<str
   return result.space_id;
 }
 
-/** Create the room post, or find it already there. Returns its content id. */
-async function mintRoom(auth: RpcAuth, who: Minter, spaceId: string, nowMs: number): Promise<string> {
-  const derived = await roomContentId();
-  try {
-    await rpcCall<unknown>(auth, 'get_content', { content_id: derived });
-    log(`room post already there: ${derived}`);
-    return derived;
-  } catch {
-    // not there yet — mint it below
-  }
-
-  const profile = await powProfileFor(auth);
-  const mined = await mineAndSignAction(
-    ACTION_TYPE_POST,
-    new TextEncoder().encode(`${ROOM_TITLE}\n\n${ROOM_BODY}`),
-    who.publicKeyHex,
-    who.sign,
-    Math.floor(nowMs / 1000),
-    profile,
-  );
-  const result = await rpcCall<{ content_id: string }>(auth, 'submit_post', {
-    space_id: spaceId,
-    title: ROOM_TITLE,
-    body: ROOM_BODY,
-    author_id: who.publicKeyHex,
-    ...mined,
-  });
-  // The node's id and the derived one MUST agree, or every client that derives
-  // the room from its text (which is all of them) would reply into nothing.
-  if (result.content_id !== derived) {
-    throw new Error(`room content id mismatch: node said ${result.content_id}, we derived ${derived}`);
-  }
-  return result.content_id;
-}
-
 async function main(): Promise<void> {
   const auth = authFromEnv();
   log(`node: ${auth.endpoint}`);
   log(`water: ${WATER_SPACE_NAME}  (app=${WATER_APP}, name=${WATER_NAME})`);
-  log(`room:  ${JSON.stringify(ROOM_TITLE)} / ${JSON.stringify(ROOM_BODY)}`);
 
   const who = await nodeIdentity(auth);
   log(`minting as the node's own identity ${who.publicKeyHex.slice(0, 16)}… (${who.address})`);
@@ -168,8 +131,21 @@ async function main(): Promise<void> {
   const nowMs = Date.now();
   const spaceId = await mintSpace(auth, who, nowMs);
   log(`space: ${spaceId}`);
-  const room = await mintRoom(auth, who, spaceId, nowMs);
-  log(`room:  ${room}`);
+
+  // NO ROOM IS MINTED HERE ANY MORE, and that is the point of plan 4d.
+  //
+  // This script used to mint one fixed room post and every client waited for it
+  // to propagate — a measured 3 m 18 s on a fresh install, and a single room
+  // that would have hit `ROOM_FETCH_LIMIT` within hours of the game being
+  // played. The room is a function of the hour now (`shoalRoom.ts`), and every
+  // client mints the hour it needs, idempotently, on its own node
+  // (`shoalSend.mintRoom`). There is no room for this script to establish and
+  // nothing for it to be the only source of.
+  //
+  // The SPACE is still minted here and still must be: `submit_post` rejects a
+  // post into a space that does not exist on-chain (methods.rs:2266-2276), so
+  // somebody has to create it once, and doing it once by hand is exactly what
+  // this script is for.
 
   // ---------------------------------------------------------------------
   // The check that matters: the JOINER, unmodified, finds what was minted.
@@ -186,10 +162,15 @@ async function main(): Promise<void> {
   });
 
   check('the shipped joiner finds this water', joined !== null);
-  check('...and it is the space that was just minted', joined?.spaceId === spaceId,
-    { joined: joined?.spaceId, minted: spaceId });
-  check('...and the room it will reply into is the one that was just minted',
-    joined?.roomContentId === room, { joined: joined?.roomContentId, minted: room });
+  check('...and it is the space that was just minted', joined?.water.spaceId === spaceId,
+    { joined: joined?.water.spaceId, minted: spaceId });
+  check('...and the water it derives its rooms from is the one that was minted',
+    joined?.water.spaceName === WATER_SPACE_NAME, joined?.water.spaceName);
+  // The binding this whole branch is about: the name that derived the space id
+  // is the name every room id is derived from. Checked against the space the
+  // NODE answered with, not against a second local derivation.
+  check('...derived from the same name, so a room cannot belong to another space',
+    (await shellWater()).spaceId === spaceId, { derived: (await shellWater()).spaceId, minted: spaceId });
   check('...swimming as this node', joined?.authorIdHex === who.publicKeyHex, joined?.authorIdHex);
 
   console.log(failures === 0 ? '\nMINTED — a shell on this node plays.' : `\n${failures} FAILURES`);

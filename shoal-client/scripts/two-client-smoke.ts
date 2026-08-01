@@ -171,12 +171,20 @@ import {
   isWireSpaceId,
   mineAndSignAction,
   powProfileFor,
+  mintRoom,
+  sendCheckpoint,
   sendPresence,
+  submitToRoom,
   type SendCtx,
   type SignFn,
 } from '../src/lib/shoalSend';
 import { MIN_EMIT_GAP_MS, shouldEmit } from '../src/lib/shoalEmit';
-import { fetchRoomLog } from '../src/lib/shoalRoom';
+import { fetchRoomLog, fetchRooms } from '../src/lib/shoalRoom';
+import { roomEpochsFor, roomIdIn, roomTextIn, waterNamed } from '../src/lib/water';
+import { epochOf, epochFoldEndMs, epochStartMs } from '../src/lib/epoch';
+import { admitFloorMs, advance, createLoop } from '../src/lib/shoalLoop';
+import { adoptCheckpoint } from '../src/lib/adopt';
+import { encodePresence, type CheckpointEntry } from '../src/lib/shoalWire';
 import { startLive } from '../src/lib/shoalLive';
 import { foldShoal } from '../src/lib/shoalEngine';
 import { fingerprint } from '../src/lib/shoalFixtures';
@@ -952,21 +960,214 @@ async function main(): Promise<void> {
       sA.fish.has(alice.publicKeyHex) && sA.fish.has(bob.publicKeyHex)
       && sB.fish.has(alice.publicKeyHex) && sB.fish.has(bob.publicKeyHex),
       { a: [...sA.fish.keys()].map((k) => k.slice(0, 8)), b: [...sB.fish.keys()].map((k) => k.slice(0, 8)) });
+    // ══ PHASE 5 — THE CROSSING: two rooms, two nodes, one world ═══════════
+    //
+    // Plan 4d Task 2. The room is a function of the hour, so a fold of epoch E
+    // reads TWO rooms — E's and E-1's — because the fold begins 90 s BEFORE the
+    // hour and its entry cursor reaches 180 s before it. Everything above this
+    // line ran in one never-rotating room and says nothing about that.
+    //
+    // ── HOW THE HOUR IS COMPRESSED, AND WHY THAT IS STILL FAIR ────────────
+    //
+    // This phase does not wait an hour. It picks a boundary that has already
+    // passed — the start of the PREVIOUS clock hour — and authors bodies whose
+    // `ms` sit on either side of it. The compression is therefore in exactly
+    // one place: the instants the FOLD reads.
+    //
+    // Nothing else moves, and that is what makes it fair:
+    //
+    //  - `EPOCH_MS`, `WARMUP_MS`, `PRESENCE_TTL_MS`, `TICK_MS` and
+    //    `admitFloorMs` are untouched, and every fold below runs the real
+    //    14_400-tick epoch on the real absolute grid. The crosser genuinely
+    //    folds a whole epoch and genuinely rolls.
+    //  - The ACTION envelopes carry `Date.now()`, so the node validates real
+    //    timestamps against its real 600 s window. That separation is not
+    //    invented here: `sendCheckpoint` already relies on it (the publisher's
+    //    clock reaches the envelope, never the body), and `submitToRoom` takes
+    //    the envelope instant as its own argument for that reason.
+    //  - The writes cross a real P2P link between two real node processes, are
+    //    gossiped, and are read back with the shipping `fetchRooms`.
+    //
+    // WHAT IS NOT EXERCISED HERE, STATED RATHER THAN GLOSSED: a client whose
+    // WALL CLOCK crosses the boundary while it is running — `step(Date.now())`
+    // rolling by itself. That needs an hour of real time and is covered instead
+    // by `chainSea.test.ts` §4b and §9, which drive the real `chainSea` through
+    // a boundary with the frame clock as the only input. This phase is the half
+    // that unit tests cannot reach: two independent nodes, two rooms, real
+    // gossip, identical fingerprints.
+    const water = await waterNamed('two');
+    check('THE BINDING: the space `create_space` minted is the one the water NAME derives — '
+        + 'so every room this water derives is a room in the space its writes go to',
+      water.spaceId === spaceId && water.spaceName === SPACE_NAME,
+      { derived: water.spaceId, minted: spaceId, name: water.spaceName });
+
+    // The boundary: the start of the previous clock hour, so every instant
+    // below is strictly in the past whatever minute this run starts on.
+    const xE = epochOf(Date.now()) - 1;
+    const xB = epochStartMs(xE);
+    const roomPrev = await roomIdIn(water, xE - 1);
+    const roomNow = await roomIdIn(water, xE);
+    log(`crossing at ${xB} (epoch ${xE}); rooms ${roomPrev.slice(7, 19)}… (E-1) and ${roomNow.slice(7, 19)}… (E)`);
+    check('the two hours are two different rooms', roomPrev !== roomNow, { roomPrev, roomNow });
+    check('the fold of epoch E reaches into epoch E-1 — which is what makes this a PAIR',
+      roomEpochsFor(xE)[0] === xE - 1 && admitFloorMs(xE) < xB && admitFloorMs(xE) >= epochStartMs(xE - 1),
+      { pair: roomEpochsFor(xE), floor: admitFloorMs(xE), boundary: xB });
+
+    // ── who mints, and what a second minter does ──────────────────────────
+    // EVERY CLIENT MINTS, IDEMPOTENTLY. `submit_post` does not check whether
+    // the content already exists (methods.rs:2204-2260 checks sponsorship, the signature and the PoW and
+    // nothing about whether the content is already there), the duplicate
+    // `content_store.put` is logged at debug and ignored (methods.rs:2599-2601), and the block builder
+    // dedupes on the ACTION hash — which covers the actor and the timestamp —
+    // so two minters produce two different actions naming ONE content id.
+    // Asserted here against two real nodes rather than argued.
+    const mintedPrevA = await mintRoom(ctxA, roomTextIn(water, xE - 1), Date.now());
+    const mintedNowA = await mintRoom(ctxA, roomTextIn(water, xE), Date.now());
+    check('node A minted both hours, and each answered the id this client derives',
+      mintedPrevA === roomPrev && mintedNowA === roomNow, { mintedPrevA, mintedNowA });
+    const mintedAgainA = await mintRoom(ctxA, roomTextIn(water, xE), Date.now());
+    check('MINTING THE SAME HOUR AGAIN, on the same node, succeeds and answers the same id — '
+        + 'so "everybody mints" costs nothing and needs no coordination',
+      mintedAgainA === roomNow, mintedAgainA);
+    const mintedNowB = await mintRoom(ctxB, roomTextIn(water, xE), Date.now());
+    check('...and a SECOND NODE minting the same hour is not a conflict either — identical bodies '
+        + 'are one object, whoever signed the action',
+      mintedNowB === roomNow, mintedNowB);
+
+    // ── one write on each side of the boundary, one per node ──────────────
+    const vecPrev: Vec = { x: 1_200, y: 1_200, heading: 0, speed: SPEED_CRUISE, t: xB - 30_000 };
+    const vecNow: Vec = { x: 2_800, y: 2_400, heading: 32, speed: SPEED_CRUISE, t: xB + 5_000 };
+    check('the two vectors really are on opposite sides of the boundary',
+      epochOf(vecPrev.t) === xE - 1 && epochOf(vecNow.t) === xE,
+      { prev: epochOf(vecPrev.t), now: epochOf(vecNow.t), E: xE });
+
+    // The body's `ms` and the envelope's timestamp are separate arguments — see
+    // the compression note above. `submitToRoom` is the shipping submit path.
+    const prevId = await submitToRoom(
+      { ...ctxA, roomContentId: roomPrev }, encodePresence(vecPrev, alice.publicKeyHex, 'before'), Date.now());
+    log(`A wrote a vector authored BEFORE the boundary into the closing hour's room, on node A`);
+    const nowId = await submitToRoom(
+      { ...ctxB, roomContentId: roomNow }, encodePresence(vecNow, bob.publicKeyHex, 'after'), Date.now());
+    log(`B wrote a vector authored AFTER the boundary into the opening hour's room, on node B`);
+
+    // ── both nodes must see both, across the P2P link ─────────────────────
+    const bothRooms = [roomPrev, roomNow];
+    const hasBoth = async (auth: RpcAuth): Promise<boolean> => {
+      const { log: l } = await fetchRooms(auth, bothRooms);
+      return l.some((e) => e.hash === prevId) && l.some((e) => e.hash === nowId);
+    };
+    const crossDeadline = Date.now() + 60_000;
+    let seenOnBoth = false;
+    while (Date.now() < crossDeadline && !seenOnBoth) {
+      seenOnBoth = (await hasBoth(authA)) && (await hasBoth(authB));
+      if (!seenOnBoth) await sleep(500);
+    }
+    check('both nodes can read BOTH rooms and hold BOTH writes — the one authored on the other '
+        + 'node arrived over gossip', seenOnBoth, { prevId, nowId });
+
+    const unionA = await fetchRooms(authA, bothRooms);
+    const unionB = await fetchRooms(authB, bothRooms);
+    const foldTo = xB + 30_000; // 00:00:30 — inside the warm-up's reach
+    const crossA = foldShoal(unionA.log, foldTo, { epoch: xE });
+    const crossB = foldShoal(unionB.log, foldTo, { epoch: xE });
+
+    // NON-DEGENERACY FIRST. Two empty worlds match trivially.
+    check('NON-DEGENERACY: the folded world holds BOTH swimmers, one from each side of the boundary',
+      crossA.fish.has(alice.publicKeyHex) && crossA.fish.has(bob.publicKeyHex)
+      && crossB.fish.has(alice.publicKeyHex) && crossB.fish.has(bob.publicKeyHex),
+      { a: [...crossA.fish.keys()].map((k) => k.slice(0, 8)), b: [...crossB.fish.keys()].map((k) => k.slice(0, 8)) });
+    check('THE UNION FOLDS THE SAME ON BOTH NODES, byte for byte',
+      fingerprint(crossA) === fingerprint(crossB),
+      fingerprint(crossA) === fingerprint(crossB) ? undefined
+        : { a: fingerprint(crossA).slice(0, 300), b: fingerprint(crossB).slice(0, 300) });
+
+    // THE MUTATION, RUN LIVE: read only the current room, exactly as a client
+    // that had not been told about the crossing would.
+    const oneRoom = await fetchRooms(authB, [roomNow]);
+    const oneRoomState = foldShoal(oneRoom.log, foldTo, { epoch: xE });
+    check('MUTATION: reading ONLY the current room folds a DIFFERENT world — and one that looks '
+        + 'entirely healthy, with no error anywhere',
+      fingerprint(oneRoomState) !== fingerprint(crossB), fingerprint(oneRoomState).slice(0, 200));
+    check('...specifically, the swimmer who wrote before the boundary is simply absent from it',
+      !oneRoomState.fish.has(alice.publicKeyHex) && oneRoomState.fish.has(bob.publicKeyHex),
+      [...oneRoomState.fish.keys()].map((k) => k.slice(0, 8)));
+
+    // ── THE CROSSER AND THE JOINER ────────────────────────────────────────
+    // The bar Blocker 12's checkpoint work had to clear, now across a room
+    // boundary as well as an epoch one. NODE A runs the crosser: it folds all
+    // of epoch E-1, rolls, and publishes its checkpoint into the OPENING hour's
+    // room (decision 3). NODE B runs the joiner: it adopts that checkpoint out
+    // of the room it is reading anyway and folds epoch E cold.
+    let crosser = createLoop(xE - 1, null);
+    crosser = advance(crosser, unionA.log, epochFoldEndMs(xE - 1)).loop;
+    check('NON-DEGENERACY: the crosser really folded the closing hour and has the swimmer who '
+        + 'wrote in it', crosser.state.fish.has(alice.publicKeyHex) || crosser.state.departed.has(alice.publicKeyHex),
+      { fish: [...crosser.state.fish.keys()].map((k) => k.slice(0, 8)) });
+    const rolledOut = advance(crosser, unionA.log, foldTo);
+    crosser = rolledOut.loop;
+    check('the crosser rolled the hour and produced a checkpoint',
+      rolledOut.rolled !== null && crosser.epoch === xE,
+      { rolled: rolledOut.rolled !== null, epoch: crosser.epoch });
+
+    if (rolledOut.rolled !== null) {
+      const cpId = await sendCheckpoint(
+        { ...ctxA, roomContentId: roomNow }, rolledOut.rolled, Date.now());
+      log(`A published its checkpoint for epoch ${xE - 1} into epoch ${xE}'s room (${cpId.slice(7, 19)}…)`);
+
+      // NODE B waits for it — over the link, into the room it reads anyway.
+      let onB: CheckpointEntry[] = [];
+      const cpDeadline = Date.now() + 60_000;
+      while (Date.now() < cpDeadline) {
+        onB = (await fetchRooms(authB, bothRooms)).checkpoints;
+        if (onB.some((c) => c.hash === cpId)) break;
+        await sleep(500);
+      }
+      check('node B received the checkpoint, in the room of the hour it OPENS — which is the room '
+          + 'B is reading anyway, so the carry survives the crossing',
+        onB.some((c) => c.hash === cpId), onB.map((c) => c.hash.slice(7, 19)));
+
+      const adoption = adoptCheckpoint(onB, xE);
+      check('...and B adopts it as the seed for epoch E', adoption.seed !== null, adoption.opinions.length);
+      check('...with no divergence — every honest client computes the identical payload',
+        !adoption.diverged, adoption.opinions.map((o) => o.payload.slice(0, 120)));
+
+      const finalB = await fetchRooms(authB, bothRooms);
+      let joiner = createLoop(xE, adoption.seed);
+      joiner = advance(joiner, finalB.log, foldTo).loop;
+
+      check('NON-DEGENERACY: the joiner folded a populated world, not an empty one',
+        joiner.state.fish.size > 0, [...joiner.state.fish.keys()].map((k) => k.slice(0, 8)));
+      check('THE CROSSING: a client that ran ACROSS the boundary on node A and one that JOINED '
+          + 'just after it on node B fold to IDENTICAL fingerprints',
+        fingerprint(joiner.state) === fingerprint(crosser.state),
+        fingerprint(joiner.state) === fingerprint(crosser.state) ? undefined : {
+          joiner: fingerprint(joiner.state).slice(0, 300),
+          crosser: fingerprint(crosser.state).slice(0, 300),
+        });
+    }
+
   } finally {
     wA.stop(); wB.stop(); wCtl.stop();
   }
 
   // ── the two windows ──────────────────────────────────────────────────────
   // Everything above is this same machinery with no canvas in front of it. The
-  // URLs are printed rather than documented because six query parameters
-  // (three of them long hex strings) are exactly the kind of thing a recipe
-  // gets subtly wrong — and a window with half a configuration renders an
-  // empty sea that looks just like a node with nobody in it.
+  // URLs are printed rather than documented because the parameters (two of them
+  // long hex strings) are exactly the kind of thing a recipe gets subtly wrong
+  // — and a window with half a configuration renders an empty sea that looks
+  // just like a node with nobody in it.
+  //
+  // `&water=` REPLACED `&space=` AND `&room=` in plan 4d Task 2. The window
+  // derives both from the one name (`waterNamed`), so they cannot be pointed at
+  // each other's neighbours — and the room rotates hourly now, so no `&room=`
+  // could have stayed true for the length of a capture anyway. The name is
+  // `'two'` and NOT `SPACE_NAME`, which carries the `@shoal:` marker: passing
+  // the marker form is the one mistake `assertWaterName` exists to refuse.
   const uiBase = (process.env.SHOAL_UI ?? 'http://localhost:5196').trim().replace(/\/+$/, '');
   const cookieA = (process.env.SHOAL_COOKIE_A ?? '').trim();
   const cookieB = (process.env.SHOAL_COOKIE_B ?? '').trim();
   const windowUrl = (rpc: string, cookieFile: string, id: string, who: string) => {
-    const q = new URLSearchParams({ rpc, space: spaceId, room: roomId, id, who });
+    const q = new URLSearchParams({ rpc, water: 'two', id, who });
     if (cookieFile) q.set('cookie', readFileSync(cookieFile, 'utf8').trim());
     return `${uiBase}/?${q.toString()}`;
   };

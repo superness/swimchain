@@ -1,5 +1,6 @@
 #!/bin/bash
-# Build + VERIFY + deploy the hosted game clients (reef, chess, chips) to the web hosts.
+# Build + VERIFY + deploy the hosted game clients (reef, chess, chips) and the
+# defcon onboarding client to the web hosts.
 #
 # This script exists because of the 2026-07-16 incident: a bare `npm run build`
 # (no VITE_ env baked) shipped bundles that dialed http://127.0.0.1:19746 and had
@@ -8,7 +9,9 @@
 # each client's .env.production, and this script refuses to deploy any bundle
 # missing them.
 #
-# Usage: bash scripts/deploy-web-clients.sh [reef] [chess] [chips]   (default: all)
+# Usage: bash scripts/deploy-web-clients.sh [reef] [chess] [chips] [defcon]
+#        (default with no args: reef chess chips — defcon is deploy-only-when-named
+#        until Task 10 mints real values; see SPEC[defcon] below)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -23,10 +26,23 @@ KEY="$HOME/.ssh/swimchain_seed_ed25519"
 # ever shipping the old genesis default again (offline sponsor => onboarding
 # hangs; the 2026-07-18 "reef spun forever" bug).
 GAME_SPONSOR=0530df507ad26a2ee6d0c61ef1e37e4e08abae087c1755467d98e3435ecd2984
+# defcon: the defcon34 sponsor pubkey + @defcon34 space id do not exist yet —
+# Task 10's runbook mints them (sw identity create + mint-space.mjs) at
+# go-live. The sentinels below are deliberately unsatisfiable: they cannot
+# appear in ANY built bundle, not the current dev-placeholder bake
+# (defcon-client/.env.production's 00...00 hex / sp1-PLACEHOLDER-...) and not
+# a real one either, until a human replaces BOTH these two values AND
+# .env.production with the actual minted hex/bech32m from that runbook step.
+# That is intentional: deploying defcon before go-live must be impossible by
+# construction. Do not "fix" a failing defcon deploy by loosening this —
+# fill in the real values from the runbook instead.
+DEFCON_SPONSOR_PENDING_TASK10=PENDING-TASK10-DEFCON-SPONSOR-HEX
+DEFCON_SPACE_PENDING_TASK10=PENDING-TASK10-DEFCON-SPACE-BECH32M
 declare -A SPEC=(
   [reef]="reef:swimchain.io/rpc,sp1qqzurjh6eeafcdf5qgpqg8mkfwlq3e6cfu,$GAME_SPONSOR"
   [chess]="chess:swimchain.io/rpc,sp1qqzc0w94g6hqlvaqxy735mjss84qrwk88e,$GAME_SPONSOR"
   [chips]="chips:swimchain.io/rpc,sp1qqz7zj8gawkmy3ye7vyxudvalfmqpxt7ue,$GAME_SPONSOR"
+  [defcon]="defcon:swimchain.io/rpc,$DEFCON_SPONSOR_PENDING_TASK10,$DEFCON_SPACE_PENDING_TASK10"
 )
 
 CLIENTS=("$@")
