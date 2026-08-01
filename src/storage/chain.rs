@@ -837,6 +837,17 @@ impl ChainStore {
         gaps
     }
 
+    /// How many competing branches we are holding but have not adopted.
+    ///
+    /// Zero on a healthy node. Nonzero is the fact that went unreported for
+    /// three and a half days while the fleet ran two chains: every
+    /// user-visible read goes through content and mempool, which gossip
+    /// across all chains, so nothing surfaced the divergence at all.
+    #[must_use]
+    pub fn fork_branch_count(&self) -> u64 {
+        self.fork_branch_tips().map(|t| t.len() as u64).unwrap_or(0)
+    }
+
     /// The heaviest fork branch we hold that is fully linked and outweighs our
     /// tip — i.e. a chain we could adopt right now, if anything asked.
     ///

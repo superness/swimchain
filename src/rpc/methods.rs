@@ -1419,11 +1419,42 @@ impl RpcMethods {
             .map(|cm| cm.get_connections().len() as u64)
             .unwrap_or(0);
 
+        // WHAT THE STORE ACTUALLY KNOWS, not what the state machine claims.
+        //
+        // `sync_state` is written by NOTHING (grep: initialised in
+        // node/manager.rs and only ever read), so it is permanently `Idle` —
+        // and `Idle` + any peer reported "synced, 100%". On 2026-08-01 a seed
+        // sat 345 blocks behind on a minority fork, holding 443 blocks of the
+        // heavier chain it had failed to adopt, and answered:
+        //
+        //     Current sync state: synced
+        //     Progress: 100%
+        //
+        // That single lie is why a two-chain fleet went unnoticed for three
+        // and a half days. These three facts are cheap, already computed
+        // elsewhere, and cannot be fooled by an unwritten enum.
+        let (fork_branches, fork_gaps, adoptable) = match &self.node.chain_store {
+            Some(cs) => (
+                cs.fork_branch_count(),
+                cs.fork_ancestry_gaps(64).len() as u64,
+                cs.heaviest_adoptable_fork_tip().map(|b| b.height),
+            ),
+            None => (0, 0, None),
+        };
+
         // Calculate chain sync percentage
         let (state, chain_percent) = match sync_state {
             SyncState::Idle => {
                 if peer_count == 0 {
                     ("offline".to_string(), 0)
+                } else if adoptable.is_some() {
+                    // We are holding a heavier chain we have not adopted. This
+                    // is never "synced" — it is the deadlock state.
+                    ("forked".to_string(), 0)
+                } else if fork_gaps > 0 {
+                    // Assembling a competing branch: we know we do not have
+                    // the whole picture yet.
+                    ("assembling".to_string(), 0)
                 } else {
                     ("synced".to_string(), 100)
                 }
@@ -1621,6 +1652,9 @@ impl RpcMethods {
             mempool_threshold,
             mempool_actions,
             mempool_waiting_secs,
+            fork_branches,
+            fork_gaps,
+            adoptable_fork_height: adoptable,
             node_identity,
             leader_distance,
             leader_threshold,
