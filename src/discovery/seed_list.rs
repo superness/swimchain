@@ -105,19 +105,21 @@ pub fn default_dev_seeds() -> Vec<SeedEntry> {
     ]
 }
 
-/// Default mainnet seeds
+/// Default mainnet seeds — every always-on fleet node is a door.
 ///
-/// These will be populated with real seed nodes before mainnet launch.
-/// For now, returns an empty list.
+/// One baked seed made the 2026-07-31 fd-exhaustion outage a total bootstrap
+/// outage: fresh installs had no first contact for two hours while two other
+/// perfectly healthy droplets sat unlisted. Seeds are introduction points, not
+/// authorities (SPEC_06 §4.1.1) — list every stable address we have. Still
+/// launch-readiness B2: these are one operator on one provider; add outside
+/// operators as they appear.
 #[must_use]
 pub fn default_mainnet_seeds() -> Vec<SeedEntry> {
-    // Mainnet seed(s). A single operator seed is enough to BOOTSTRAP, but a
-    // resilient public launch wants >=2-3 INDEPENDENT seeds (different operators/
-    // hosts) so the network isn't one-host-down away from no bootstrap — add them
-    // here as they come online (launch readiness B2).
     vec![
-        // Primary mainnet seed (DigitalOcean).
-        SeedEntry::tcp_v4([167, 71, 241, 252], MAINNET_PORT),
+        // Operator fleet (DigitalOcean).
+        SeedEntry::tcp_v4([167, 71, 241, 252], MAINNET_PORT), // seed
+        SeedEntry::tcp_v4([165, 22, 47, 107], MAINNET_PORT),  // bot
+        SeedEntry::tcp_v4([167, 172, 236, 60], MAINNET_PORT), // client2
     ]
 }
 
@@ -304,10 +306,33 @@ mod tests {
         }
     }
 
+    /// EVERY FLEET NODE IS A DOOR.
+    ///
+    /// On 2026-07-31 the single baked seed stopped accepting (fd exhaustion)
+    /// and a fresh install had no first contact at all for two hours: GETADDR
+    /// needs a peer, the DHT needs a routing table, and the store-exhausted
+    /// fallback redials the same dead list. Three independent droplets are
+    /// baked so one locked door is not a bootstrap outage. (This test replaced
+    /// `test_default_mainnet_seeds_empty`, which had asserted an empty list
+    /// against a shipped one-entry list since launch — it failed on every run
+    /// and told nobody anything.)
     #[test]
-    fn test_default_mainnet_seeds_empty() {
-        // Should be empty until mainnet
+    fn test_default_mainnet_seeds_cover_the_fleet() {
         let seeds = default_mainnet_seeds();
-        assert!(seeds.is_empty());
+        let expect: Vec<[u8; 4]> = vec![
+            [167, 71, 241, 252], // seed droplet
+            [165, 22, 47, 107],  // bot droplet
+            [167, 172, 236, 60], // client2 droplet
+        ];
+        assert_eq!(
+            seeds.len(),
+            expect.len(),
+            "mainnet must ship one baked seed per fleet droplet"
+        );
+        for (seed, ip) in seeds.iter().zip(&expect) {
+            assert_eq!(seed.transport, TransportType::TcpV4);
+            assert_eq!(&seed.address[0..4], ip);
+            assert_eq!(seed.port, MAINNET_PORT);
+        }
     }
 }
