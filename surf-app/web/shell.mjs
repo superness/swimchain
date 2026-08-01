@@ -585,6 +585,26 @@ function sponsorStatus(text) {
   document.getElementById('sponsor-status').textContent = text;
 }
 
+// D1: approval is INSTANT, but a set whose node has not yet synced the
+// sponsor's own ancestry cannot VALIDATE the grant — the node logs
+// "Sponsor <x> not found in sponsorship store" and retries until the sponsor
+// chain lands (router.rs, "Stage 2: sponsorship — idempotent, retried").
+// Observed live on a 10-minute-old node: approved at 19:08, still gated at
+// 19:13. Saying only "waiting for a person" through that window is a lie —
+// the person may already have said yes. Name the real reason.
+const WAITING = 'Request sent. A person has to approve it — this set tunes itself in the moment they do.';
+let claimSent = false;
+
+async function syncTail() {
+  try {
+    const s = await rpc('get_sync_status');
+    if (s?.state && s.state !== 'synced') {
+      return ` This set is still catching up (${s.chain_percent ?? 0}%) — even once someone approves, it cannot confirm the grant until it has.`;
+    }
+  } catch { /* a nicety; never let it block or break the gate */ }
+  return '';
+}
+
 function showSponsorGate() {
   document.getElementById('acquire').hidden = true;
   staticCtl.stop();
@@ -608,7 +628,11 @@ function startSponsorPoll() {
       hideSponsorGate();
       sponsorStatus('');
       powerOn(); // re-enters, passes the gate, and tunes for real
+      return;
     }
+    // Keep the reason current: a set that was behind may have caught up, and
+    // one that just claimed may now be waiting on sync rather than on a human.
+    if (claimSent) sponsorStatus(WAITING + (await syncTail()));
   }, 8000);
 }
 
@@ -628,7 +652,8 @@ document.getElementById('sponsor-btn').addEventListener('click', async () => {
     await requestSponsorship({ rpc, sign, pubkeyHex: myPk, applicationText: note.value });
     note.disabled = true;
     btn.hidden = true;
-    sponsorStatus('Request sent. A person has to approve it — this set tunes itself in the moment they do.');
+    claimSent = true;
+    sponsorStatus(WAITING + (await syncTail()));
     startSponsorPoll();
   } catch (e) {
     btn.disabled = !note.value.trim();
@@ -1063,8 +1088,23 @@ function onKey(e) {
   else if (e.key === 'Escape' && chartOpen) closeChart();
 }
 window.addEventListener('keydown', onKey);
-document.getElementById('export-btn').addEventListener('click', () => exportResults(timer, hud));
-document.getElementById('hud-toggle').addEventListener('click', () => hud.toggle());
+// The HUD and the results export live behind INVISIBLE 44px corner buttons.
+// A single tap was enough, and the flip strip runs down the right edge to the
+// bottom-right corner — so reaching for a flip could summon a perf readout
+// over a shipping build (observed on the Pixel). Require three deliberate taps
+// inside 800ms; the `m`/`e` keys are unchanged for desktop/dev.
+function onTripleTap(el, fn) {
+  let n = 0;
+  let resetTimer = null; // NOT `timer` — that's the module-level flip timer
+  el.addEventListener('click', () => {
+    n += 1;
+    clearTimeout(resetTimer);
+    if (n >= 3) { n = 0; fn(); return; }
+    resetTimer = setTimeout(() => { n = 0; }, 800);
+  });
+}
+onTripleTap(document.getElementById('export-btn'), () => exportResults(timer, hud));
+onTripleTap(document.getElementById('hud-toggle'), () => hud.toggle());
 document.getElementById('off-screen').addEventListener('click', () => { if (!powered) powerOn(); });
 
 const strip = document.getElementById('flip-strip');
