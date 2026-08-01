@@ -164,19 +164,24 @@ async function checkDeadAir(target) {
   // empty space_ids array would mean "all known spaces" per Task 1's RPC
   // contract, crediting an unrelated busy space's recency to this channel.
   if (!isMetered(ch)) return;
-  // Dead air is computed from what THIS node holds. A set that is still
-  // syncing has the chain but not the recent post bodies, so a thriving
-  // channel classifies as DYING. Caught live on a 4-minute-old set: the card
-  // read "CH 2 FEED / LAST SIGNAL: 8 DAYS AGO / THIS CHANNEL IS DYING" while
-  // mainnet's own social spaces had activity that same day (Bot talk 0.0d,
-  // Daily Drift 1.0d). Worse, that is the FIRST thing a newly vouched-in
-  // stranger sees. Never accuse a channel of dying on evidence this node has
-  // not finished collecting. If the status call itself fails we fall through
-  // to the old behaviour rather than silently killing dead air entirely.
-  try {
-    const s = await rpc('get_sync_status');
-    if (s?.state && s.state !== 'synced') return;
-  } catch { /* cannot tell — behave as before */ }
+  // Dead air is computed from what THIS node holds, and content is fetched on
+  // demand — so a set that has only just asked for a channel's content has not
+  // got it yet, and a thriving channel classifies as DYING. Caught live: "CH 2
+  // FEED / LAST SIGNAL: 8 DAYS AGO / THIS CHANNEL IS DYING" on a minutes-old
+  // set, while mainnet's own social spaces had activity that same day.
+  //
+  // NOTE: `get_sync_status.state === 'synced'` is NOT the guard — that is
+  // chain-level and flips true almost immediately (a set read SYNC 100% while
+  // holding 42MB against a full node's 132MB). The honest condition is whether
+  // THIS channel has been driven and given time for bodies to land.
+  const since = Date.now() - (drivenAt.get(target) ?? 0);
+  if (since < DEAD_AIR_GRACE_MS) {
+    // Not "never" — just not yet. Look again once the grace has passed, so a
+    // genuinely decayed channel still gets its card.
+    setTimeout(() => { if (deck.current === target) checkDeadAir(target); },
+      DEAD_AIR_GRACE_MS - since + 250);
+    return;
+  }
   let entries;
   try {
     entries = (await rpc('get_space_health', { space_ids: ch.spaces }))?.spaces ?? [];
@@ -421,9 +426,17 @@ function advisory(id, type) {
 //                         src/rpc/types.rs:552-567 (ListSpaceContentParams)
 //   request_content:     { content_id: "sha256:<hex>" } (prefix optional server-side)
 //                         feed-client/src/lib/rpc.ts:550-552; src/rpc/methods.rs:11433-11442
+// When each channel's spaces were last actually driven (follow + request).
+// Dead air is a verdict about decay; it must not be reached before the set has
+// asked for the content and given it a moment to arrive. `request_content` is
+// fire-and-forget — the bodies land afterwards, over the network.
+const drivenAt = new Map();
+const DEAD_AIR_GRACE_MS = 30_000;
+
 async function tuneDriver(id) {
   const ch = byId.get(id);
   if (!myPk || !(ch.spaces ?? []).length) return;
+  drivenAt.set(id, Date.now());
   for (const space of ch.spaces) {
     try {
       await rpc('follow_space', { user: myPk, space_id: space });
@@ -1009,6 +1022,7 @@ function powerOn() {
     }
     if (!powered) return; // powered off while rpcReady was still resolving
     if (!(await sponsorGate())) return; // gate owns the screen now
+    startFeedRepick(); // keep re-ranking the feed as the node learns
     // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
     // power-cycling mid-boot starts a second run: the frames map gets
     // overwritten (run A's mounted iframe orphaned, unmount() only ever
@@ -1033,6 +1047,7 @@ function powerOff() {
   dwell.untuned(); // Task 3: no dwell mining behind the off screen
   gate?.cancel();
   hideSponsorGate(); // D1: no sponsorship polling behind the off screen either
+  stopFeedRepick();
   staticCtl.stop();
   const off = document.getElementById('off-screen');
   off.hidden = false;
@@ -1074,6 +1089,68 @@ function stopAcquireTicker() {
   if (acqTicker) { clearInterval(acqTicker); acqTicker = null; }
 }
 
+// --- the feed's spaces are a PICK, and it must not be made once, blind -----
+// acquisitionBoot ranks the node's own social spaces by last_activity — at
+// the single most ill-informed moment in the set's life, seconds after first
+// boot, when those values are whatever it happened to have fetched. Worse, it
+// PERSISTED that choice, so a set that locked onto stale spaces stayed locked
+// across every future launch. Caught live: the card read "LAST SIGNAL: 9 DAYS
+// AGO" while mainnet's freshest social spaces were 0.0d and 1.0d old.
+// So: keep re-ranking as the node learns, and adopt a better answer whenever
+// one appears.
+let feedRepick = null;
+const FEED_REPICK_MS = 60_000;
+
+function sameSpaces(a, b) {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a);
+  return b.every((x) => seen.has(x));
+}
+
+/** True once the node is at least chain-caught-up — the floor for WRITING a pick. */
+async function informedEnoughToPersist() {
+  try {
+    const s = await rpc('get_sync_status');
+    return s?.state === 'synced' && (s?.peer_count ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function repickFeedSpaces() {
+  let listed;
+  try {
+    listed = await rpc('list_spaces', { limit: 20 });
+  } catch {
+    return; // transient; the next tick tries again
+  }
+  const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
+  if (picked === FALLBACK_FEED_SPACES) return; // nothing to adopt
+  if (sameSpaces(picked, byId.get(FEED_ID).spaces ?? [])) return;
+
+  byId.get(FEED_ID).spaces = picked;
+  if (await informedEnoughToPersist()) {
+    localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+  }
+  hud.note(`feed re-picked (${picked.length} spaces)`);
+  // The channel on screen now points somewhere else: drive the new spaces and
+  // throw away any dead-air verdict, which was about the OLD ones.
+  if (deck.current === FEED_ID) {
+    hideDeadAirCard();
+    tuneDriver(FEED_ID);
+    checkDeadAir(FEED_ID);
+  }
+}
+
+function startFeedRepick() {
+  if (feedRepick) return;
+  feedRepick = setInterval(repickFeedSpaces, FEED_REPICK_MS);
+}
+
+function stopFeedRepick() {
+  if (feedRepick) { clearInterval(feedRepick); feedRepick = null; }
+}
+
 // --- section 3.1: first-signal acquisition (runs once, then persisted) ---
 async function acquisitionBoot() {
   seamOn();
@@ -1105,8 +1182,14 @@ async function acquisitionBoot() {
     if (listed) {
       const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
       if (picked !== FALLBACK_FEED_SPACES) {
+        // Use it NOW so the set has somewhere to tune, but only WRITE it once
+        // the node is informed enough for the ranking to mean anything —
+        // otherwise a first-boot guess becomes a permanent lock (it did).
+        // repickFeedSpaces keeps re-ranking either way.
         byId.get(feed).spaces = picked;
-        localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+        if (await informedEnoughToPersist()) {
+          localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+        }
       }
     }
     deck.tune(feed);
