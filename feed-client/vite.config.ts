@@ -18,7 +18,7 @@ export default defineConfig({
   base: './', // Use relative paths for embedding in desktop-app
   build: {
     target: 'esnext',
-    sourcemap: true,
+    sourcemap: false,
   },
   server: {
     port: 5179, // feed-client port

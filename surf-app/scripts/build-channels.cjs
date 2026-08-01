@@ -18,20 +18,21 @@ const CHANNELS = [
   { id: 'reef', dir: 'reef-client', env: { VITE_RPC_ENDPOINT: RPC } },
 ];
 
-// Recursively collect every .js file under `dir`, at any depth. The reef
-// anti-leak scan (below) must catch a leaked gateway string regardless of
-// chunk nesting, not just direct children of assets/ — a non-recursive scan
-// would false-pass the one check the A0 rule calls load-bearing the moment
+// Recursively collect every file under `dir`, at any depth, optionally
+// filtered by a suffix. The reef anti-leak scan and the sourcemap-bake
+// self-check both need this to catch nested chunks, not just direct
+// children of assets/ — a non-recursive scan would false-pass the moment
 // vite's output layout grows a subdirectory.
-function walkJsFiles(dir) {
+function walkFiles(dir, suffix) {
   const out = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, entry.name);
-    if (entry.isDirectory()) out.push(...walkJsFiles(p));
-    else if (entry.isFile() && entry.name.endsWith('.js')) out.push(p);
+    if (entry.isDirectory()) out.push(...walkFiles(p, suffix));
+    else if (entry.isFile() && (!suffix || entry.name.endsWith(suffix))) out.push(p);
   }
   return out;
 }
+const walkJsFiles = (dir) => walkFiles(dir, '.js');
 
 for (const ch of CHANNELS) {
   const cwd = path.join(REPO, ch.dir);
@@ -41,6 +42,17 @@ for (const ch of CHANNELS) {
   }
   const outDir = path.join(OUT, ch.id);
   fs.rmSync(outDir, { recursive: true, force: true });
+  // Surf C3 sourcemap-bake self-check: vite.config.js (built by `tsc -b` from
+  // vite.config.ts under the composite tsconfig.node.json, gitignored per
+  // *-client/.gitignore) takes precedence over vite.config.ts when vite
+  // resolves its config file. This script calls vite's `build` directly, NOT
+  // via `tsc -b && vite build`, so it never regenerates that .js — a STALE
+  // pre-C3 copy left over from before sourcemaps were stripped (sourcemap:
+  // true) would silently win over the fixed, tracked .ts and re-emit maps
+  // into the baked APK, invisible to scripts/check-bundle-sizes.sh (that
+  // script only greps TRACKED files, and vite.config.js is gitignored).
+  // Removing it forces vite to fall back to the tracked, fixed .ts.
+  fs.rmSync(path.join(cwd, 'vite.config.js'), { force: true });
   // argv array via spawnSync, not an execSync shell string: outDir must
   // reach vite exactly as given, never re-tokenized by a shell (a Windows
   // path's backslashes/spaces are not safe inside a shell template string).
@@ -62,6 +74,23 @@ for (const ch of CHANNELS) {
   const idx = fs.readFileSync(path.join(outDir, 'index.html'), 'utf8');
   if (!idx.includes(`/channels/${ch.id}/`)) {
     throw new Error(`${ch.id}: index.html assets are not rooted at /channels/${ch.id}/`);
+  }
+  // Surf C3 sourcemap-bake self-check (continued): even with the stale
+  // vite.config.js removed above, verify the bake itself never emitted a
+  // map — belt and suspenders against any other path (a future channel with
+  // its own gitignored config quirk, a vite default changing upstream,
+  // etc.) that could reintroduce sourcemap:true undetected. Checks both the
+  // literal .map files AND the `//# sourceMappingURL=` trailer vite writes
+  // into the referencing .js, since either one leaking into the APK exposes
+  // the same unminified source.
+  const stray = walkFiles(outDir, '.map');
+  if (stray.length > 0) {
+    throw new Error(`${ch.id}: sourcemap(s) baked into the channel output: ${stray.join(', ')}`);
+  }
+  for (const jsFile of walkJsFiles(outDir)) {
+    if (fs.readFileSync(jsFile, 'utf8').includes('sourceMappingURL')) {
+      throw new Error(`${ch.id}: ${jsFile} contains a sourceMappingURL trailer`);
+    }
   }
 }
 // reef endpoint verification: the loopback endpoint must be in the bundle and

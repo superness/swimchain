@@ -40,7 +40,7 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    sourcemap: true,
+    sourcemap: false,
   },
   server: {
     port: 5195,

@@ -1,0 +1,4 @@
+# tsc -b regenerates vite.config.js from vite.config.ts on every build.
+# Vite loads vite.config.js before vite.config.ts, so a stale committed
+# .js silently shadows the .ts config. Keep it untracked; .ts is authoritative.
+vite.config.js

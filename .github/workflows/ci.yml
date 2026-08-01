@@ -10,6 +10,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Dependency-free: reads tracked files + greps configs, no `npm install`.
+  # That is what lets it gate every client on every push, not just the ones
+  # that can currently build in CI (see the `clients` job comment below).
+  bundle-size-gate:
+    name: Bundle size gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check sourcemaps, tracked maps, and bundle sizes
+        run: bash scripts/check-bundle-sizes.sh
+
   check:
     name: Check
     runs-on: ubuntu-latest
@@ -86,3 +98,43 @@ jobs:
       - name: Test
         working-directory: ${{ matrix.client }}
         run: npm test
+
+      # chips-client is the one client in this matrix that actually builds in
+      # CI (reef-client has no lockfile yet, see the matrix comment above), so
+      # it is the one that gets a TRUE post-build size gate instead of the
+      # committed-bytes check in scripts/check-bundle-sizes.sh.
+      - name: Build (chips-client)
+        if: matrix.client == 'chips-client'
+        working-directory: ${{ matrix.client }}
+        run: npm run build
+
+      - name: Check bundle size (gzipped, chips-client)
+        if: matrix.client == 'chips-client'
+        working-directory: ${{ matrix.client }}
+        run: |
+          BUNDLE_SIZE_LIMIT=170000 # ~30% above 130065B measured 2026-08-01
+
+          FILES=$(find dist/assets -maxdepth 1 -name 'index-*.js')
+          if [ -z "$FILES" ]; then
+            echo "ERROR: no dist/assets/index-*.js found — did the build step run?"
+            exit 1
+          fi
+
+          for f in $FILES; do
+            RAW_SIZE=$(stat -c %s "$f")
+            GZIP_SIZE=$(gzip -c "$f" | wc -c)
+
+            echo "$f:"
+            echo "  Raw:     $(numfmt --to=iec-i --suffix=B "$RAW_SIZE")"
+            echo "  Gzipped: $(numfmt --to=iec-i --suffix=B "$GZIP_SIZE")"
+            echo "  Limit:   $(numfmt --to=iec-i --suffix=B "$BUNDLE_SIZE_LIMIT")"
+
+            if [ "$GZIP_SIZE" -gt "$BUNDLE_SIZE_LIMIT" ]; then
+              echo ""
+              echo "ERROR: $f is $GZIP_SIZE bytes gzipped, exceeds limit of $BUNDLE_SIZE_LIMIT bytes"
+              exit 1
+            fi
+          done
+
+          echo ""
+          echo "Bundle size check passed!"
