@@ -574,6 +574,7 @@ document.getElementById('node-details').addEventListener('click', () => {
 // space-scoped ones; that funnel gave this identity a reef-only grant and a
 // chess-only grant and never an actual sponsorship.
 let sponsorPoll = null;
+let offerRetry = null; // declared here, not beside submitRequest: hideSponsorGate() reads it
 // `vouched` gates the DIAL itself, not just the screen. An install that was
 // already `acquired` under a pre-D1 build has powered && acquired both true,
 // so without this the flip strip and the Chart would happily keep tuning
@@ -615,6 +616,7 @@ function showSponsorGate() {
 function hideSponsorGate() {
   document.getElementById('sponsor-gate').hidden = true;
   if (sponsorPoll) { clearInterval(sponsorPoll); sponsorPoll = null; }
+  if (offerRetry) { clearTimeout(offerRetry); offerRetry = null; }
 }
 
 // Poll until a person approves. 8s, not 1s: the claim has to gossip to the
@@ -643,11 +645,18 @@ document.getElementById('sponsor-note').addEventListener('input', (e) => {
   document.getElementById('sponsor-btn').disabled = !e.target.value.trim();
 });
 
-document.getElementById('sponsor-btn').addEventListener('click', async () => {
+// A fresh set has not met the network yet, so its offer store is empty for the
+// first sweep or two. That is worth WAITING through, not reporting as "nothing
+// open" — so the request retries itself instead of making the newcomer keep
+// tapping. Bounded, and every attempt is visible.
+const OFFER_RETRY_MS = 10_000;
+const OFFER_RETRY_MAX = 30; // ~5 minutes of a set introducing itself
+
+async function submitRequest(attempt = 0) {
   const btn = document.getElementById('sponsor-btn');
   const note = document.getElementById('sponsor-note');
   btn.disabled = true;
-  sponsorStatus('Proving this set is real…');
+  sponsorStatus(attempt ? 'Looking for an open sponsorship…' : 'Proving this set is real…');
   try {
     await requestSponsorship({ rpc, sign, pubkeyHex: myPk, applicationText: note.value });
     note.disabled = true;
@@ -656,17 +665,26 @@ document.getElementById('sponsor-btn').addEventListener('click', async () => {
     sponsorStatus(WAITING + (await syncTail()));
     startSponsorPoll();
   } catch (e) {
-    btn.disabled = !note.value.trim();
     const msg = String(e?.message);
+    if (msg === 'no-offers-yet' && attempt < OFFER_RETRY_MAX) {
+      sponsorStatus('This set has not met the network yet — still finding the open sponsorships. Keeping the request going.');
+      offerRetry = setTimeout(() => submitRequest(attempt + 1), OFFER_RETRY_MS);
+      return;
+    }
+    btn.disabled = !note.value.trim();
     sponsorStatus(
-      msg === 'no-unscoped-offer'
-        ? 'No open sponsorship to request right now. Ask someone already on the network to sponsor the address above.'
-        : msg === 'application-required'
-          ? 'Say something first — a person reads this before they vouch for you.'
-          : `Request failed: ${e?.message ?? e}`
+      msg === 'no-offers-yet'
+        ? 'Still cannot see any sponsorships from this set. Ask someone already on the network to sponsor the address above.'
+        : msg === 'no-unscoped-offer'
+          ? 'No open sponsorship to request right now — the only offers visible are tied to single games. Ask someone already on the network to sponsor the address above.'
+          : msg === 'application-required'
+            ? 'Say something first — a person reads this before they vouch for you.'
+            : `Request failed: ${e?.message ?? e}`
     );
   }
-});
+}
+
+document.getElementById('sponsor-btn').addEventListener('click', () => submitRequest(0));
 
 document.getElementById('sponsor-copy').addEventListener('click', async () => {
   const text = document.getElementById('sponsor-addr').textContent ?? '';

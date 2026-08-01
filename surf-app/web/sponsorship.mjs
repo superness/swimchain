@@ -101,9 +101,16 @@ export async function requestSponsorship({
   const application = (applicationText ?? '').trim();
   if (!application) throw new Error('application-required');
 
+  // `list_sponsorship_offers` reads the node's LOCAL offer store, which a
+  // seconds-old node has not filled yet (offers arrive on the periodic
+  // SPONSORSHIP-SYNC sweep). An empty list therefore means "this set has not
+  // met the network yet", NOT "the network has nothing open" — telling a
+  // brand-new user the latter sends them off to find a sponsor by hand for no
+  // reason. Observed live on a fresh install: zero offers, zero sync sweeps.
   const list = await rpc('list_sponsorship_offers', { limit: 200 }).catch(() => ({ offers: [] }));
-  const pick = selectSponsorOffer(list?.offers ?? []);
-  if (!pick) throw new Error('no-unscoped-offer');
+  const offers = list?.offers ?? [];
+  const pick = selectSponsorOffer(offers);
+  if (!pick) throw new Error(offers.length ? 'no-unscoped-offer' : 'no-offers-yet');
 
   const minDifficulty = Math.max(pick.requirements?.min_pow_difficulty ?? 0, 1);
   const { nonce, nonceSpace, powHash } = await mineClaimPow(minDifficulty, digest);

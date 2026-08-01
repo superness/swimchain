@@ -71,6 +71,20 @@ test('isSponsored is false (not a throw) when the RPC errors', async () => {
   assert.equal(await isSponsored(rpc, 'ab'.repeat(32)), false);
 });
 
+// A seconds-old node has an EMPTY local offer store until the first
+// SPONSORSHIP-SYNC sweep. That must not be reported as "the network has
+// nothing open" — it sends a brand-new user hunting for a sponsor by hand.
+test('requestSponsorship distinguishes an empty store from no unscoped offers', async () => {
+  const empty = async () => ({ offers: [] });
+  await assert.rejects(
+    () => requestSponsorship({
+      rpc: empty, sign: async () => 'ff', pubkeyHex: 'ab'.repeat(32), digest,
+      applicationText: 'let me in',
+    }),
+    /no-offers-yet/
+  );
+});
+
 test('requestSponsorship throws no-unscoped-offer when only game offers exist', async () => {
   const rpc = async (m) => {
     if (m === 'list_sponsorship_offers') return { offers: [scoped('a1', 100)] };
