@@ -105,12 +105,21 @@ async function alert(subject, body) {
     if (ALERT_EMAIL && !token) {
       console.log(`[${TAG}] ALERT_EMAIL is set but ALERT_TOKEN is not — ntfy refuses anonymous email; sending push only`);
     }
+    const post = async (h) =>
+      fetch('https://ntfy.sh/' + encodeURIComponent(topic), { method: 'POST', headers: h, body });
     try {
-      const res = await fetch('https://ntfy.sh/' + encodeURIComponent(topic), {
-        method: 'POST',
-        headers,
-        body,
-      });
+      let res = await post(headers);
+      if (!res.ok && headers.Email) {
+        // EMAIL TROUBLE MUST NOT COST US THE PUSH. ntfy rejects the whole
+        // request when the address is unverified or the plan disallows it —
+        // so the alert vanished entirely because of a delivery preference.
+        // Retry without the Email header: a notification that arrives by one
+        // channel beats one that arrives by none.
+        const why = (await res.text()).slice(0, 200);
+        console.log(`[${TAG}] email delivery refused (${res.status}): ${why} — retrying as push only`);
+        const { Email, ...pushOnly } = headers;
+        res = await post(pushOnly);
+      }
       if (!res.ok) {
         console.log(`[${TAG}] alert rejected (${res.status}): ${(await res.text()).slice(0, 200)}`);
       } else {
