@@ -307,7 +307,7 @@ h1, h2, h3, p { margin: 0; }
 .kitchen::before {
   content: ''; position: absolute; z-index: -1;
   left: 50%; top: 8%; translate: -50% 0;
-  width: min(92%, 760px); height: 78%;
+  width: min(92%, 1200px); height: 78%;
   background: radial-gradient(58% 46% at 50% 22%, rgba(255,214,150,.2), transparent 72%);
   filter: blur(2px); pointer-events: none;
 }
@@ -332,9 +332,15 @@ h1, h2, h3, p { margin: 0; }
    bug `.worth`'s min-height already prevents on the vertical axis, on the
    axis nobody had pinned. Size the slot and let the button fill it, and no
    caption — present or future — can move a fryer. */
-.rack-2 .basket-slot { width: min(clamp(150px, 19vw, 292px), 46vh); }
-.rack-3 .basket-slot { width: min(clamp(122px, 14.5vw, 224px), 42vh); }
-.rack-4 .basket-slot { width: min(clamp(112px, 13vw, 202px), 29vh); }
+/* The px caps only bind on LARGE screens (the vw/vh terms rule below them) —
+   raised 2026-08-01 because a 1440p monitor was showing a 470px cluster in a
+   1700px kitchen ("we certainly don't maximize the screen usage"). The vh
+   terms still guarantee vertical fit; the caps just stop punishing width. */
+.rack-2 .basket-slot { width: min(clamp(150px, 19vw, 380px), 46vh); }
+.rack-3 .basket-slot { width: min(clamp(122px, 14.5vw, 300px), 42vh); }
+.rack-4 .basket-slot { width: min(clamp(112px, 13vw, 280px), 29vh); }
+/* Phones/small rooms keep the 2x2 cluster; the desktop block below frees the
+   rack to seat four across where the width exists. */
 .rack-4 { max-width: 470px; }
 
 .basket {
@@ -972,7 +978,10 @@ h1, h2, h3, p { margin: 0; }
 .tunnel-read .checking { color: #ffd79a; }
 .tunnel-read .checking em { font-style: normal; opacity: .75; }
 
-.shelf { width: 100%; max-width: 520px; }
+/* Cap raised 520 -> 640: the counter column (minmax(280px,.55fr)) already
+   bounds it on smaller desktops; the old cap just wasted the column on big
+   monitors. */
+.shelf { width: 100%; max-width: 640px; }
 .shelf .jars { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
 .jar {
   position: relative; width: 92px; padding: 30px 4px 6px;
@@ -2707,7 +2716,16 @@ h1, h2, h3, p { margin: 0; }
 @media (min-width: 941px) and (min-height: 621px) {
   .crew-row { top: auto; bottom: 14px; }
   .corner { left: auto; right: 2vw; align-items: flex-end; }
-  .critter { width: clamp(40px, 5vw, 62px); }
+  /* Character-sized, same as the base rule — this used to shrink the crew to
+     62px for a caption/boards collision, and it silently swallowed the
+     2026-08-01 visibility pass on every desktop (the first playtester read
+     the ONLY critter on screen as a chip). The boards live in the right
+     corner (rule above) and SPOTS end at 74%, so the crew can't stand on
+     them; the pot caption is aria-hidden decoration and may be overlapped. */
+  .critter { width: clamp(72px, 8vw, 150px); }
+  /* Four fryers seat four ACROSS where the width exists — the 470px cap
+     (2x2) is a phone/small-room shape, not a monitor's. */
+  .rack-4 { max-width: none; }
 }
 
 /* ── the rat's badge, unpinched ──────────────────────────────────────────
