@@ -44,3 +44,177 @@ Observed this run:
 - **G2-only exception:** if G2 alone fails (G1/G3/G4 pass), record **N=3 provisional, G2 deferred** — the proxy-honesty caveat above makes a G2 fail potentially a Chrome-only artifact (backgrounded Chrome sits in the cached kill band; the APK's `NodeForegroundService` does not). Re-run S6/S7 on the real WebView in A1 and let *that* result bind. Do **not** set warmSize 2 on a G2-only failure.
 - Any of G1/G3/G4 fails → set `warmSize: 2` in `channels.json`, re-run S1→S7, and record the same table for N=2. **N=2** iff its G1/G3/G4 pass (G2 treated the same way as above).
 - The "single-renderer deck assumption is broken" verdict requires a **G1 failure at warmSize 2** — never G2 alone. If that happens, stop and take the numbers to the operator (the spec has no N=1 fallback; that's a §2.2 design conversation, not an implementer's call).
+
+## A1/B device pass — G2 on real WebView + long-press (2026-07-31)
+
+Device: Pixel 8 Pro (husky), Android 17 / SDK 37, density 360 (2.25x), physical
+resolution 1008x2244 (`adb shell wm size`, matches screencap exactly). WebView
+provider `com.google.android.webview` versionName 150.0.7871.181. Branch
+`feat/surf-c-fleet` (A1 + B + C1), built fresh for this pass.
+
+### Build
+
+`npm run build:channels` succeeded and self-verified (loopback endpoint
+present, no mainnet-gateway leak, `engage.worker.js` bundled 44.5 KiB with
+`argon2id` present). `npm run tauri android build -- --debug --target
+aarch64`: Rust cross-compile finished in **1m52s** (an incremental
+`target/aarch64-linux-android` cache already existed in this worktree from a
+prior build — not a cold ~20-minute build), then hit the documented symlink
+failure exactly as this README predicts. The manual workaround (copy
+`libsurf_app_lib.so` + `tauri.conf.json` into `gen/android`, then `gradlew.bat
+assembleArm64Debug -x rustBuildArm64Debug`) completed in 30s. No deviation
+from the documented recipe was needed. APK sha256
+`330e524eae934116ce2f1e71937a929ed037e062555c8a68bdff234a2e074c7e`.
+
+### Install + smoke
+
+Force-stopped `com.swimchain.mobile` (confirmed via `netstat` that it — not
+surf — was holding 9735/9736: LISTEN/ESTABLISHED before the stop, TIME_WAIT
+after) and `com.swimchain.surf`, then `adb install -r` succeeded. On launch
+the node bound `0.0.0.0:9735` + `127.0.0.1:9736` within ~8s and connected to
+known mainnet peers. Acquisition reached a live FEED with real mainnet
+content (sponsorship-gate banner correctly shown for an unsponsored
+identity). Tooling note: `cmd /c "..."` from this session's Bash tool mangled
+nested double-quoted paths (MSYS rewrites `/c`); worked around with a tiny
+`screencap.bat` helper invoked as `cmd //c screencap.bat out.png`, same
+double-slash escape convention as `taskkill //F`.
+
+### Long-press power check (A1's deferred movement-slop item)
+
+Strip: right-edge 56 CSS px -> ~126 physical px at this density -> x in
+[882,1008]; x=970 used throughout.
+
+1. **Still hold, 800-900ms, ON->OFF**
+   (`input touchscreen swipe 970 1100 970 1100 900`): CRT collapse, green
+   lantern dot, "Still broadcasting." **PASS.** Node PID and bound ports were
+   unchanged across the toggle — "Still broadcasting" held up under direct
+   PID inspection, not just the on-screen claim.
+2. **Jitter within slop, ON->OFF** (~7-8px drift over 900ms:
+   `swipe 970 1100 975 1106 900`, hypot(5,6)=7.8px < `LONG_PRESS_SLOP_PX`=10):
+   toggled OFF correctly. **Jitter within the 10px slop does NOT cancel the
+   press — this is the real-hardware confirmation A1's open item asked for.**
+3. **Negative control, excess jitter, ON->OFF** (~28px drift:
+   `swipe 970 1100 990 1120 900`, hypot(20,20)=28.3px > 10px): did **not**
+   toggle; screen stayed on FEED. Confirms the slop boundary is real and
+   direction-correct on a real WebView with simulated finger jitter, not
+   "any touch on the strip toggles regardless of movement."
+4. **Incidental finding, OFF->ON via a long stationary hold on the strip:**
+   did not reliably fire across two attempts (screen stayed on the collapsed
+   "Still broadcasting" state through the follow-up screenshot). Root cause
+   in source, not a regression of the slop fix: `#off-screen` is
+   `position:absolute; inset:0; z-index:8000` — it covers the *entire*
+   screen (including the strip's z-index:6500 zone) while powered off, and
+   its only listener is a plain `click` (`shell.mjs:948`), so the strip's own
+   touchstart/touchmove/touchend long-press logic never runs while off. A
+   plain `adb shell input tap` (a quick tap, not a long hold) powered it back
+   on immediately every time, confirming the README's documented "tap
+   anywhere while off" path works. Apparent cause: a genuinely stationary
+   ~900ms hold seems to get intercepted by the WebView's own native
+   long-press/context-gesture recognition before it synthesizes a `click` on
+   release. Not in scope of the 10px-slop fix (that fix only touches the ON
+   state's strip handlers) — noted here since it's a real on-device
+   behavior, and the OFF->ON recovery affordance is "tap anywhere," not
+   "long-press the strip," which the README already gets right.
+
+**Verdict: long-press-to-power-off, with movement-slop tolerance, is
+confirmed reliable on the real panel.**
+
+### G2 60-minute WebView background soak (the A0/A1 standing obligation)
+
+Renderer discovery matched the brief exactly:
+`adb shell dumpsys activity processes com.swimchain.surf` lists an isolated
+`ProcessRecord` whose package is `com.google.android.webview:sandboxed_process0:...`
+(NOT `com.swimchain.surf`) bound via a `ServiceRecord` back to the app — its
+PID is the renderer. A `dumpsys meminfo <pid>` line
+`TOTAL    <pss>    <priv-dirty>  ...` (older-format regex, same one
+`meminfo-sampler.ps1` already falls back to) gives TOTAL PSS.
+
+**Attempt 1 — invalidated by an explicit human dismissal, not OS memory
+pressure.** Backgrounded via Home at 22:30:58 EDT (main PID 12786, renderer
+PID 12851, both confirmed alive going in). `adb logcat -d -b all` shows both
+processes still alive and untouched until 22:33:56, when a `TO_FRONT`
+transition tagged `debugName = QuickstepLaunch` brings the Surf task into
+Overview, immediately followed by `wm_finish_activity ... app-request` at
+22:33:58 and `ActivityManager: Process com.swimchain.surf (pid 12786) has
+died: fg +50 FGS` / `am_foreground_service_stop ... STOP_SERVICE` /
+`notification_canceled` at 22:33:59 — a textbook recents-swipe dismissal,
+which force-stops a foreground service by Android design regardless of
+`NodeForegroundService`. This is a human closing the app from the task
+switcher, not evidence about natural backgrounding survival; the sampler
+correctly reported `NO MATCH` for the renderer PID starting at the very next
+60s tick (22:34:22), confirming the sampling method itself is accurate.
+
+**Incidental corroborating evidence.** Separately, main PID 12786 was
+observed alive and unchanged both before and after an *uncontrolled* ~54-minute
+window earlier in this same pass, during which the device left adb range
+entirely (physically reclaimed by its actual owner — confirmed via `dumpsys
+window` showing Messenger/Chrome in the foreground, and later `adb devices`
+returning empty even after `kill-server`/`start-server`). That single process
+instance's total lifetime — original launch through the 22:33:59 recents-kill
+above — spanned roughly 87 minutes, the large majority of it backgrounded and
+never touched by me, ending only when a human explicitly swiped it away. Not
+a controlled measurement (no PSS trend was sampled during the adb-disconnected
+stretch), but consistent with the formal result below.
+
+**Attempt 2 — clean, complete, 60+ minutes.** Relaunched (cold process
+restart; main PID 8347, renderer PID 8399), re-warmed FEED -> WIKI -> REEF,
+backgrounded via Home at **22:44:48 EDT**. Sampled both PIDs' TOTAL PSS every
+~60s via a bash loop around `adb shell dumpsys meminfo <pid>` (same metric
+`meminfo-sampler.ps1` reads, ported off-device since this Windows session
+runs a Bash tool rather than PowerShell natively). Returned to foreground at
+**23:45:29 EDT** — **60m 41s** backgrounded, screen left to sleep naturally
+(a realistic soak, not held on).
+
+| | Renderer (PID 8399) | Main app (PID 8347, hosts the in-process node) |
+|---|---|---|
+| Foreground, just before backgrounding | 105.5 MB | 412.6 MB |
+| ~1 min after backgrounding | 82.0 MB | 218.9 MB |
+| Steady mid-soak plateau (~t+10 to t+35 min) | ~64-76 MB, slowly stepping down | ~213-221 MB, flat |
+| Final sample, t=60 min | **42.0 MB** | **184.3 MB** |
+| Foreground again, post-restore | 92.9 MB | 387.4 MB |
+
+PID continuity: **both PIDs identical** at the start and end of the
+60-minute window (confirmed via `dumpsys activity processes
+com.swimchain.surf` immediately before backgrounding and immediately after
+`am start` brought the task back — the log line read "Warning: Activity not
+started, its current task has been brought to the front", i.e. a resume of
+the existing task, not a fresh launch). Zero `NO MATCH`/dead samples across
+61 consecutive samples. Ports 9735/9736 stayed bound (`LISTEN`) the entire
+time — the node itself never stopped.
+
+**Restore behavior: warm power-on, not a cold reload.** REEF came back on
+the exact same "Setting up your access..." retry state it was in before
+backgrounding (not the landing "Play" card, not a fresh boot/bloom). Flipping
+to WIKI and FEED showed both fully intact — FEED's live WebSocket "N new
+posts" pill (`useNodeEvents` -> `/ws`) was still live and surfaced a real new
+post after the flip, meaning even the real-time network path survived the
+hour, not just the static DOM.
+
+**G2 verdict: SURVIVED.** A full, clean, PID-verified 60-minute background
+window on the real Android System WebView (not the A0 Chrome-tab proxy),
+with a healthy compaction trend (renderer -60%, main process -55% from
+foreground peak, no growth/leak signature) and a warm, not cold, restore.
+This closes the standing A0/A1 G2 obligation. The one invalidated attempt
+(explicit recents-swipe kill) is a reminder that a foreground service is
+only proof against *OS* background-priority kills, never against a user
+explicitly closing the app from Overview — expected Android behavior, not a
+Surf defect.
+
+### Caveats
+
+- **Device sharing was real, not hypothetical, this pass.** The phone is the
+  operator's own daily device. Twice during setup it was reclaimed for
+  genuine personal use (Messenger/Chrome/SMS, confirmed via non-invasive
+  `dumpsys window` focus polling — screenshots showing personal content were
+  deleted immediately and not further acted on), once escalating to a full
+  physical USB disconnect (~54 min) and once to an explicit recents-swipe
+  that killed the first G2 attempt (see above). Budget real wall-clock slack
+  for this on a shared device — the technical portions of this pass (build,
+  install, long-press, the clean G2 run) totaled under 90 minutes; total
+  session time was much longer purely from waiting out device contention.
+- REEF's on-chain game-key registration ("Waiting for approval...") never
+  completed for this unsponsored identity in either attempt — expected,
+  matches the FEED/WIKI sponsorship-gate banners also shown throughout. This
+  did not block G2: "warm" only required the channel mounted/settled, not
+  gameplay, and REEF held its exact registration-retry state across the full
+  60-minute background window same as the other two channels.
