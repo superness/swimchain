@@ -16,6 +16,8 @@ const CHANNELS = [
   { id: 'feed', dir: 'feed-client', env: {} },
   { id: 'wiki', dir: 'wiki-client', env: {} },
   { id: 'reef', dir: 'reef-client', env: { VITE_RPC_ENDPOINT: RPC } },
+  { id: 'chess', dir: 'chess-client', env: { VITE_RPC_ENDPOINT: RPC } },
+  { id: 'chips', dir: 'chips-client', env: { VITE_CHIPS_RPC: RPC } },
 ];
 
 // Recursively collect every file under `dir`, at any depth, optionally
@@ -93,12 +95,17 @@ for (const ch of CHANNELS) {
     }
   }
 }
-// reef endpoint verification: the loopback endpoint must be in the bundle and
-// the production gateway must NOT be. Recursive over the whole reef output
-// dir (not just assets/) so nested chunks can't hide a leak.
-const js = walkJsFiles(path.join(OUT, 'reef')).map((f) => fs.readFileSync(f, 'utf8')).join('');
-if (!js.includes('127.0.0.1:9736')) throw new Error('reef: loopback endpoint not baked');
-if (js.includes('swimchain.io/rpc')) throw new Error('reef: PRODUCTION GATEWAY LEAKED INTO THE BAKE');
+// endpoint verification: for every channel whose env forces an RPC var (any
+// channel with a non-empty env — reef, chess, chips as of C2b), the loopback
+// endpoint must be in the bundle and the production gateway must NOT be.
+// Recursive over the whole channel output dir (not just assets/) so nested
+// chunks can't hide a leak.
+for (const ch of CHANNELS) {
+  if (Object.keys(ch.env).length === 0) continue;
+  const js = walkJsFiles(path.join(OUT, ch.id)).map((f) => fs.readFileSync(f, 'utf8')).join('');
+  if (!js.includes('127.0.0.1:9736')) throw new Error(`${ch.id}: loopback endpoint not baked`);
+  if (js.includes('swimchain.io/rpc')) throw new Error(`${ch.id}: PRODUCTION GATEWAY LEAKED INTO THE BAKE`);
+}
 console.log('\nall channels baked and verified');
 
 // B: the engage PoW worker is a separate bundle (not a vite channel), but one

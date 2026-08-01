@@ -13,6 +13,8 @@
       ]
     },
     { "id": "wiki", "number": 4,  "name": "WIKI", "spaces": [] },
-    { "id": "reef", "number": 50, "name": "REEF", "spaces": [] }
+    { "id": "reef", "number": 50, "name": "REEF", "spaces": [] },
+    { "id": "chess", "number": 60, "name": "CHESS", "spaces": [] },
+    { "id": "chips", "number": 70, "name": "CHIPS", "spaces": [] }
   ]
 }

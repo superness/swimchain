@@ -372,6 +372,61 @@ live peer/height data throughout, so it's never a frozen screen, but don't
 expect FEED to reveal in the first few seconds on a cold identity — this is
 honest §3.1 behavior, not a hang.
 
+### Release signing (C4)
+
+The debug build path above is unaffected by any of this — it keeps AGP's
+built-in debug signing whether or not release credentials exist anywhere on
+the machine. This section is only for producing a **signed release** APK.
+
+**The operator holds the real keystore; this repo only holds the plumbing.**
+`app/build.gradle.kts` never contains a secret — it resolves the 4 signing
+inputs (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) from a
+gitignored `keystore.properties` file if present, else from CI env vars. If
+neither is present, a release *assembly* (any task whose name contains
+`Release`, e.g. `assembleArm64Release`) fails immediately with a clear
+`GradleException` — it will never silently produce an unsigned "release" APK
+that looks shippable. `gradlew tasks`, `signingReport`, and debug builds all
+evaluate the same config with zero secrets present and are unaffected.
+
+**One-time: generate the release keystore.** Do this once, ever — the same
+key must sign every future update of `com.swimchain.surf`, or Android refuses
+the update. Store the resulting `.jks` and its passwords in the vault; there
+is no recovery if either is lost.
+
+```bash
+keytool -genkeypair -v -keystore surf-release.jks -alias surf \
+  -keyalg RSA -keysize 4096 -validity 10000 -storetype PKCS12
+```
+
+**Local/operator builds:** copy
+`surf-app/src-tauri/gen/android/keystore.properties.example` to
+`surf-app/src-tauri/gen/android/app/keystore.properties` (gitignored, next to
+`app/build.gradle.kts` — confirm with `git check-ignore` if unsure) and fill
+in the 4 keys with the real keystore path and passwords.
+
+**CI builds:** skip the file and set these 4 env vars instead — the gradle
+config falls back to them automatically:
+
+| Env var | Value |
+|---|---|
+| `SURF_KEYSTORE_FILE` | absolute path to the `.jks`/`.keystore` file |
+| `SURF_KEYSTORE_PASSWORD` | keystore password |
+| `SURF_KEY_ALIAS` | key alias (e.g. `surf`) |
+| `SURF_KEY_PASSWORD` | key password |
+
+**Build the signed release APK** (run the channel bake first, same as any
+APK build — see above):
+
+```bash
+cd surf-app
+npm run build:channels
+npm run tauri android build --target aarch64
+```
+
+(No `--debug` flag — that's what selects the release variant. Everything
+else — `JAVA_HOME`/`ANDROID_HOME`, the Dev-Mode symlink workaround if
+Developer Mode isn't enabled — is identical to the debug recipe above.)
+
 ## Controls
 
 | Input | Action |
@@ -399,7 +454,7 @@ disabled until the set has acquired its first signal (`acquired` in
 | Surf's own icon (currently `mobile-app`'s icons, copied wholesale as a placeholder) | C |
 | `SWIMCHAIN_CHANNEL_READY` message support in the clients themselves (today, readiness is detected only via the same-origin DOM-peek fallback in `handover.mjs` — no shipped client posts the message; `watchReadiness` is already forward-compatible with it) | C |
 | Config-handover hardening (§2.4 — origin/signature hardening beyond the current exact-origin `postMessage`; no client source changes in A1) | C |
-| Release signing, APK size gate, sourcemap stripping, store distribution (A1 ships a debug APK only) | C |
+| Release signing gradle wiring — **DONE (C4)**, see "Release signing (C4)" above; still needs the operator's real keystore + an actual signed build to close out. APK size gate, sourcemap stripping, store distribution remain open. | C |
 | The dial: channel registry, capability tokens, purpose-scoped signing | D |
 | Interference (§3.6), Night Swim + Channel 0 (§3.5) — neither was ever in B's task list (decision sheet's own "Not in B" fence); `get_space_health`, dead-air/flare/dwell-engage, and the Chart all shipped in B, see "Phase B — the soul" above | unscheduled |
 | Node-side follow-and-fetch while the app is fully closed (§2.3 names this a separate, unscheduled work item — liveness today only happens while the app/foreground-service is actually running the tuner driver) | named, unscheduled |
