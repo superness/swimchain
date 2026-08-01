@@ -2773,6 +2773,15 @@ impl MessageRouter {
         // Store root block with fork resolution (Bitcoin-style heaviest chain wins)
         match chain_store.put_root_block_with_fork_resolution(&root_block) {
             Ok((hash, is_new_tip)) => {
+                // Tell the formation gate how high a VALIDATED block we
+                // have seen. This is the forgery-resistant "the network is
+                // ahead of me" signal (formation_gate.rs) — raising it costs
+                // real PoW. Every put_root_block_with_fork_resolution site
+                // that is NOT the orphan path must do this, or a node that
+                // falls behind will mint its own chain (2026-08-01).
+                if let Some(gate) = self.formation_gate() {
+                    gate.note_validated_block(root_block.height());
+                }
                 if is_new_tip {
                     info!(
                         "[BLOCK] Stored root block {} as NEW CANONICAL TIP (height={}, cumulative_pow={})",
@@ -4171,6 +4180,16 @@ impl MessageRouter {
             match chain_store.put_root_block_with_fork_resolution(&root_block) {
                 Ok((hash, is_new_tip)) => {
                     stored_count += 1;
+                    // Tell the formation gate how high a VALIDATED block we
+                    // have seen. This is the forgery-resistant "the network is
+                    // ahead of me" signal (formation_gate.rs) — raising it costs
+                    // real PoW. Every put_root_block_with_fork_resolution site
+                    // that is NOT the orphan path must do this, or a node that
+                    // falls behind will mint its own chain (2026-08-01).
+                    if let Some(gate) = self.formation_gate() {
+                        gate.note_validated_block(root_block.height());
+                    }
+
                     if is_new_tip {
                         debug!(
                             "[BLOCK] Stored block {} at height {} as CANONICAL",

@@ -30,6 +30,14 @@ use log::{debug, info};
 /// (mainnet/testnet). Regtest uses zero.
 pub const FORMATION_GRACE_SECS: u64 = 90;
 
+/// How far below the highest VALIDATED block we may sit and still form.
+///
+/// Two, not zero: a same-height race is normal and healthy (fork choice
+/// settles it), and one block behind is mid-gossip, not stranded. Three or
+/// more behind means a chain we have verified exists and we have not caught
+/// up to it — minting there manufactures a competing history.
+pub const FORM_BEHIND_TOLERANCE: u64 = 2;
+
 /// Gate that defers block formation until the node has confirmed it is not
 /// the lone height-authority (or a grace window expires). Shared by every
 /// block-formation site via `MessageRouter::formation_gate()`.
@@ -47,6 +55,14 @@ pub struct FormationGate {
     /// Millis from `started` to the first peer handshake, stored +1 so that
     /// 0 means "no peer yet". Used to extend the grace deadline.
     first_peer_offset_ms: AtomicU64,
+    /// Highest height of a block we have VALIDATED AND STORED — ours or a
+    /// peer's, canonical or fork. Distinct from `best_peer_height` (a
+    /// handshake claim, free to make) because raising this costs real
+    /// proof-of-work, so it cannot be used to freeze us. See
+    /// `note_validated_block`.
+    best_block_height: AtomicU64,
+    /// Whether the "behind a validated chain" line has been emitted.
+    behind_logged: AtomicBool,
     /// Whether the "deferring" info line has been emitted (first defer logs
     /// at info, the rest at debug).
     defer_logged: AtomicBool,
@@ -62,8 +78,20 @@ impl FormationGate {
             seen_peer: AtomicBool::new(false),
             best_peer_height: AtomicU64::new(0),
             first_peer_offset_ms: AtomicU64::new(0),
+            best_block_height: AtomicU64::new(0),
+            behind_logged: AtomicBool::new(false),
             defer_logged: AtomicBool::new(false),
         }
+    }
+
+    /// Record the height of a block we have validated and stored.
+    ///
+    /// Call this ONLY where the block's parent is known and the block has
+    /// been accepted into storage — never from the orphan path. An orphan's
+    /// height is an unverified claim, and honouring it would hand any peer a
+    /// way to stop this node forming blocks for free.
+    pub fn note_validated_block(&self, height: u64) {
+        self.best_block_height.fetch_max(height, Ordering::Relaxed);
     }
 
     /// Record a peer handshake carrying the peer's advertised chain height.
@@ -91,6 +119,41 @@ impl FormationGate {
     /// Opens (stickily) on peer-tip parity or grace expiry; logs one line on
     /// the transition and a rate-limited line while deferring.
     pub fn allow_formation(&self, our_height: u64) -> bool {
+        // THE BRAKE, checked before the sticky flag and independent of it.
+        //
+        // 2026-08-01: a wiped seed re-synced from genesis, opened on grace
+        // expiry 90s later (sticky, so permanently), and then minted 517
+        // blocks of its own over eleven hours while its canonical height
+        // crawled behind the network's — a third chain, self-inflicted. The
+        // gate was open because a fresh node cannot reach parity in 90s, and
+        // nothing could ever close it again.
+        //
+        // Stickiness itself is deliberate and stays: it is what stops a peer
+        // ADVERTISING an unreachable height from freezing formation forever
+        // (see `open_is_sticky`). So the brake reads a different signal —
+        // blocks we have actually validated and stored. Raising that costs
+        // real proof-of-work, so it cannot be forged into a denial of
+        // service, and it is true evidence that a chain exists which we have
+        // not caught up to.
+        let best_block = self.best_block_height.load(Ordering::Relaxed);
+        if best_block > our_height.saturating_add(FORM_BEHIND_TOLERANCE) {
+            if !self.behind_logged.swap(true, Ordering::Relaxed) {
+                info!(
+                    "[BLOCKS] Deferring block formation: behind a validated chain (our height {}, highest validated block {})",
+                    our_height, best_block
+                );
+            } else {
+                debug!(
+                    "[BLOCKS] Deferring block formation: behind a validated chain (our height {}, highest validated block {})",
+                    our_height, best_block
+                );
+            }
+            return false;
+        }
+        // Caught up again — let the next lag log once more rather than going
+        // silent for the process lifetime.
+        self.behind_logged.store(false, Ordering::Relaxed);
+
         if self.open.load(Ordering::Relaxed) {
             return true;
         }
@@ -178,13 +241,86 @@ mod tests {
     }
 
     #[test]
-    fn open_is_sticky() {
+    fn open_is_sticky_against_advertised_heights() {
+        // Stickiness w.r.t. HANDSHAKE CLAIMS is deliberate: a peer
+        // advertising an unreachable height must never freeze formation.
+        // (The validated-block brake below is the forgery-resistant signal.)
         let gate = FormationGate::new(LONG_GRACE);
         gate.note_peer_height(5);
         assert!(gate.allow_formation(5));
-        // Later heights/peers cannot re-close the gate.
         gate.note_peer_height(500);
         assert!(gate.allow_formation(0));
+    }
+
+    // -- the validated-block brake (2026-08-01 third-chain incident) --------
+
+    #[test]
+    fn an_open_gate_still_defers_when_behind_a_validated_chain() {
+        // THE INCIDENT, in miniature: gate opened on grace expiry while the
+        // node was far behind, and stayed open for the process lifetime. It
+        // minted 517 blocks of its own chain over eleven hours.
+        let gate = FormationGate::new(Duration::ZERO); // opens immediately
+        assert!(gate.allow_formation(500), "sanity: open at our own tip");
+
+        gate.note_validated_block(1887);
+        assert!(
+            !gate.allow_formation(500),
+            "an OPEN gate must still refuse to mint while a validated chain \
+             sits far above us — this is the third-chain bug"
+        );
+    }
+
+    #[test]
+    fn the_brake_releases_on_catching_up() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_validated_block(1887);
+        assert!(!gate.allow_formation(500));
+        assert!(!gate.allow_formation(1884), "still 3 behind");
+        assert!(
+            gate.allow_formation(1885),
+            "within tolerance ({}) of the validated tip: forming again",
+            FORM_BEHIND_TOLERANCE
+        );
+        assert!(gate.allow_formation(1887), "at the validated tip");
+    }
+
+    #[test]
+    fn a_same_height_race_still_forms() {
+        // Two nodes minting the same height is normal and fork choice settles
+        // it. If this deferred, a healthy network would stop making blocks.
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_validated_block(100);
+        assert!(gate.allow_formation(100), "same height must still form");
+        assert!(
+            gate.allow_formation(99),
+            "one behind is mid-gossip, not stranded"
+        );
+    }
+
+    #[test]
+    fn a_lone_node_is_never_braked_by_its_own_blocks() {
+        // A node bootstrapping alone stores its own blocks; noting them must
+        // not brake it, or a new network could never start.
+        let gate = FormationGate::new(Duration::ZERO);
+        for h in 0..50 {
+            gate.note_validated_block(h);
+            assert!(
+                gate.allow_formation(h),
+                "a lone node at its own tip must keep forming (height {h})"
+            );
+        }
+    }
+
+    #[test]
+    fn advertised_height_alone_cannot_brake_formation() {
+        // The DoS guard: handshake claims are free to make, so they must not
+        // reach the brake. Only validated blocks (which cost PoW) do.
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height(u64::MAX);
+        assert!(
+            gate.allow_formation(10),
+            "a peer claiming an absurd height must not stop us forming"
+        );
     }
 
     #[test]

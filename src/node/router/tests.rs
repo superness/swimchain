@@ -1283,6 +1283,33 @@ async fn test_formation_gate_peer_parity_allows_block() {
     );
 }
 
+/// THE 2026-08-01 THIRD CHAIN, end to end: a node whose gate is already OPEN
+/// (grace expired while it was still syncing — the sticky flag can never
+/// re-close) must not mint on top of its own short chain once it has
+/// validated a block from a chain far above it.
+///
+/// This drives the REAL formation path rather than the gate in isolation:
+/// the pre-fix code would form here, which is exactly how the seed produced
+/// 517 blocks of private history overnight.
+#[tokio::test]
+async fn test_open_gate_defers_when_a_validated_chain_is_ahead() {
+    use crate::node::formation_gate::FormationGate;
+    use std::time::Duration;
+
+    let gate = Arc::new(FormationGate::new(Duration::ZERO)); // open from the start
+    let (router, chain_store, _dir) = make_formation_gate_router(gate.clone());
+
+    // We have validated a block at height 1887 (a peer's chain, real PoW).
+    gate.note_validated_block(1887);
+
+    router.try_form_block_if_threshold_met().await;
+    assert_eq!(
+        chain_store.get_latest_height().unwrap(),
+        None,
+        "open gate + a validated chain far ahead: no block may form"
+    );
+}
+
 /// Grace expiry opens the gate: a genuinely-first node (no peers ever) must
 /// still bootstrap once the grace window has elapsed.
 #[tokio::test]

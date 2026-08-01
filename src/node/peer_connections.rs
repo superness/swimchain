@@ -236,7 +236,11 @@ const INVENTORY_THROTTLE: std::time::Duration = std::time::Duration::from_secs(3
 /// Max time a single peer send may take before it's abandoned. A stuck or
 /// half-open TCP connection must never hang a caller (e.g. an RPC handler that
 /// gossips a self-originated action inline before responding).
-const PEER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// Every peer send is bounded by this. Public because the node's STARTUP path
+/// holds `PeerConnection` handles directly (bypassing `send_to`), and an
+/// unbounded send there wedges the whole node before its RPC server binds —
+/// the 2026-08-01 mainnet outage. Startup must use the same bound.
+pub const PEER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Consecutive failed sends before a peer is dropped from the pool.
 ///
