@@ -10,6 +10,11 @@ const LISTEN_PORT = 3400;
 
 const ALLOWED = new Set([
   'get_info', 'get_sync_status',
+  // Read-only, and the fleet-agreement monitor's authoritative check: compare
+  // the block hash at a shared height ACROSS nodes. Without it the monitor can
+  // only compare tip hashes when two nodes' heights happen to coincide, which
+  // is luck rather than a check. See tools/swim-bot/fleet-agreement-monitor.mjs.
+  'get_block',
   'list_spaces', 'resolve_space_name', 'list_space_posts', 'list_space_content',
   'get_content', 'get_replies', 'request_content', 'get_reactions',
   'submit_post', 'submit_reply', 'submit_engagement',
