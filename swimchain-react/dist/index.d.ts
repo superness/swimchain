@@ -53,4 +53,5 @@ export { isConfigMessageTrusted, mergeTrustedConfig, TRUSTED_PARENT_ORIGINS } fr
 export type { ParentRpcConfigLike } from "./lib/configTrust";
 export { selectIdentityMode } from "./lib/identityMode";
 export { isInIframe, getParentConfig, subscribeParentConfig, type ParentRpcConfig, } from "./lib/parentConfig";
+export { useGameIdentity, type IdentityMode, type GameIdentity, type UseGameIdentityResult, } from "./hooks/useGameIdentity";
 //# sourceMappingURL=index.d.ts.map

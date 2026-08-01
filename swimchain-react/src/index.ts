@@ -297,3 +297,12 @@ export {
   subscribeParentConfig,
   type ParentRpcConfig,
 } from "./lib/parentConfig";
+
+// Unified node/browser/pending identity + signer for embeddable games
+// (reef/chess/chips) — see useGameIdentity.tsx for the SEAM 1/SEAM 2 split.
+export {
+  useGameIdentity,
+  type IdentityMode,
+  type GameIdentity,
+  type UseGameIdentityResult,
+} from "./hooks/useGameIdentity";

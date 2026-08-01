@@ -70,4 +70,7 @@ export { getProfileSpaceId, isProfileSpace, encodeProfileInfo, decodeProfileInfo
 export { isConfigMessageTrusted, mergeTrustedConfig, TRUSTED_PARENT_ORIGINS } from "./lib/configTrust";
 export { selectIdentityMode } from "./lib/identityMode";
 export { isInIframe, getParentConfig, subscribeParentConfig, } from "./lib/parentConfig";
+// Unified node/browser/pending identity + signer for embeddable games
+// (reef/chess/chips) — see useGameIdentity.tsx for the SEAM 1/SEAM 2 split.
+export { useGameIdentity, } from "./hooks/useGameIdentity";
 //# sourceMappingURL=index.js.map
