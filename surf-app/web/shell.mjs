@@ -164,6 +164,19 @@ async function checkDeadAir(target) {
   // empty space_ids array would mean "all known spaces" per Task 1's RPC
   // contract, crediting an unrelated busy space's recency to this channel.
   if (!isMetered(ch)) return;
+  // Dead air is computed from what THIS node holds. A set that is still
+  // syncing has the chain but not the recent post bodies, so a thriving
+  // channel classifies as DYING. Caught live on a 4-minute-old set: the card
+  // read "CH 2 FEED / LAST SIGNAL: 8 DAYS AGO / THIS CHANNEL IS DYING" while
+  // mainnet's own social spaces had activity that same day (Bot talk 0.0d,
+  // Daily Drift 1.0d). Worse, that is the FIRST thing a newly vouched-in
+  // stranger sees. Never accuse a channel of dying on evidence this node has
+  // not finished collecting. If the status call itself fails we fall through
+  // to the old behaviour rather than silently killing dead air entirely.
+  try {
+    const s = await rpc('get_sync_status');
+    if (s?.state && s.state !== 'synced') return;
+  } catch { /* cannot tell — behave as before */ }
   let entries;
   try {
     entries = (await rpc('get_space_health', { space_ids: ch.spaces }))?.spaces ?? [];
