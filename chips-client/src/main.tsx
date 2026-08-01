@@ -3,7 +3,25 @@ import ReactDOM from 'react-dom/client';
 import { SwimchainProvider, RpcProvider } from '@swimchain/react';
 import { App } from './App';
 import { RPC_URL } from './lib/host';
+import { carryImport } from './lib/apronCarry';
 import './styles.css';
+
+// THE APRON ARRIVES BEFORE THE KITCHEN. A #apron= fragment (the pop-out from
+// an in-app browser — see lib/apronCarry.ts) must be applied before ANYTHING
+// reads the identity: useStoredIdentity reads on mount, so this runs first,
+// synchronously, at module scope. The fragment is then stripped — a seed must
+// not sit in the address bar, and a reload must not re-import.
+try {
+  const outcome = carryImport(window.localStorage, window.location.hash, Date.now());
+  if (outcome !== 'noop') {
+    // One-shot flag for App's arrival notice; sessionStorage so a reload
+    // doesn't greet the player twice.
+    try { window.sessionStorage.setItem('chips.apron.carried', outcome); } catch { /* private mode */ }
+  }
+  if (window.location.hash.startsWith('#apron=')) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+  }
+} catch { /* a broken carry must never stop the kitchen from opening */ }
 
 const root = document.getElementById('root');
 if (!root) throw new Error('root element missing');
