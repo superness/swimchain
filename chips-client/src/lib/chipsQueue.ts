@@ -257,7 +257,12 @@ export function loadQueue(): QueuedMove[] {
         r.kind === 'broke'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', paid: typeof r.paid === 'number' ? r.paid : 0, ms: r.ms, ...sentAt });
+        // `paid` is FLOORED, not merely accepted: a fractional worth from a
+        // pre-fix overcooked chip (see cooking.ts's burn note) would pass
+        // through here only for `brokeBody` to refuse it and `submittable`
+        // to shelve the row forever. Flooring never over-credits.
+        const paid = typeof r.paid === 'number' && Number.isFinite(r.paid) && r.paid >= 0 ? Math.floor(r.paid) : 0;
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'broke', paid, ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'spend' && typeof r.ability === 'string' && typeof r.cost === 'number'
         && Number.isSafeInteger(r.cost) && r.cost > 0
@@ -271,10 +276,17 @@ export function loadQueue(): QueuedMove[] {
         out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'burn', key: r.key, ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'dip'
-        && typeof r.amount === 'number' && Number.isSafeInteger(r.amount) && r.amount >= 0
+        && typeof r.amount === 'number' && Number.isFinite(r.amount) && r.amount >= 0
+        && Number.isSafeInteger(Math.floor(r.amount))
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
       ) {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'dip', amount: r.amount, ms: r.ms, ...sentAt });
+        // REPAIRED, not dropped, when fractional. This row is an earned dip —
+        // the 2026-08-01 stranding (cooking.ts's burn note) persisted one as
+        // 281793.2266068437, and dropping it here is what turned "temporarily
+        // stuck" into "gone": the next saveQueue rewrote the store without it.
+        // Flooring is the honest repair — it never over-credits, and the
+        // floored amount is exactly what a fixed client would have declared.
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'dip', amount: Math.floor(r.amount), ms: r.ms, ...sentAt });
       } else if (
         r.kind === 'tip'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
