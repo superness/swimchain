@@ -308,6 +308,21 @@ fn now(config: &CliConfig) -> Result<()> {
             println!("Current sync state: {}", status.state);
             println!("Progress: {}%", status.chain_percent);
             println!("Peers: {}", status.peer_count);
+            // Say it out loud when this node knows about another chain. The
+            // 2026-08-01 fleet split hid for three and a half days behind
+            // "synced, 100%" while the seed held 443 blocks of a heavier chain.
+            if let Some(height) = status.adoptable_fork_height {
+                println!(
+                    "*** FORKED: holding a HEAVIER chain (tip height {}) that this node has not adopted",
+                    height
+                );
+            }
+            if status.fork_branches > 0 || status.fork_gaps > 0 {
+                println!(
+                    "Competing branches held: {} ({} ancestor block(s) still missing)",
+                    status.fork_branches, status.fork_gaps
+                );
+            }
             println!(
                 "Storage: {}/{} MB",
                 status.storage_mb, status.storage_target_mb

@@ -176,6 +176,19 @@ pub struct GetSyncStatusResult {
     pub mempool_actions: u64,
     /// Mempool: seconds waiting for block formation
     pub mempool_waiting_secs: u64,
+    /// Competing branches we are holding but have not adopted. Nonzero means
+    /// this node knows about another chain — the fact that was invisible for
+    /// three and a half days on 2026-08-01.
+    #[serde(default)]
+    pub fork_branches: u64,
+    /// Ancestor blocks we are still missing for those branches.
+    #[serde(default)]
+    pub fork_gaps: u64,
+    /// Height of a fully-linked branch that OUTWEIGHS our tip and has not been
+    /// adopted. `Some` here is a defect, not a status: the node is sitting on
+    /// a heavier chain it should already be on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adoptable_fork_height: Option<u64>,
     /// Leader election: node identity (hex, first 16 chars)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_identity: Option<String>,
