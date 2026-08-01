@@ -456,6 +456,17 @@ impl BackgroundTaskRunner {
                             }
                         }
 
+                        // ASK THE QUESTION. Adoption otherwise only ever ran at
+                        // the moment a block was written — and a branch
+                        // assembles bottom-up, so the final write is a low
+                        // ancestor that cannot win on its own weight while the
+                        // branch tip was written long before its ancestry
+                        // completed. Without this a node can hold the entire
+                        // heavier chain, fully linked, and never reorg. Cheap:
+                        // returns immediately unless a linked branch actually
+                        // outweighs our tip.
+                        router.adopt_heaviest_fork_if_any().await;
+
                         // Content backfill: headers-first sync leaves root headers whose
                         // space/content blocks were never downloaded — spaces then show
                         // placeholder names and zero posts. Locator sync can't repair this
