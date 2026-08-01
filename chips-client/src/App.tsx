@@ -25,6 +25,7 @@ import { canAffordBuy, pendingBuyCost, isBuyMove } from './lib/chipsAfford';
 import { useCooking, type CookEvent } from './lib/useCooking';
 import { isGolden, worthOf, MAX_CRACKLES, LONG_FRY_CRACKLES, type TickMods } from './lib/cooking';
 import { toggleOvercook, overcookOff } from './lib/overcook';
+import { isInAppBrowser, buildCarryUrl } from './lib/apronCarry';
 import { sousTakes } from './lib/souschef';
 import { CREW, crewFor, recruitsAt, vendorOf, openJarsOf, type CrewMember } from './lib/crew';
 import {
@@ -154,7 +155,7 @@ function useFlavour(pool: string[], active: boolean): string {
 
 export function App() {
   const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
-  const { hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
+  const { identity, hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
   const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
 
   const [cookName, setCookName] = useState<string>(() => readName());
@@ -164,6 +165,23 @@ export function App() {
   const [state, setState] = useState<ChipsState | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+
+  /* ── the apron carry (lib/apronCarry.ts) ──────────────────────────────
+     Whether this is a known in-app browser (Messenger, Instagram, …) whose
+     localStorage is sandboxed from the phone's real browser. Computed once —
+     a UA does not change mid-session. */
+  const inAppBrowser = useMemo(() => isInAppBrowser(navigator.userAgent), []);
+  // Greet an apron that just arrived via the pop-out (main.tsx did the
+  // import before render; the flag is one-shot so a reload stays quiet).
+  useEffect(() => {
+    try {
+      const carried = sessionStorage.getItem('chips.apron.carried');
+      if (carried) {
+        sessionStorage.removeItem('chips.apron.carried');
+        setNotice('your apron made it over — this kitchen is home now');
+      }
+    } catch { /* private mode */ }
+  }, []);
   const [flight, setFlight] = useState<DipFlightState | null>(null);
   const [gains, setGains] = useState<GainFloat[]>([]);
   // The DOUBLE DIP splash — keyed per proc so back-to-back procs each slam.
@@ -1928,6 +1946,18 @@ export function App() {
           Makes a key that lives only in this browser — no account, no email.
           It then chalks that name onto a table on the public network, where it stays.
         </p>
+        {/* BEFORE the key exists is the cheapest moment to catch the in-app
+            trap: nothing to carry yet, so a plain link out is a clean start.
+            (After the key exists, the carry pill below handles it.) */}
+        {inAppBrowser && (
+          <p className="fine carry-warn">
+            heads up — this is an app&apos;s built-in browser, and a kitchen made here
+            stays stuck in here.{' '}
+            <a href={window.location.href} target="_blank" rel="noopener noreferrer">
+              open in your real browser first
+            </a>.
+          </p>
+        )}
       </Doorway>
     );
   }
@@ -2355,6 +2385,26 @@ export function App() {
         trapped beneath this container.
       */}
       <div className="corner">
+        {/* The pop-out. Shown only inside known in-app browsers (Messenger,
+            Instagram, …), whose storage is sandboxed from the real browser on
+            the same phone — leave without this and the apron stays behind.
+            The link carries the identity in the #fragment (lib/apronCarry.ts;
+            fragments never reach the server). If the WebView opens it in
+            place, the import no-ops against the same identity — harmless —
+            which is why the hint about the ⋯ menu stays visible. */}
+        {inAppBrowser && identity && (
+          <div className="carry-pill" role="note">
+            <span>you&apos;re in an app&apos;s built-in browser — your kitchen lives only here.</span>
+            <a
+              className="carry-btn"
+              href={buildCarryUrl(window.location.origin + window.location.pathname, identity)}
+              target="_blank" rel="noopener noreferrer"
+            >
+              pop out &amp; take the apron
+            </a>
+            <span className="carry-hint">if it opens right back here, use the app&apos;s ⋯ menu → open in browser — that link carries your apron too.</span>
+          </div>
+        )}
         {notice && <p className="notice" role="status">{notice}</p>}
         <Boards rows={rows} hosting={hosting} hosted={hosted} myTableId={tableId}
           open={boardsOpen} onToggle={() => setBoardsOpen((o) => !o)} />

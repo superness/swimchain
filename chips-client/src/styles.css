@@ -3170,3 +3170,20 @@ h1, h2, h3, p { margin: 0; }
   display: block; margin-top: 14px; font-family: var(--chalk);
   font-size: 12.5px; line-height: 1.5; color: #ffc27a;
 }
+
+/* ── the apron carry: pop-out from an in-app browser (lib/apronCarry.ts) ── */
+.carry-pill {
+  z-index: 16; display: flex; flex-direction: column; gap: 6px; align-items: center;
+  padding: 12px 18px; border-radius: 18px; max-width: min(560px, 88vw); text-align: center;
+  background: rgba(20,15,10,.92); box-shadow: 0 0 0 1px rgba(255,200,130,.22), 0 14px 30px rgba(0,0,0,.55);
+  font-family: var(--chalk); font-size: 14px; color: #ffdfae;
+  animation: raise .24s ease-out;
+}
+.carry-btn {
+  display: inline-block; padding: 8px 16px; border-radius: 999px;
+  background: #ffb454; color: #241505; text-decoration: none; font-weight: 700;
+  box-shadow: 0 4px 0 rgba(0,0,0,.35);
+}
+.carry-btn:active { transform: translateY(2px); box-shadow: 0 2px 0 rgba(0,0,0,.35); }
+.carry-hint { font-size: 11px; opacity: .75; }
+.carry-warn a { color: #ffb454; }
