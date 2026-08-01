@@ -1744,7 +1744,14 @@ h1, h2, h3, p { margin: 0; }
 }
 .critter {
   position: absolute; bottom: -6px; translate: -50% 0;
-  width: clamp(44px, 6.2vw, 78px);
+  /* Big enough to read as a CHARACTER. At 44px the first playtest outside the
+     household read scoop as "a chip on the floor" (2026-08-01) — a critter
+     nobody notices is a shop nobody opens. 8vw against the 7%-apart SPOTS
+     (Crew.tsx) means neighbors brush shoulders at full crew; the loiter
+     stagger keeps the overlap reading as a crowd, not a collision. The cap is
+     generous on purpose — a big monitor should get a big cast, not phone
+     sprites with margins. */
+  width: clamp(64px, 8vw, 150px);
   pointer-events: auto;
   display: flex; flex-direction: column; align-items: center;
   filter: drop-shadow(0 6px 6px rgba(0, 0, 0, .45));
@@ -1757,18 +1764,21 @@ h1, h2, h3, p { margin: 0; }
 @keyframes loiter { 0%, 100% { margin-bottom: 0; } 50% { margin-bottom: 4px; } }
 .critter-art { width: 100%; height: auto; display: block; }
 .critter-name {
-  font-family: var(--chalk); font-size: 9px; letter-spacing: .06em;
-  color: #cbb894; margin-top: 1px;
-  background: rgba(12, 9, 6, .72); padding: 1px 5px; border-radius: 999px;
-  opacity: 0; transition: opacity .2s;
+  font-family: var(--chalk); font-size: 13px; letter-spacing: .06em;
+  color: #cbb894; margin-top: 2px;
+  background: rgba(12, 9, 6, .72); padding: 2px 8px; border-radius: 999px;
+  /* Always readable, brighter on attention. Hover-only names meant the name
+     NEVER rendered on a phone (no hover exists there) — and at 9px it was
+     wallpaper on desktop too. */
+  opacity: .85; transition: opacity .2s;
 }
 .critter:hover .critter-name, .critter.feeding .critter-name { opacity: 1; }
 
 /* The one bubble. Dark backing, mono voice, tail down to the speaker. */
 .critter .say {
   position: absolute; bottom: calc(100% + 10px); left: 50%; translate: -50% 0;
-  width: max-content; max-width: min(240px, 42vw);
-  font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+  width: max-content; max-width: min(280px, 46vw);
+  font-family: var(--chalk); font-size: 13px; line-height: 1.45;
   color: #f0e2c6; text-align: left; white-space: normal;
   background: rgba(14, 10, 7, .93);
   border: 1px solid rgba(255, 226, 180, .22);
@@ -2135,15 +2145,17 @@ h1, h2, h3, p { margin: 0; }
 
 /* the dog at the door — fills the seating wait */
 .door-dog {
-  position: fixed; left: 6vw; bottom: 8vh; width: clamp(64px, 9vw, 110px);
+  /* The greeter. He is the first living thing a player sees and the tutorial's
+     voice — at 64px he was furniture. */
+  position: fixed; left: 6vw; bottom: 8vh; width: clamp(120px, 16vw, 260px);
   filter: drop-shadow(0 8px 10px rgba(0, 0, 0, .5));
   animation: loiter 5.2s ease-in-out infinite;
   pointer-events: none;
 }
 .door-dog .say {
   position: absolute; bottom: calc(100% + 10px); left: -6px;
-  width: max-content; max-width: min(240px, 60vw);
-  font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+  width: max-content; max-width: min(280px, 64vw);
+  font-family: var(--chalk); font-size: 13px; line-height: 1.45;
   color: #f0e2c6; white-space: normal;
   background: rgba(14, 10, 7, .93);
   border: 1px solid rgba(255, 226, 180, .22);
@@ -2168,8 +2180,11 @@ h1, h2, h3, p { margin: 0; }
        pointer-events:none would let a near-miss on a critter fall through
        and buy the jar scrolled underneath — operator hit exactly that). */
     pointer-events: auto;
-    display: flex; align-items: flex-end; justify-content: center;
-    gap: 2px; padding: 4px 8px 3px;
+    display: flex; align-items: flex-end; justify-content: flex-start;
+    gap: 6px; padding: 6px 8px 4px;
+    /* A full late-game bench outgrows a phone width now that critters are
+       readable — it scrolls sideways rather than shrinking back to chips. */
+    overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none;
     background:
       linear-gradient(180deg, rgba(12, 8, 5, .55) 0%, rgba(12, 8, 5, .88) 26%, rgba(12, 8, 5, .95) 100%);
     border-top: 1px solid rgba(255, 226, 180, .14);
@@ -2177,21 +2192,30 @@ h1, h2, h3, p { margin: 0; }
   }
   .critter {
     position: static; translate: none; bottom: auto;
-    width: clamp(28px, 8vw, 40px); flex: none;
+    /* 28-40px was invisible: the first outside playtest (2026-08-01) read the
+       ONLY critter on screen as another chip. Character-sized or nothing. */
+    width: clamp(60px, 16vw, 84px); flex: none;
     animation: none;
   }
+  /* Auto margins center a short bench and left-anchor a scrolling one — a
+     plain justify-content:center + overflow clips the first critter off. */
+  .critter:first-child { margin-left: auto; }
+  .critter:last-child { margin-right: auto; }
   .critter .say { display: none; }        /* the toast carries the line */
-  .critter-name { display: none; }
+  /* The name stays: no hover exists on a phone, so this label is the ONLY
+     way a critter says what it is before being tapped. */
+  .critter-name { font-size: 11px; opacity: .9; }
   .critter.speaking { transform: translateY(-4px) scale(1.18); }
   .critter.speaking .critter-art { filter: drop-shadow(0 0 8px rgba(255, 226, 180, .55)); }
   .critter.feeding { transform: translateY(-4px) scale(1.18); }
-  .critter.glowing::before { font-size: 8px; bottom: calc(100% - 2px); }
+  .critter.glowing::before { font-size: 12px; bottom: calc(100% - 2px); }
 
   .crew-toast {
     display: block; position: fixed; left: 8px; right: 8px;
-    bottom: calc(46px + clamp(38px, 11vw, 52px));
+    /* Rides the ledge, whose height follows the critter size above. */
+    bottom: calc(46px + clamp(84px, 22vw, 110px));
     z-index: 15;
-    font-family: var(--chalk); font-size: 11px; line-height: 1.45;
+    font-family: var(--chalk); font-size: 13px; line-height: 1.45;
     color: #f0e2c6; text-align: center;
     background: rgba(14, 10, 7, .94);
     border: 1px solid rgba(255, 226, 180, .22);
@@ -2201,7 +2225,6 @@ h1, h2, h3, p { margin: 0; }
   }
   .crew-toast strong { color: #ffd88f; text-transform: uppercase; letter-spacing: .08em; font-size: 10px; margin-right: 4px; }
 
-  .critter { width: clamp(28px, 8vw, 40px); }
   /* the ticker wraps rather than vanishing, and stays lit */
   .dip-ticker { font-size: 10px; padding: 3px 12px; white-space: normal; }
   .ticker-line { white-space: normal; max-height: 2.9em; }
@@ -2212,7 +2235,7 @@ h1, h2, h3, p { margin: 0; }
      the ledge instead of dying underneath it */
   .counter { max-height: calc(100dvh - 210px); }
   .shelf { padding-bottom: 84px; }
-  .door-dog { width: 52px; left: 4vw; bottom: 5vh; }
+  .door-dog { width: clamp(96px, 24vw, 130px); left: 4vw; bottom: 5vh; }
 }
 
 @media (prefers-reduced-motion: reduce) {
