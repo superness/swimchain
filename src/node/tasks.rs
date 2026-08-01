@@ -477,6 +477,24 @@ impl BackgroundTaskRunner {
                         // outweighs our tip.
                         router.adopt_heaviest_fork_if_any().await;
 
+                        // AM I STILL ACCEPTING? On 2026-07-29 the seed's
+                        // listen backlog sat full at 4097/4096 while the
+                        // process reported itself healthy and RPC answered —
+                        // no peer could join the network for two hours and
+                        // nothing in the logs mentioned it (#208). The causes
+                        // were fixed; the silence was not. The kernel
+                        // publishes the number, so read it and say so.
+                        if let Some((port, depth)) =
+                            crate::node::accept_health::deepest_accept_queue()
+                        {
+                            if depth >= crate::node::accept_health::ACCEPT_QUEUE_WARN_DEPTH {
+                                warn!(
+                                    "[ACCEPT] {} connection(s) waiting to be accepted on port {} — this node is not draining its listen backlog",
+                                    depth, port
+                                );
+                            }
+                        }
+
                         // Content backfill: headers-first sync leaves root headers whose
                         // space/content blocks were never downloaded — spaces then show
                         // placeholder names and zero posts. Locator sync can't repair this

@@ -29,6 +29,7 @@
 //!
 //! See `specs/SPEC_10_NODE_OPERATIONS.md` for full specification.
 
+pub mod accept_health;
 pub mod config;
 pub mod connection_event;
 pub mod connection_manager;
