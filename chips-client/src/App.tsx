@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
-import { useRpc, useStoredIdentity, useStoredKeypair, createNewIdentity } from '@swimchain/react';
+import { useRpc, useGameIdentity, createNewIdentity } from '@swimchain/react';
 import { createBrowserHost, CAN_FILE_REPORTS, HAS_THE_BOTTOM, type ChipsHost, type Identity } from './lib/host';
 import { foldChips, saltFor, SALT_TICK_BONUS, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
@@ -154,9 +154,14 @@ function useFlavour(pool: string[], active: boolean): string {
 }
 
 export function App() {
-  const { rpc, connected, connecting, error: rpcError, setAuth } = useRpc();
-  const { identity, hasIdentity, saveIdentity, isLoading: idLoading } = useStoredIdentity();
-  const { keypair, publicKeyHex, address, sign } = useStoredKeypair();
+  const { rpc, connected, connecting, error: rpcError } = useRpc();
+  // Identity source: the node's identity when embedded (Surf/desktop), a
+  // localStorage-backed browser keypair when standalone. The hook owns
+  // `setAuth` entirely — see its module docstring (SEAM 1 vs SEAM 2) — so
+  // chips must not call `setAuth` itself (that old effect used to live here).
+  const { mode, identity, hasIdentity, isLoading, sign, saveIdentity } = useGameIdentity();
+  const publicKeyHex = identity?.publicKeyHex;
+  const address = identity?.address;
 
   const [cookName, setCookName] = useState<string>(() => readName());
   const [nameDraft, setNameDraft] = useState<string>(() => readName() || defaultName());
@@ -376,18 +381,11 @@ export function App() {
     [publicKeyHex, address, sign]
   );
 
-  // Reads are signature-authenticated too, so this must be set before any RPC.
-  useEffect(() => {
-    if (!keypair || !publicKeyHex) return;
-    setAuth({
-      publicKey: publicKeyHex,
-      sign: (m: Uint8Array) => {
-        const s = keypair.sign(m);
-        if (!s) throw new Error('signing failed');
-        return s;
-      },
-    });
-  }, [keypair, publicKeyHex, setAuth]);
+  // Transport auth (SEAM 1: signature headers on every RPC call) is owned
+  // entirely by useGameIdentity — it calls setAuth in browser mode and
+  // clears it on the browser→node flip, and never calls it in node mode
+  // (transport = the node's cookie). chips must not set up its own setAuth
+  // effect; `sign` above is SEAM 2 (action-payload signing) only.
 
   // The pending-move queue. `loadQueue()` is the lazy useState initializer, so
   // it runs once, synchronously, before the first render — a chip mined and
@@ -549,7 +547,13 @@ export function App() {
           setTableId(mine.tableId);
           return;
         }
-        const name = (cookName || nameFromKey(me.publicKeyHex)).slice(0, 80);
+        // Name precedence: an already-set cookName (typed at the apron, browser
+        // mode only) wins; otherwise the node identity's displayName (finding
+        // #4 — `get_identity_info` returns no name, so this comes from the
+        // shell's `nodeDisplayName`, empty in Surf today); otherwise the
+        // deterministic pubkey-derived name. This table is PERMANENT and
+        // PUBLIC — a blank name must never be chalked onto it.
+        const name = (cookName || identity?.displayName?.trim() || nameFromKey(me.publicKeyHex)).slice(0, 80);
         trace(`table: creating "${name}" (this mines an action PoW)`);
         const id = await host.createTable(me, name);
         setCookName(name);
@@ -1915,11 +1919,16 @@ export function App() {
   // player a "tie on the apron" button that MINTS A SECOND IDENTITY — orphaning
   // their table, their crumbs and their whole lifetime crunch, irreversibly,
   // for one impatient click. Wait instead.
-  if (idLoading || (hasIdentity && !me) || (!rpc && connecting)) {
+  if (isLoading || (hasIdentity && !me) || (!rpc && connecting)) {
     return <Doorway dipIndex={0} title="Dippin' Chips"><p className="lede">the lights are coming on…</p></Doorway>;
   }
 
-  if (!hasIdentity || !me) {
+  // The apron gate ("tie on the apron" → creates a localStorage keypair) is a
+  // BROWSER-ONLY path — `openShop()` calls `saveIdentity()`, which
+  // useGameIdentity makes a no-op outside browser mode, so showing this gate
+  // while embedded would be a dead button that also never lets the node
+  // identity's real name through. Gate it on mode, not just hasIdentity/me.
+  if (mode === 'browser' && (!hasIdentity || !me)) {
     return (
       <Doorway dipIndex={0} title="Dippin' Chips">
         <p className="lede">
@@ -1958,6 +1967,20 @@ export function App() {
             </a>.
           </p>
         )}
+      </Doorway>
+    );
+  }
+
+  // Embedded (node/pending mode) but past isLoading with no usable identity:
+  // the node's get_identity_info fetch ran out of retries (or the node has no
+  // identity loaded). Not the loading window, not browser mode — so neither
+  // gate above fires. Say so plainly rather than falling through to the
+  // browser-key apron gate or the shop itself with no identity.
+  if (mode !== 'browser' && (!hasIdentity || !me)) {
+    return (
+      <Doorway dipIndex={0} title="Dippin' Chips">
+        <p className="lede">Couldn't reach your node identity — retrying…</p>
+        <p className="fine">Make sure the app is connected to your node, then reopen the shop.</p>
       </Doorway>
     );
   }

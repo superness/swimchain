@@ -137,6 +137,13 @@ export interface RpcConfig {
         username: string;
         password: string;
     };
+    /**
+     * Raw `Authorization` header value (e.g. `'Basic base64...'`), already fully
+     * formed — emitted verbatim, never re-wrapped or re-encoded. Takes precedence
+     * over `auth`. Used for the node-identity cookie a Surf/desktop shell hands an
+     * embedded game via `SWIMCHAIN_RPC_CONFIG` (`parentConfig.ts`'s `rpcAuth`).
+     */
+    authHeader?: string;
     /** Request timeout in milliseconds */
     timeout?: number;
 }
@@ -161,6 +168,7 @@ export interface SignatureAuth {
 export declare class SwimchainRpc {
     private endpoint;
     private auth?;
+    private authHeader?;
     private signatureAuth;
     private timeout;
     private requestId;
