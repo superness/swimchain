@@ -3564,10 +3564,16 @@ impl MessageRouter {
             // If too far ahead, store as orphan and request the missing parent BY HASH
             // (using prev_root_hash, which works even if peer's height_index is broken)
             // Skipped for known-header backfill: the block is already in our chain.
-            if !known_header_backfill && block_height > our_height + 1 {
+            if !known_header_backfill
+                && block_height > our_height + 1
+                && far_ahead_disposition(chain_store, &root_block) != FarAheadDisposition::Store
+            {
                 let prev_hash = root_block.prev_root_hash;
 
-                // Only request parent if it's not the zero hash and we don't have it
+                // Parent unknown: park it and fetch the parent by hash. A block
+                // whose parent we DO hold no longer reaches here — it is
+                // verifiable, and refusing it is what deadlocked fork assembly
+                // on 2026-08-01. See far_ahead_disposition.
                 if prev_hash != [0u8; 32]
                     && chain_store
                         .get_root_block(&prev_hash)
@@ -8843,6 +8849,50 @@ impl MessageRouter {
         );
 
         Ok(None)
+    }
+}
+
+/// What to do with a block from a BLOCKS response that sits more than one
+/// above our canonical height.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FarAheadDisposition {
+    /// We hold its parent: it is verifiable, so STORE it (non-canonically if
+    /// it loses) and let fork choice decide later.
+    Store,
+    /// Parent unknown: park it and go fetch the parent by hash.
+    Orphan,
+    /// Malformed — a non-genesis block claiming a null parent.
+    Reject,
+}
+
+/// Decide the fate of a too-far-ahead block.
+///
+/// THE 2026-08-01 FORK DEADLOCK lived here. The old code stored a block as an
+/// orphan when its parent was UNKNOWN and rejected it otherwise — so a block
+/// whose parent we *did* hold, but which sat above our canonical height, was
+/// thrown away with "too far ahead ... with invalid/null parent". That is
+/// precisely the second block of a fork branch and every block after it: the
+/// branch could never grow past its first block, so its ancestry never
+/// completed, so its weight was never computable, so it was never adopted.
+/// Every earlier fix in this family (#252 assembly, #257 escalation) was held
+/// shut by this one.
+///
+/// A verifiable parent is the whole licence we need to keep a block. Being
+/// above our canonical height is a statement about OUR chain, not a defect in
+/// theirs.
+#[must_use]
+pub fn far_ahead_disposition(
+    chain_store: &crate::storage::chain::ChainStore,
+    incoming: &crate::blocks::RootBlock,
+) -> FarAheadDisposition {
+    let prev = incoming.prev_root_hash;
+    if prev == [0u8; 32] {
+        return FarAheadDisposition::Reject;
+    }
+    if chain_store.get_root_block(&prev).ok().flatten().is_some() {
+        FarAheadDisposition::Store
+    } else {
+        FarAheadDisposition::Orphan
     }
 }
 
