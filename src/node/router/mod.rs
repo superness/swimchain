@@ -34,6 +34,6 @@ mod tests;
 
 pub use error::RouteError;
 pub use router::{
-    far_ahead_disposition, should_escalate_to_locator, FarAheadDisposition, HolePunchRequest,
-    MessageRouter, MessageRouterBuilder,
+    far_ahead_disposition, same_height_verdict, should_escalate_to_locator, FarAheadDisposition,
+    HolePunchRequest, MessageRouter, MessageRouterBuilder, SameHeightVerdict,
 };

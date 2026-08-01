@@ -1725,20 +1725,30 @@ impl MessageRouter {
                 Ok(None) => {
                     // We don't have this block. Check if it has higher cumulative PoW than our tip.
                     // If so, we need to do a locator sync to get the full chain from this peer.
-                    let our_tip_pow = chain_store
-                        .get_best_tip_block()
-                        .ok()
-                        .flatten()
-                        .map(|b| b.cumulative_pow)
-                        .unwrap_or(0);
+                    // ESCALATE ON HEIGHT, NOT ON A CLAIMED WEIGHT.
+                    //
+                    // This compared `announce.total_pow` — documented as "the
+                    // PoW aggregated in THIS block", a per-block value of tens
+                    // — against our tip's `cumulative_pow`, a claimed-cumulative
+                    // field in the thousands that the 2026-07-14 poisoning
+                    // proved is not cumulative anyway. On any real chain the
+                    // comparison is false, so the gossip path NEVER escalated:
+                    // it fell through to fetching one block by hash, which
+                    // cannot cross a fork point. Same class of bug as the
+                    // block-data path (fixed in #257), on the other trigger.
+                    //
+                    // A peer announcing a block we do not hold, at a height
+                    // above ours, is worth one cheap idempotent locator sync.
+                    // If we are on the same chain the peer simply finds our tip
+                    // as the common ancestor and streams forward.
+                    let our_height = chain_store.get_latest_height().ok().flatten().unwrap_or(0);
 
-                    if announce.total_pow > our_tip_pow {
-                        // This peer has a heavier chain! Do a locator sync to get it.
+                    if announce.height > our_height {
                         info!(
-                            "[BLOCK] Announced block {} has higher PoW ({}) than our tip ({}), triggering locator sync",
+                            "[BLOCK] Announced block {} at height {} is above our tip ({}), triggering locator sync",
                             hex::encode(&announce.block_hash[..8]),
-                            announce.total_pow,
-                            our_tip_pow
+                            announce.height,
+                            our_height
                         );
 
                         // Generate our locator and send GETBLOCKS_LOCATOR to this specific peer
@@ -2135,8 +2145,10 @@ impl MessageRouter {
                 let existing_block = chain_store.get_root_block(&existing_hash).ok().flatten();
 
                 let incoming_wins = if let Some(ref existing) = existing_block {
-                    // Compare cumulative PoW first - heavier chain wins
-                    if root_block.cumulative_pow > existing.cumulative_pow {
+                    // REAL work decides, not the claimed field. See
+                    // same_height_verdict.
+                    let verdict = same_height_verdict(chain_store, &root_block, existing);
+                    if verdict == SameHeightVerdict::IncomingHeavier {
                         info!(
                             "[REORG] Incoming block {} (pow={}) beats existing {} (pow={}) at height {} (heavier chain)",
                             hex::encode(&computed_hash[..8]),
@@ -2146,7 +2158,7 @@ impl MessageRouter {
                             block_height
                         );
                         true
-                    } else if root_block.cumulative_pow < existing.cumulative_pow {
+                    } else if verdict == SameHeightVerdict::ExistingHeavier {
                         info!(
                             "[REORG] Keeping existing block {} (pow={}) over incoming {} (pow={}) at height {} (heavier chain)",
                             hex::encode(&existing_hash[..8]),
@@ -3511,8 +3523,10 @@ impl MessageRouter {
                     let existing_block = chain_store.get_root_block(&existing_hash).ok().flatten();
 
                     let incoming_wins = if let Some(ref existing) = existing_block {
-                        // Compare cumulative PoW first - heavier chain wins
-                        if root_block.cumulative_pow > existing.cumulative_pow {
+                        // REAL work decides, not the claimed field. See
+                        // same_height_verdict.
+                        let verdict = same_height_verdict(chain_store, &root_block, existing);
+                        if verdict == SameHeightVerdict::IncomingHeavier {
                             info!(
                                 "[REORG] Incoming block {} (pow={}) beats existing {} (pow={}) at height {} (heavier chain)",
                                 hex::encode(&computed_hash[..8]),
@@ -3522,7 +3536,7 @@ impl MessageRouter {
                                 block_height
                             );
                             true
-                        } else if root_block.cumulative_pow < existing.cumulative_pow {
+                        } else if verdict == SameHeightVerdict::ExistingHeavier {
                             info!(
                                 "[REORG] Keeping existing block {} (pow={}) over incoming {} (pow={}) at height {} (heavier chain)",
                                 hex::encode(&existing_hash[..8]),
@@ -8907,6 +8921,49 @@ impl MessageRouter {
         );
 
         Ok(None)
+    }
+}
+
+/// Which of two blocks at the SAME height should be canonical.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SameHeightVerdict {
+    IncomingHeavier,
+    ExistingHeavier,
+    /// Indistinguishable by real work — the caller applies its deterministic
+    /// tiebreak (content-aware, then lowest hash).
+    Tie,
+}
+
+/// Judge a same-height fork on REAL accumulated work.
+///
+/// This compared `cumulative_pow` directly, on both sides, at three sites.
+/// That field is not chain-cumulative — canonical blocks carry per-block-ish
+/// values while a solo block with an hour of bot posts carried 8328 against a
+/// tip's 34, which is precisely how the 2026-07-14 poisoning rolled the fleet
+/// back 74 blocks. `chain_weight` walks the stored ancestry and sums each
+/// block's own work, so it cannot be forged by a claim in a header.
+///
+/// A weight we cannot compute (incomplete ancestry) is a `Tie`, never a win:
+/// the caller's content-aware tiebreak is deterministic and safe, whereas
+/// trusting an unverifiable number is the bug this replaces.
+#[must_use]
+pub fn same_height_verdict(
+    chain_store: &crate::storage::chain::ChainStore,
+    incoming: &crate::blocks::RootBlock,
+    existing: &crate::blocks::RootBlock,
+) -> SameHeightVerdict {
+    let (Ok(Some(incoming_w)), Ok(Some(existing_w))) = (
+        chain_store.chain_weight(incoming),
+        chain_store.chain_weight(existing),
+    ) else {
+        return SameHeightVerdict::Tie;
+    };
+    if incoming_w > existing_w {
+        SameHeightVerdict::IncomingHeavier
+    } else if incoming_w < existing_w {
+        SameHeightVerdict::ExistingHeavier
+    } else {
+        SameHeightVerdict::Tie
     }
 }
 
