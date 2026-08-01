@@ -196,6 +196,37 @@ fn enforce_network_magic(data_dir: &std::path::Path, magic: [u8; 4]) -> std::io:
     std::fs::write(&marker, magic)
 }
 
+/// Send on the STARTUP path, bounded.
+///
+/// `PeerConnectionPool::send_to` has bounded its sends for a while; these
+/// startup sites hold a `PeerConnection` directly and so bypassed that. On
+/// 2026-08-01 the mainnet seed booted, flooded 6587 bootstrap I_HAVEs into a
+/// peer that could not drain them, and then parked forever in the very next
+/// send — holding the write-half mutex — because nothing bounded it. Startup
+/// is sequential and `start_rpc_server` runs AFTER peer bootstrap, so the node
+/// never bound its RPC port: every web client was down while systemd reported
+/// the unit active and the process burned 0% CPU.
+///
+/// A peer that will not read must cost us three seconds, not a node.
+async fn send_bounded(
+    conn: &crate::node::peer_connections::PeerConnection,
+    envelope: &MessageEnvelope,
+) -> Result<(), String> {
+    match tokio::time::timeout(
+        crate::node::peer_connections::PEER_SEND_TIMEOUT,
+        conn.send(envelope),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err(format!(
+            "send timed out after {}s (peer not reading)",
+            crate::node::peer_connections::PEER_SEND_TIMEOUT.as_secs()
+        )),
+    }
+}
+
 impl NodeManager {
     /// Create a new NodeManager with the given configuration
     ///
@@ -1784,7 +1815,7 @@ impl NodeManager {
                                             request.to_bytes().to_vec(),
                                         );
 
-                                        if let Err(e) = peer_conn.send(&envelope).await {
+                                        if let Err(e) = send_bounded(&peer_conn, &envelope).await {
                                             warn!(
                                                 "[CHAIN-SYNC] Failed to send GETBLOCKS to seed {}: {}",
                                                 hex::encode(&peer_id[..8]), e
@@ -1965,7 +1996,7 @@ impl NodeManager {
                             request.to_bytes().to_vec(),
                         );
 
-                        if let Err(e) = peer_conn.send(&envelope).await {
+                        if let Err(e) = send_bounded(&peer_conn, &envelope).await {
                             warn!("[CHAIN-SYNC] Failed to send GETBLOCKS: {}", e);
                         }
                     }
@@ -2473,7 +2504,7 @@ impl NodeManager {
                             request.to_bytes().to_vec(),
                         );
 
-                        if let Err(e) = peer_conn.send(&envelope).await {
+                        if let Err(e) = send_bounded(&peer_conn, &envelope).await {
                             warn!(
                                 "[CHAIN-SYNC] Failed to send GETBLOCKS to outbound peer {}: {}",
                                 hex::encode(&peer_id[..8]),
@@ -2505,7 +2536,7 @@ impl NodeManager {
                                     announce.to_bytes().to_vec(),
                                 );
 
-                                if let Err(e) = peer_conn.send(&envelope).await {
+                                if let Err(e) = send_bounded(&peer_conn, &envelope).await {
                                     warn!(
                                         "[CHAIN-SYNC] Failed to send BLOCK_ANNOUNCE to outbound peer {}: {}",
                                         hex::encode(&peer_id[..8]), e
