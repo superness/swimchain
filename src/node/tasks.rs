@@ -2381,7 +2381,22 @@ impl BackgroundTaskRunner {
                                                                             MessageType::IHave,
                                                                             content_hash.to_vec(),
                                                                         );
-                                                                        if let Err(e) = peer_conn.send(&envelope).await {
+                                                                        // Through the POOL, not the raw handle:
+                                                                        // send_to bounds every send and keeps
+                                                                        // strike accounting. A direct
+                                                                        // peer_conn.send() here was unbounded, and
+                                                                        // this loop fires once per stored content
+                                                                        // item for every newly connected peer —
+                                                                        // 6587 messages on the mainnet seed. A peer
+                                                                        // that stops reading parks this task for
+                                                                        // ever holding its write-half mutex, which
+                                                                        // silently stops every other write to that
+                                                                        // peer. Same shape as the startup wedge of
+                                                                        // 2026-08-01, in a background task.
+                                                                        if let Err(e) = connection_pool
+                                                                            .send_to(&peer_id, &envelope)
+                                                                            .await
+                                                                        {
                                                                             warn!("[INVENTORY] Failed to send I_HAVE to new peer: {}", e);
                                                                         } else {
                                                                             inventory_count += 1;

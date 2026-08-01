@@ -150,6 +150,18 @@ pub const HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 /// VERSION message timeout in seconds (SPEC_06 §5.3)
 pub const VERSION_TIMEOUT_SECS: u64 = 10;
 
+/// How long a single transport-level WRITE may block before we give up on the
+/// peer.
+///
+/// The handshake's READ side has had `VERSION_TIMEOUT_SECS` all along while its
+/// write side had nothing, and the keepalive PING had nothing either. A peer
+/// that accepts a socket and then never reads it fills the send buffer and
+/// parks the writer for ever — one task per such peer, each holding that
+/// connection's write half, so nothing else can write to it either. The
+/// startup path met exactly this on 2026-08-01 and took the whole node down
+/// with it before RPC ever bound.
+pub const PEER_WRITE_TIMEOUT_SECS: u64 = 3;
+
 /// Ping interval in seconds (SPEC_06 §5.3)
 pub const PING_INTERVAL_SECS: u64 = 120;
 
