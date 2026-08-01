@@ -43,10 +43,30 @@
  * This mirrors `chat-client/src/lib/rpc.ts:278-289`, which never routes its
  * remote (node) signer into the header-building branch of `call()`.
  *
+ * ### The browser→node flip (launcher cold-launch race)
+ *
+ * The real launcher shell (`launcher-apps/app-shell/web/embed.js`) sends the
+ * FIRST `SWIMCHAIN_RPC_CONFIG` with `nodeAddress: ''` (the node identity
+ * isn't loaded yet), then re-posts it once `get_identity_info` resolves.
+ * `selectIdentityMode` therefore starts as `'browser'` and flips to `'node'`
+ * a moment later — this is the NORMAL cold-launch path, not a rare edge case.
+ * During the `'browser'` beat this hook calls `setAuth({publicKey, sign})`;
+ * if nothing clears it on the flip, `SwimchainRpc.call()`'s precedence
+ * (`signatureAuth → authHeader → auth`, `rpc.ts:254-272`) means EVERY
+ * subsequent request — including `get_identity_info`/`sign_message`
+ * themselves — keeps signing with the stale browser keypair instead of using
+ * the node's cookie, silently defeating node mode. A `useRef` tracks the
+ * previous mode so a transition AWAY from `'browser'` (browser → node or
+ * browser → pending) clears the transport auth with `setAuth(null)`. This is
+ * a CLEAR, not a wire-up: passing `null` cannot recurse into `sign_message`,
+ * so it does not reintroduce the SEAM 1/SEAM 2 hazard above. Mounting
+ * directly into `'node'`/`'pending'` (no prior `'browser'` beat) never calls
+ * `setAuth` at all, clear or otherwise — there is nothing stale to clear.
+ *
  * @packageDocumentation
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRpc } from './useRpc';
 import { useStoredIdentity, useStoredKeypair, type StoredIdentity } from './useStoredIdentity';
 import {
@@ -243,22 +263,45 @@ export function useGameIdentity(): UseGameIdentityResult {
     [mode, rpc, connected, browserSignSync],
   );
 
-  // ---- Transport auth (SEAM 1) — browser mode ONLY. ----
-  // CRITICAL: node mode must NEVER call setAuth/setSignatureAuth here — that
-  // would wire the node's sign_message-based signer into the transport seam
-  // and recurse forever (see module docstring). Node mode leaves
-  // `signatureAuth` null so `call()` falls back to the `authHeader` cookie.
+  // ---- Transport auth (SEAM 1) — browser mode ONLY, with a clear-on-flip. ----
+  // CRITICAL: node mode must NEVER push a SIGNING setAuth here — that would
+  // wire the node's sign_message-based signer into the transport seam and
+  // recurse forever (see module docstring). Node mode leaves `signatureAuth`
+  // null so `call()` falls back to the `authHeader` cookie.
+  //
+  // But a mode FLIP away from 'browser' (browser → node or browser → pending
+  // — the launcher's normal cold-launch race, see module docstring) can leave
+  // a stale signing `signatureAuth` on the rpc client from the 'browser' beat.
+  // Since `call()`'s precedence is signatureAuth → authHeader → auth, that
+  // stale entry would keep authenticating every request — including
+  // get_identity_info/sign_message themselves — as the old browser key
+  // instead of the node's cookie, silently defeating node mode. `prevModeRef`
+  // tracks the mode from the previous run of this effect so we can clear
+  // with `setAuth(null)` exactly on that transition — never on a mount that
+  // starts directly in 'node'/'pending' (nothing stale to clear there), and
+  // never as a wire-up of the node signer (null cannot recurse into
+  // sign_message, so this does not reintroduce the SEAM 1/SEAM 2 hazard).
+  const prevModeRef = useRef<IdentityMode | null>(null);
   useEffect(() => {
-    if (mode !== 'browser') return;
-    if (!browserKeypair || !browserPublicKeyHex) return;
-    setAuth({
-      publicKey: browserPublicKeyHex,
-      sign: (m: Uint8Array) => {
-        const s = browserSignSync(m);
-        if (!s) throw new Error('useGameIdentity: browser signing failed');
-        return s;
-      },
-    });
+    const prevMode = prevModeRef.current;
+    prevModeRef.current = mode;
+
+    if (mode === 'browser') {
+      if (!browserKeypair || !browserPublicKeyHex) return;
+      setAuth({
+        publicKey: browserPublicKeyHex,
+        sign: (m: Uint8Array) => {
+          const s = browserSignSync(m);
+          if (!s) throw new Error('useGameIdentity: browser signing failed');
+          return s;
+        },
+      });
+      return;
+    }
+
+    if (prevMode === 'browser') {
+      setAuth(null);
+    }
   }, [mode, browserKeypair, browserPublicKeyHex, browserSignSync, setAuth]);
 
   // ---- Loading / readiness ----

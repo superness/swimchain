@@ -18,22 +18,51 @@
  * (not `ReturnType<typeof vi.fn>`) so the spies can be reassigned test-to-test
  * without fighting `Mock<...>` generic-invariance in structural typing; each
  * test asserts against the locally-held spy variable it created.
+ *
+ * A second, related hazard: the real launcher shell sends its FIRST
+ * `SWIMCHAIN_RPC_CONFIG` with an empty `nodeAddress` (identity not loaded
+ * yet), then re-posts it once `get_identity_info` resolves — so
+ * `selectIdentityMode` starts `'browser'` (pushing `setAuth({keypair})`) and
+ * flips to `'node'` a moment later. If nothing clears that push on the flip,
+ * `call()`'s `signatureAuth → authHeader → auth` precedence means every
+ * request afterward — including the node's own `sign_message` — keeps
+ * signing with the stale browser key instead of using the node's cookie,
+ * silently defeating node mode. The "mode flip" describe block below mocks
+ * `subscribeParentConfig` with a listener registry (not just a one-shot
+ * replay) so a test can drive that exact flip and assert the hook clears
+ * transport auth (`setAuth(null)`) on it — a CLEAR, not a wire-up, so it does
+ * not reintroduce the recursion the SEAM 1/SEAM 2 tests above guard against.
+ * The node-mode "never calls setAuth" test below is deliberately phrased as
+ * "never pushes a SIGNING setAuth" (an object with a `sign` fn) rather than
+ * "never called at all", since `setAuth(null)` is a legitimate clear.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, cleanup, act } from '@testing-library/react';
 import { hexToBytes } from '../lib/utils';
 // ---- Mock: ../lib/parentConfig (mode selection inputs) ----
+// Keeps a real listener registry (not just a one-shot replay) so the
+// "mode flip" tests below can simulate the launcher re-posting
+// SWIMCHAIN_RPC_CONFIG with a newly-filled nodeAddress after mount.
 let mockInIframe = false;
 let mockParentConfig = null;
+let mockParentConfigListeners = [];
 vi.mock('../lib/parentConfig', () => ({
     isInIframe: () => mockInIframe,
     getParentConfig: () => mockParentConfig,
     subscribeParentConfig: (fn) => {
+        mockParentConfigListeners.push(fn);
         if (mockParentConfig !== null)
             fn(mockParentConfig);
-        return () => { };
+        return () => {
+            mockParentConfigListeners = mockParentConfigListeners.filter((l) => l !== fn);
+        };
     },
 }));
+/** Simulate the shell re-posting SWIMCHAIN_RPC_CONFIG (e.g. nodeAddress arriving late). */
+function pushParentConfig(next) {
+    mockParentConfig = next;
+    mockParentConfigListeners.forEach((fn) => fn(next));
+}
 // ---- Mock: ./useRpc (rpc/connected/setAuth — the transport seam) ----
 let mockUseRpcReturn;
 vi.mock('./useRpc', () => ({
@@ -53,6 +82,7 @@ describe('useGameIdentity', () => {
     beforeEach(() => {
         mockInIframe = false;
         mockParentConfig = null;
+        mockParentConfigListeners = [];
     });
     afterEach(() => {
         cleanup();
@@ -210,7 +240,7 @@ describe('useGameIdentity', () => {
                 setAuth: setAuthSpy,
             };
         });
-        it('resolves identity from get_identity_info, NEVER calls setAuth (anti-recursion), and signs via sign_message', async () => {
+        it('resolves identity from get_identity_info, never PUSHES a signing setAuth (anti-recursion), and signs via sign_message', async () => {
             const { result, unmount } = renderHook(() => useGameIdentity());
             expect(result.current.mode).toBe('node');
             // get_identity_info hasn't resolved yet on the first render — this is
@@ -226,10 +256,18 @@ describe('useGameIdentity', () => {
             expect(result.current.identity?.displayName).toBeUndefined();
             expect(result.current.hasIdentity).toBe(true);
             expect(result.current.isLoading).toBe(false);
-            // ANTI-RECURSION GUARD: setAuth/setSignatureAuth must NEVER be called in
-            // node mode. The node signer calls rpc.call('sign_message', ...); wiring
-            // it into setAuth would make every call() recurse into sign_message
-            // into setAuth's signer into call('sign_message') forever.
+            // ANTI-RECURSION GUARD: setAuth/setSignatureAuth must NEVER be pushed a
+            // SIGNING auth object (one carrying a `sign` fn) in node mode. The node
+            // signer calls rpc.call('sign_message', ...); wiring it into setAuth
+            // would make every call() recurse into sign_message into setAuth's
+            // signer into call('sign_message') forever. `setAuth(null)` (a CLEAR,
+            // see the mode-flip describe block below) would be legitimate, but
+            // this test mounts directly into 'node' (no prior 'browser' beat), so
+            // there is nothing stale to clear either — assert zero calls of any
+            // kind, which is the strictest case and still expressed as "no signing
+            // auth was ever pushed" for consistency with the flip test below.
+            const signingAuthCalls = setAuthSpy.mock.calls.filter(([auth]) => auth != null);
+            expect(signingAuthCalls).toHaveLength(0);
             expect(setAuthSpy).not.toHaveBeenCalled();
             // SPLIT-BRAIN GUARD: the decoy browser keypair's sign was never touched.
             expect(decoySignSpy).not.toHaveBeenCalled();
@@ -249,6 +287,91 @@ describe('useGameIdentity', () => {
             expect(saveIdentitySpy).not.toHaveBeenCalled();
             result.current.clearIdentity();
             expect(clearIdentitySpy).not.toHaveBeenCalled();
+            unmount();
+        });
+    });
+    describe('mode flip: browser -> node (launcher cold-launch race)', () => {
+        // Mirrors the real launcher shell (launcher-apps/app-shell/web/embed.js):
+        // the FIRST SWIMCHAIN_RPC_CONFIG has nodeAddress: '' (identity not loaded
+        // yet) -> selectIdentityMode starts 'browser' and this hook pushes
+        // setAuth({keypair}). The shell then re-posts with a filled nodeAddress
+        // once get_identity_info resolves -> mode flips to 'node'. Nothing in
+        // SwimchainRpc.call() automatically drops a stale signatureAuth, so the
+        // hook itself must clear it (setAuth(null)) on exactly this transition.
+        const RPC_ENDPOINT = 'http://node.example/rpc';
+        const RPC_AUTH = 'Basic node-cookie';
+        const BROWSER_PUBKEY_HEX = 'aa'.repeat(32);
+        const BROWSER_ADDRESS = 'cs1browserstandalone';
+        const NODE_PUBKEY_HEX = 'bb'.repeat(32);
+        const NODE_ADDRESS = 'cs1nodeidentity';
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- see the
+        // browser-mode describe block above for why these are `any`.
+        let setAuthSpy;
+        let rpcCallSpy;
+        beforeEach(() => {
+            // Embedded, but the shell hasn't resolved the node identity yet: an
+            // empty (present, not absent) nodeAddress is 'browser' per
+            // selectIdentityMode, exactly like the real cold-launch first push.
+            mockInIframe = true;
+            mockParentConfig = { rpcEndpoint: RPC_ENDPOINT, rpcAuth: RPC_AUTH, nodeAddress: '' };
+            setAuthSpy = vi.fn();
+            rpcCallSpy = vi.fn(async (method) => {
+                if (method === 'get_identity_info') {
+                    return { has_identity: true, public_key: NODE_PUBKEY_HEX, address: NODE_ADDRESS };
+                }
+                if (method === 'sign_message') {
+                    return { signature: 'cc'.repeat(64), public_key: NODE_PUBKEY_HEX };
+                }
+                throw new Error(`unexpected rpc.call(${method})`);
+            });
+            mockStoredIdentityReturn = {
+                identity: {
+                    seed: 'ab'.repeat(32),
+                    publicKey: BROWSER_PUBKEY_HEX,
+                    address: BROWSER_ADDRESS,
+                    createdAt: 1,
+                },
+                isLoading: false,
+                error: null,
+                saveIdentity: vi.fn(),
+                clearIdentity: vi.fn(),
+                hasIdentity: true,
+            };
+            mockStoredKeypairReturn = {
+                keypair: {},
+                publicKey: hexToBytes(BROWSER_PUBKEY_HEX),
+                publicKeyHex: BROWSER_PUBKEY_HEX,
+                address: BROWSER_ADDRESS,
+                isLoading: false,
+                error: null,
+                sign: vi.fn((_m) => new Uint8Array([9, 9, 9])),
+            };
+            mockUseRpcReturn = {
+                rpc: { call: rpcCallSpy },
+                connected: true,
+                setAuth: setAuthSpy,
+            };
+        });
+        it('pushes setAuth with the browser keypair while browser, then clears it with setAuth(null) on the flip to node — and never re-pushes a signing auth afterward', async () => {
+            const { result, unmount } = renderHook(() => useGameIdentity());
+            // Beat 1: mode 'browser' — setAuth pushed with the browser keypair.
+            expect(result.current.mode).toBe('browser');
+            await waitFor(() => expect(setAuthSpy).toHaveBeenCalledTimes(1));
+            expect(setAuthSpy.mock.calls[0][0]).toEqual(expect.objectContaining({ publicKey: BROWSER_PUBKEY_HEX }));
+            // The shell re-posts SWIMCHAIN_RPC_CONFIG with the now-resolved
+            // nodeAddress (mergeTrustedConfig's additive fill) -> mode flips.
+            pushParentConfig({ rpcEndpoint: RPC_ENDPOINT, rpcAuth: RPC_AUTH, nodeAddress: NODE_ADDRESS });
+            await waitFor(() => expect(result.current.mode).toBe('node'));
+            await waitFor(() => expect(result.current.identity?.address).toBe(NODE_ADDRESS));
+            // Beat 2: the flip must have cleared the stale transport auth.
+            await waitFor(() => expect(setAuthSpy).toHaveBeenCalledTimes(2));
+            expect(setAuthSpy.mock.calls[1][0]).toBeNull();
+            // No THIRD call, and specifically no further SIGNING auth push — node
+            // mode settling (get_identity_info resolving, isLoading flipping, etc.)
+            // must not re-trigger setAuth at all.
+            expect(setAuthSpy).toHaveBeenCalledTimes(2);
+            const signingAuthCalls = setAuthSpy.mock.calls.filter(([auth]) => auth != null);
+            expect(signingAuthCalls).toHaveLength(1); // only the original browser-mode push
             unmount();
         });
     });

@@ -43,6 +43,26 @@
  * This mirrors `chat-client/src/lib/rpc.ts:278-289`, which never routes its
  * remote (node) signer into the header-building branch of `call()`.
  *
+ * ### The browser→node flip (launcher cold-launch race)
+ *
+ * The real launcher shell (`launcher-apps/app-shell/web/embed.js`) sends the
+ * FIRST `SWIMCHAIN_RPC_CONFIG` with `nodeAddress: ''` (the node identity
+ * isn't loaded yet), then re-posts it once `get_identity_info` resolves.
+ * `selectIdentityMode` therefore starts as `'browser'` and flips to `'node'`
+ * a moment later — this is the NORMAL cold-launch path, not a rare edge case.
+ * During the `'browser'` beat this hook calls `setAuth({publicKey, sign})`;
+ * if nothing clears it on the flip, `SwimchainRpc.call()`'s precedence
+ * (`signatureAuth → authHeader → auth`, `rpc.ts:254-272`) means EVERY
+ * subsequent request — including `get_identity_info`/`sign_message`
+ * themselves — keeps signing with the stale browser keypair instead of using
+ * the node's cookie, silently defeating node mode. A `useRef` tracks the
+ * previous mode so a transition AWAY from `'browser'` (browser → node or
+ * browser → pending) clears the transport auth with `setAuth(null)`. This is
+ * a CLEAR, not a wire-up: passing `null` cannot recurse into `sign_message`,
+ * so it does not reintroduce the SEAM 1/SEAM 2 hazard above. Mounting
+ * directly into `'node'`/`'pending'` (no prior `'browser'` beat) never calls
+ * `setAuth` at all, clear or otherwise — there is nothing stale to clear.
+ *
  * @packageDocumentation
  */
 import { type StoredIdentity } from './useStoredIdentity';
