@@ -280,7 +280,6 @@ impl BackgroundTaskRunner {
             ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
             // Track whether we've done initial header sync
-            let mut initial_headers_fetched = false;
 
             info!(
                 "[SYNC-LOOP] Started with headers-first sync ({}s interval)",
@@ -332,7 +331,16 @@ impl BackgroundTaskRunner {
 
                         // Headers-first sync on initial startup (height 0 or very low)
                         // Request headers first to verify PoW chain before downloading full blocks
-                        if our_height <= 5 && !initial_headers_fetched {
+                        // Headers-first bootstrap, RETRIED UNTIL IT WORKS.
+                        //
+                        // The latch used to be set on a successful SEND, never
+                        // on receipt, and never reset — so one dropped response
+                        // disabled headers-first sync for the entire process
+                        // lifetime, and it only ever asked ONE peer. The
+                        // condition is now the honest one: we are still down at
+                        // the bootstrap height, so keep asking (and ask more
+                        // than one peer) until we are not.
+                        if our_height <= 5 {
                             info!("[SYNC-LOOP] Initial sync - requesting headers first");
                             let headers_request = GetHeadersLocatorPayload::new(locator_hashes.clone(), 500);
 
@@ -341,15 +349,17 @@ impl BackgroundTaskRunner {
                                 headers_request.to_bytes(),
                             );
 
-                            // Send headers request to first peer
-                            if let Some(peer_id) = peer_ids.first() {
-                                if let Ok(()) = connection_pool.send_to(peer_id, &headers_envelope).await {
-                                    info!(
-                                        "[SYNC-LOOP] Sent GETHEADERS_LOCATOR to peer {} for initial sync",
-                                        hex::encode(&peer_id[..8])
-                                    );
-                                    initial_headers_fetched = true;
+                            let mut asked = 0;
+                            for peer_id in peer_ids.iter().take(3) {
+                                if connection_pool.send_to(peer_id, &headers_envelope).await.is_ok() {
+                                    asked += 1;
                                 }
+                            }
+                            if asked > 0 {
+                                info!(
+                                    "[SYNC-LOOP] Sent GETHEADERS_LOCATOR to {} peer(s) for initial sync",
+                                    asked
+                                );
                             }
                         }
 

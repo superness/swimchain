@@ -5849,30 +5849,57 @@ impl MessageRouter {
         let mut stored_count = 0;
         let our_height = chain_store.get_latest_height().ok().flatten().unwrap_or(0);
 
+        // HEADERS ARE A CLAIM, NOT A CHAIN.
+        //
+        // This used to `put_root_block` and then `index_height` directly —
+        // splicing a peer's headers into OUR canonical height index with no
+        // weight comparison, no check that they link to anything we hold, and
+        // no best-tip update. `verify_header_chain` above validates the
+        // batch's INTERNAL linkage, not its relationship to us.
+        //
+        // The damage is quiet and compounding: `get_latest_height` jumps to a
+        // height whose ancestry we do not have, `best_tip` disagrees with the
+        // index, and `chain_weight` then returns None for our OWN tip because
+        // its ancestry now has a hole — which drops `is_heavier_than_best_tip`
+        // into the `cumulative_pow` fallback, the one field this whole family
+        // of fixes exists to distrust. The inflated height also feeds the
+        // far-ahead tests that decide whether a block is stored at all.
+        //
+        // Fork resolution already knows how to do this safely: store the
+        // header, and let it become canonical only if its ancestry is complete
+        // and its real weight beats ours. Until then it sits as a fork branch,
+        // which the periodic adoption pass reconsiders every tick.
         for header in &headers {
-            // Skip headers we already have
-            if header.height <= our_height {
-                continue;
+            if header.height <= our_height
+                && chain_store
+                    .get_root_block(&header.hash())
+                    .ok()
+                    .flatten()
+                    .is_some()
+            {
+                continue; // already held
             }
 
-            // Store just the header (as a root block without space/content blocks)
-            if let Err(e) = chain_store.put_root_block(header) {
-                warn!(
-                    "[HEADERS] Failed to store header at height {}: {}",
-                    header.height, e
-                );
-                continue;
+            match chain_store.put_root_block_with_fork_resolution_reporting(header) {
+                Ok((_hash, is_new_tip, displaced)) => {
+                    stored_count += 1;
+                    if is_new_tip && !displaced.is_empty() {
+                        let orphaned = chain_store.orphaned_actions_in_blocks(&displaced);
+                        info!(
+                            "[HEADERS] Re-anchoring {} actions from {} displaced blocks",
+                            orphaned.len(),
+                            displaced.len()
+                        );
+                        self.requeue_and_regossip_orphans(orphaned).await;
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "[HEADERS] Failed to store header at height {}: {}",
+                        header.height, e
+                    );
+                }
             }
-
-            let hash = header.hash();
-            if let Err(e) = chain_store.index_height(header.height, hash) {
-                warn!(
-                    "[HEADERS] Failed to index header at height {}: {}",
-                    header.height, e
-                );
-            }
-
-            stored_count += 1;
         }
 
         if stored_count > 0 {
