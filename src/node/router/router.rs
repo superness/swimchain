@@ -2220,13 +2220,25 @@ impl MessageRouter {
             // ask for, so they stay orphans forever — the "stuck at height 12"
             // bug). Escalate to a locator sync: the peer finds our true common
             // ancestor and streams the heavier chain contiguously from there.
-            let our_tip_pow = chain_store
-                .get_best_tip_block()
-                .ok()
-                .flatten()
-                .map(|b| b.cumulative_pow)
-                .unwrap_or(0);
-            if root_block.cumulative_pow > our_tip_pow {
+            // ESCALATE ON LINKABILITY, NOT ON A CLAIMED WEIGHT.
+            //
+            // This used to ask `root_block.cumulative_pow > our_tip_pow` —
+            // the very field the 2026-07-14 poisoning proved is NOT
+            // chain-cumulative (canonical blocks carry per-block-ish values,
+            // so the comparison is noise in both directions). It silently
+            // failed CLOSED: on 2026-08-01 a seed holding a 1562-block fork
+            // was offered the fleet's 1901-block chain and never once
+            // escalated, falling back to a height-range backfill that cannot
+            // cross a fork point by construction — so the fork was never
+            // fetched, never weighed, never adopted.
+            //
+            // A parent we do not hold is the honest signal: it means this gap
+            // is not simple lag, and only a locator sync can find where our
+            // histories actually meet. Escalating when the parent IS unknown
+            // is also correct for plain lag (the peer finds our tip as the
+            // common ancestor and streams forward), so this is safe in both
+            // cases and costs one cheap, idempotent request.
+            if should_escalate_to_locator(chain_store, &root_block) {
                 if let (Some(pool), Ok(locator_hashes)) = (
                     self.connection_pool.as_ref(),
                     chain_store.generate_locator(),
@@ -2239,11 +2251,9 @@ impl MessageRouter {
                     match pool.send_to(peer_id, &envelope).await {
                         Ok(()) => {
                             info!(
-                                "[BLOCK] Block {} (height {}, pow {}) heavier than our tip (pow {}) and {} ahead - sent GETBLOCKS_LOCATOR to fetch the fork from its common ancestor",
+                                "[BLOCK] Block {} (height {}) has an unknown parent and is {} ahead - sent GETBLOCKS_LOCATOR to fetch the fork from its common ancestor",
                                 hex::encode(&computed_hash[..8]),
                                 block_height,
-                                root_block.cumulative_pow,
-                                our_tip_pow,
                                 block_height - our_height,
                             );
                             return Ok(None);
@@ -8834,6 +8844,27 @@ impl MessageRouter {
 
         Ok(None)
     }
+}
+
+/// Whether a too-far-ahead block must be fetched via a LOCATOR sync rather
+/// than a height-range backfill.
+///
+/// The test is linkability — do we hold its parent? — and deliberately NOT a
+/// weight comparison. `cumulative_pow` is not chain-cumulative (2026-07-14
+/// poisoning), so gating on it is noise in both directions; on 2026-08-01 it
+/// failed CLOSED and a seed never fetched the fleet's chain at all, because a
+/// range backfill cannot cross a fork point by construction.
+///
+/// Escalating when the parent is unknown is also correct for plain lag: the
+/// peer finds our tip as the common ancestor and streams forward.
+#[must_use]
+pub fn should_escalate_to_locator(
+    chain_store: &crate::storage::chain::ChainStore,
+    incoming: &crate::blocks::RootBlock,
+) -> bool {
+    !chain_store
+        .has_root_block(&incoming.prev_root_hash)
+        .unwrap_or(false)
 }
 
 /// SPEC_05 deep-fork guard: true when an incoming fork block sits BELOW our
