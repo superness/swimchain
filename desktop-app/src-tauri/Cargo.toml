@@ -2,7 +2,7 @@
 
 [package]
 name = "swimchain-desktop"
-version = "0.1.0"
+version = "0.1.16"
 description = "Swimchain Desktop - Decentralized social forum"
 authors = ["Swimchain"]
 edition = "2021"
