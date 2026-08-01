@@ -49,4 +49,8 @@ export { ed25519PrivateToX25519, ed25519PublicToX25519, deriveX25519Keys, x25519
 export { getDMSpaceId, isDMSpace, getDMSpaceName, canInitiateDM, getDMStatusText, getDMAction, type DMStatus, type DMInfo, } from "./lib/dm";
 export { getProfileSpaceId, isProfileSpace, encodeProfileInfo, decodeProfileInfo, encodeAvatarInfo, decodeAvatarInfo, getAvatarColor, getAvatarInitials, createEmptyProfile, deriveProfileKey, encryptProfileInfo, decryptProfileInfo, encodePrivateProfileInfo, decodePrivateProfileInfo, isPrivateProfile, decodeAnyProfileInfo, PROFILE_INFO_TYPE, PROFILE_AVATAR_TYPE, PROFILE_INFO_PRIVATE_TYPE, type ProfileInfo, type PrivateProfileMeta, type AvatarInfo, type UserProfile, } from "./lib/profile";
 export type { DecayState, PowSolution, AddressValidation, MiningState, } from "@swimchain/core";
+export { isConfigMessageTrusted, mergeTrustedConfig, TRUSTED_PARENT_ORIGINS } from "./lib/configTrust";
+export type { ParentRpcConfigLike } from "./lib/configTrust";
+export { selectIdentityMode } from "./lib/identityMode";
+export { isInIframe, getParentConfig, subscribeParentConfig, type ParentRpcConfig, } from "./lib/parentConfig";
 //# sourceMappingURL=index.d.ts.map

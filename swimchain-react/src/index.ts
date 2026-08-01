@@ -283,3 +283,17 @@ export type {
   AddressValidation,
   MiningState,
 } from "@swimchain/core";
+
+// Node-identity primitives (Surf C2a): lets reef/chess/chips sign as the user's real
+// node identity when embedded, instead of a throwaway browser keypair.
+export { isConfigMessageTrusted, mergeTrustedConfig, TRUSTED_PARENT_ORIGINS } from "./lib/configTrust";
+export type { ParentRpcConfigLike } from "./lib/configTrust";
+
+export { selectIdentityMode } from "./lib/identityMode";
+
+export {
+  isInIframe,
+  getParentConfig,
+  subscribeParentConfig,
+  type ParentRpcConfig,
+} from "./lib/parentConfig";

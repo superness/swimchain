@@ -65,4 +65,9 @@ export { ed25519PrivateToX25519, ed25519PublicToX25519, deriveX25519Keys, x25519
 export { getDMSpaceId, isDMSpace, getDMSpaceName, canInitiateDM, getDMStatusText, getDMAction, } from "./lib/dm";
 // Profile utilities
 export { getProfileSpaceId, isProfileSpace, encodeProfileInfo, decodeProfileInfo, encodeAvatarInfo, decodeAvatarInfo, getAvatarColor, getAvatarInitials, createEmptyProfile, deriveProfileKey, encryptProfileInfo, decryptProfileInfo, encodePrivateProfileInfo, decodePrivateProfileInfo, isPrivateProfile, decodeAnyProfileInfo, PROFILE_INFO_TYPE, PROFILE_AVATAR_TYPE, PROFILE_INFO_PRIVATE_TYPE, } from "./lib/profile";
+// Node-identity primitives (Surf C2a): lets reef/chess/chips sign as the user's real
+// node identity when embedded, instead of a throwaway browser keypair.
+export { isConfigMessageTrusted, mergeTrustedConfig, TRUSTED_PARENT_ORIGINS } from "./lib/configTrust";
+export { selectIdentityMode } from "./lib/identityMode";
+export { isInIframe, getParentConfig, subscribeParentConfig, } from "./lib/parentConfig";
 //# sourceMappingURL=index.js.map
