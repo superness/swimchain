@@ -83,6 +83,26 @@ export async function isSponsored(rpc, pubkeyHex) {
 }
 
 /**
+ * The fuller picture the gate needs: a set can have a claim already in flight
+ * — even an APPROVED one the network knows about — while this node has not
+ * applied it yet. Restarting the app in that window used to show a bare "no
+ * one has vouched for this set", which was false: someone had. Observed live
+ * (mainnet said has_sponsorship=true for the very identity the gate was
+ * refusing). Never throws; unknown reads as "nothing in flight".
+ */
+export async function sponsorshipState(rpc, pubkeyHex) {
+  try {
+    const st = await rpc('get_sponsorship_status', { identity: pubkeyHex });
+    return {
+      sponsored: Boolean(st?.has_sponsorship ?? st?.is_sponsored),
+      pending: Boolean(st?.pending_sponsorship),
+    };
+  } catch {
+    return { sponsored: false, pending: false };
+  }
+}
+
+/**
  * Claim an unscoped offer for this node identity. Resolves once the claim is
  * submitted — NOT once it is approved: a person still has to approve it, and
  * the caller polls `isSponsored` for that.

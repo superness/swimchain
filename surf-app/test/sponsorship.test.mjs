@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import {
   selectSponsorOffer, buildClaimMessage, mineClaimPow,
-  isSponsored, requestSponsorship,
+  isSponsored, requestSponsorship, sponsorshipState,
 } from '../web/sponsorship.mjs';
 
 const digest = async (buf) => createHash('sha256').update(Buffer.from(buf)).digest().buffer;
@@ -151,4 +151,18 @@ test('requestSponsorship claims the unscoped offer and passes bit difficulty thr
   assert.equal(claim.pow_difficulty, 8);
   assert.equal(claim.timestamp, 1_700_000_000);
   assert.equal(typeof claim.pow_nonce, 'number');
+});
+
+// A claim in flight survives an app restart; the shell's in-memory flag does
+// not. The gate must be able to learn "already asked" from the node, or a
+// relaunch shows "no one has vouched" to somebody who has already asked --
+// and sometimes to somebody the network has already approved.
+test('sponsorshipState surfaces a pending claim separately from sponsorship', async () => {
+  const rpc = async () => ({ has_sponsorship: false, pending_sponsorship: true });
+  assert.deepEqual(await sponsorshipState(rpc, 'ab'.repeat(32)), { sponsored: false, pending: true });
+});
+
+test('sponsorshipState never throws on a dead RPC', async () => {
+  const rpc = async () => { throw new Error('node down'); };
+  assert.deepEqual(await sponsorshipState(rpc, 'ab'.repeat(32)), { sponsored: false, pending: false });
 });

@@ -13,7 +13,7 @@ import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, classifyDeadAir, freshestTs, isMetered, pickFlareTarget, flareTargetReady } from './deadair.mjs';
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
-import { isSponsored, requestSponsorship } from './sponsorship.mjs';
+import { isSponsored, requestSponsorship, sponsorshipState } from './sponsorship.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -731,9 +731,21 @@ document.getElementById('sponsor-copy').addEventListener('click', async () => {
 
 /** @returns true when the set may tune; false when the gate now owns the screen. */
 async function sponsorGate() {
-  if (await isSponsored(rpc, myPk)) { vouched = true; hideSponsorGate(); return true; }
+  const st = await sponsorshipState(rpc, myPk);
+  if (st.sponsored) { vouched = true; hideSponsorGate(); return true; }
   vouched = false;
   showSponsorGate();
+  // A claim already in flight survives an app restart, but `claimSent` does
+  // not — so without this, relaunching mid-wait showed a bare "no one has
+  // vouched for this set" to somebody who had already asked, and sometimes to
+  // somebody the network had already APPROVED (this node just hadn't applied
+  // it yet). Don't ask them to queue twice.
+  if (st.pending) {
+    claimSent = true;
+    document.getElementById('sponsor-btn').hidden = true;
+    document.getElementById('sponsor-note').disabled = true;
+    sponsorStatus(WAITING + (await syncTail()));
+  }
   startSponsorPoll(); // a sponsor may act without them ever pressing the button
   return false;
 }
