@@ -22,18 +22,21 @@ const never = () => 1;      // rng that never crackles
   check('an unlit fryer reports nothing burned', cold.burned === 0, cold.burned);
 
   const lit = tickChip(freshChip(1), 1, 1, never, { overcook: true });
-  const want = (0 + TICK_CRUMBS) * (1 - OVERCOOK_DRAIN);
-  check('a lit fryer burns the drain off the post-gain pot', Math.abs(lit.chip.pot - want) < 1e-9,
+  // The burn rounds UP to keep the pot integral (see cooking.ts's burn note —
+  // a fractional pot strands the eventual dip): ceil, not the raw product.
+  const want = (0 + TICK_CRUMBS) - Math.ceil((0 + TICK_CRUMBS) * OVERCOOK_DRAIN);
+  check('a lit fryer burns the drain off the post-gain pot', lit.chip.pot === want,
     { got: lit.chip.pot, want });
-  check('a lit fryer reports what it burned', Math.abs(lit.burned - TICK_CRUMBS * OVERCOOK_DRAIN) < 1e-9, lit.burned);
+  check('a lit fryer reports what it burned', lit.burned === Math.ceil(TICK_CRUMBS * OVERCOOK_DRAIN), lit.burned);
 }
 
 // 2) The drain compounds on an existing pot, not just the new gain.
 {
   const chip = { ...freshChip(1), pot: 100_000 };
   const r = tickChip(chip, 1, 1, never, { overcook: true });
-  const want = (100_000 + TICK_CRUMBS) * (1 - OVERCOOK_DRAIN);
-  check('the drain applies to the whole pot', Math.abs(r.chip.pot - want) < 1e-9, { got: r.chip.pot, want });
+  const grown = 100_000 + TICK_CRUMBS;
+  const want = grown - Math.ceil(grown * OVERCOOK_DRAIN);
+  check('the drain applies to the whole pot', r.chip.pot === want, { got: r.chip.pot, want });
 }
 
 // 3) Haste shortens the WAIT, which raises the per-tick crackle chance.

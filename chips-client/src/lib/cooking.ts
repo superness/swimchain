@@ -136,7 +136,12 @@ export const multiOf = (chip: Pick<CookingChip, 'crackles'>): number => 2 ** chi
  *  no ceiling parameter here, deliberately, so The Long Fry can never move
  *  the angel's threshold from a call site. */
 export const isGolden = (chip: Pick<CookingChip, 'crackles'>): boolean => chip.crackles >= GOLDEN_CRACKLES;
-export const worthOf = (chip: Pick<CookingChip, 'pot' | 'crackles'>): number => chip.pot * multiOf(chip);
+/** Floored: every amount this feeds — dip, porcelain broke — crosses a wire
+ *  grammar that is integers-only (chipsBody.ts), and a fractional worth there
+ *  is not rejected loudly, it is silently never submitted (chipsSender.ts's
+ *  `submittable`). tickChip already keeps pots integral; the floor here makes
+ *  the seam safe even for a fractional pot persisted by a pre-fix session. */
+export const worthOf = (chip: Pick<CookingChip, 'pot' | 'crackles'>): number => Math.floor(chip.pot * multiOf(chip));
 
 export function freshChip(ms: number): CookingChip {
   return { ms, pot: 0, crackles: 0, cookedMs: 0 };
@@ -222,12 +227,20 @@ export function tickChip(
   const lit = mods.overcook === true;
   const grown = chip.pot + (diverted ? 0 : gained);
   // The burn takes its cut AFTER the tick lands, so a lit fryer still shows
-  // the pot moving — it just keeps less of it.
+  // the pot moving — it just keeps less of it. It rounds UP — a burn is never
+  // free — because the pot must stay a WHOLE number of crumbs: a fractional
+  // pot walks into the queue as a fractional dip amount, dipBody refuses it
+  // (the wire grammar is integers, correctly), and the sender then filters
+  // the move out of every send FOREVER with nothing shown to the player. A
+  // real 281,793-crumb dip was lost exactly this way on 2026-08-01 (report
+  // 4a713fe4-27612: pot 17612.07666292773 after a 242.5s overcook).
   // THE MAGMA stops the burn without touching the haste below.
-  const burned = lit && mods.magma !== true ? grown * OVERCOOK_DRAIN : 0;
+  const burned = lit && mods.magma !== true ? Math.min(grown, Math.ceil(grown * OVERCOOK_DRAIN)) : 0;
   const next: CookingChip = {
     ...chip,
-    pot: Math.max(0, grown - burned),  // Defensive: grown >= 0, burned <= grown (drain < 1), so unreachable.
+    // Math.floor self-heals a legacy fractional pot (persisted by a pre-fix
+    // session) on its next tick; on an integral pot it is a no-op.
+    pot: Math.max(0, Math.floor(grown - burned)),
     cookedMs: chip.cookedMs + TICK_MS,
   };
   let crackled = false;
