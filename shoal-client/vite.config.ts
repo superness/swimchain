@@ -21,7 +21,7 @@ export default defineConfig({
   },
   build: {
     target: 'esnext',
-    sourcemap: true,
+    sourcemap: false,
     outDir: 'dist',
   },
   // Cargo's own progress output is the interesting half of `tauri dev`; letting Vite
