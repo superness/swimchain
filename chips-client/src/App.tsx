@@ -537,9 +537,26 @@ export function App() {
     onboardRef.current = true;
     void (async () => {
       try {
-        trace('sponsor: asking for a seat');
-        await host.sponsor(me);
-        trace('sponsor: seated');
+        // D1: in node mode `me` is the player's REAL phone identity and Surf
+        // has already gated the whole set on a full, unscoped sponsorship.
+        // host.sponsor() claims the CHIPS-SCOPED offer (host.ts), which would
+        // give that identity a chips-only grant and burn a slot on every Surf
+        // install. Standalone browser play is untouched.
+        if (mode === 'node') {
+          const st = await host.rpc
+            .call<{ has_sponsorship?: boolean }>('get_sponsorship_status', {
+              identity: me.publicKeyHex,
+            })
+            .catch(() => null);
+          if (!st?.has_sponsorship) {
+            throw new Error('this set is not sponsored yet — Surf handles sponsorship');
+          }
+          trace('sponsor: node identity already sponsored');
+        } else {
+          trace('sponsor: asking for a seat');
+          await host.sponsor(me);
+          trace('sponsor: seated');
+        }
         setSeated(true);
         const tables = await host.listTables();
         trace(`tables: ${tables.length} on the board`);

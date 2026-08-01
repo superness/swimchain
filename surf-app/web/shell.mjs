@@ -13,6 +13,7 @@ import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, classifyDeadAir, freshestTs, isMetered, pickFlareTarget, flareTargetReady } from './deadair.mjs';
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
+import { isSponsored, requestSponsorship } from './sponsorship.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -68,6 +69,7 @@ if (storedFeedSpaces) byId.get(FEED_ID).spaces = storedFeedSpaces;
 const rpcEndpoint = await invoke('get_rpc_endpoint');
 let rpcAuth = null;
 let myPk = null; // node identity pubkey hex; follow_space requires it as `user`
+let myAddress = null; // bech32 node address; the D1 gate shows it to hand to a sponsor
 async function rpc(method, params = {}) {
   if (!rpcAuth) throw new Error('rpc not ready');
   const res = await fetch(rpcEndpoint, {
@@ -495,7 +497,7 @@ function settle(target, tuneResult, from, kindOverride = null) {
 }
 
 function flip(dir) {
-  if (!powered || !acquired) return; // the dial exists once there is signal
+  if (!powered || !acquired || !vouched) return; // the dial exists once there is signal AND someone vouched
   // Task 5 (live-discovered hardening): the vertical dial must not silently
   // change the channel underneath an open #chart drawer — keyboard/wheel
   // flip isn't a gesture the drawer's z-index occlusion protects against
@@ -563,6 +565,96 @@ document.getElementById('node-details').addEventListener('click', () => {
   pre.hidden = !pre.hidden;
 });
 
+// --- D1: the set does not transmit until a person vouches for you ----------
+// Runs on EVERY power-on, before any channel work, and is deliberately NOT
+// cached the way `acquired` is: a sponsorship can lapse, and a set that kept
+// transmitting on a revoked one would be lying about its own standing.
+//
+// Surf claims ONLY unscoped offers (see sponsorship.mjs). The games claim
+// space-scoped ones; that funnel gave this identity a reef-only grant and a
+// chess-only grant and never an actual sponsorship.
+let sponsorPoll = null;
+// `vouched` gates the DIAL itself, not just the screen. An install that was
+// already `acquired` under a pre-D1 build has powered && acquired both true,
+// so without this the flip strip and the Chart would happily keep tuning
+// channels underneath the gate overlay. "Whole set gated" has to mean the
+// dial is dead, not merely covered.
+let vouched = false;
+
+function sponsorStatus(text) {
+  document.getElementById('sponsor-status').textContent = text;
+}
+
+function showSponsorGate() {
+  document.getElementById('acquire').hidden = true;
+  staticCtl.stop();
+  document.getElementById('sponsor-addr').textContent = myAddress ?? myPk ?? '(node identity unavailable)';
+  document.getElementById('sponsor-gate').hidden = false;
+}
+
+function hideSponsorGate() {
+  document.getElementById('sponsor-gate').hidden = true;
+  if (sponsorPoll) { clearInterval(sponsorPoll); sponsorPoll = null; }
+}
+
+// Poll until a person approves. 8s, not 1s: the claim has to gossip to the
+// sponsor's node, be approved by hand, and then the Sponsor action still has
+// to be mined into a block. This is minutes-scale; a tight poll would just
+// hammer the node to watch the same `false` go by.
+function startSponsorPoll() {
+  if (sponsorPoll) return;
+  sponsorPoll = setInterval(async () => {
+    if (await isSponsored(rpc, myPk)) {
+      hideSponsorGate();
+      sponsorStatus('');
+      powerOn(); // re-enters, passes the gate, and tunes for real
+    }
+  }, 8000);
+}
+
+document.getElementById('sponsor-btn').addEventListener('click', async () => {
+  const btn = document.getElementById('sponsor-btn');
+  btn.disabled = true;
+  sponsorStatus('Proving this set is real…');
+  try {
+    await requestSponsorship({ rpc, sign, pubkeyHex: myPk });
+    btn.hidden = true;
+    sponsorStatus('Request sent. A person has to approve it — this set tunes itself in the moment they do.');
+    startSponsorPoll();
+  } catch (e) {
+    btn.disabled = false;
+    sponsorStatus(
+      String(e?.message) === 'no-unscoped-offer'
+        ? 'No open sponsorship to request right now. Ask someone already on the network to sponsor the address above.'
+        : `Request failed: ${e?.message ?? e}`
+    );
+  }
+});
+
+document.getElementById('sponsor-copy').addEventListener('click', async () => {
+  const text = document.getElementById('sponsor-addr').textContent ?? '';
+  try {
+    await navigator.clipboard.writeText(text);
+    sponsorStatus('Address copied.');
+  } catch {
+    // WebView clipboard can be denied; selecting it is still a usable handoff.
+    const r = document.createRange();
+    r.selectNodeContents(document.getElementById('sponsor-addr'));
+    const sel = getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    sponsorStatus('Copy unavailable — the address is selected, copy it by hand.');
+  }
+});
+
+/** @returns true when the set may tune; false when the gate now owns the screen. */
+async function sponsorGate() {
+  if (await isSponsored(rpc, myPk)) { vouched = true; hideSponsorGate(); return true; }
+  vouched = false;
+  showSponsorGate();
+  startSponsorPoll(); // a sponsor may act without them ever pressing the button
+  return false;
+}
+
 document.getElementById('retune').addEventListener('click', () => {
   gate?.cancel();
   const id = deck.current;
@@ -575,7 +667,7 @@ document.getElementById('retune').addEventListener('click', () => {
 // Guard: the chart is available only once acquired (mirrors flip()'s own
 // "the dial exists once there is signal" guard).
 async function openChart() {
-  if (!powered || !acquired || chartOpen) return;
+  if (!powered || !acquired || !vouched || chartOpen) return;
   chartOpen = true;
   document.getElementById('chart').hidden = false;
   await renderChart();
@@ -777,7 +869,7 @@ document.getElementById('chart-moored').addEventListener('pointerdown', (e) => {
 // instead of stepping a neighbor.
 function tuneFromChart(id) {
   closeChart();
-  if (!powered || !acquired) return;
+  if (!powered || !acquired || !vouched) return;
   if (deck.current === id) return; // already tuned; nothing to settle
   dwell.untuned();
   const from = deck.current;
@@ -824,17 +916,32 @@ function powerOn() {
   bloom.classList.remove('blooming'); void bloom.offsetWidth; bloom.classList.add('blooming');
   setTimeout(() => { bloom.hidden = true; }, 750);
   staticCtl.start();
-  // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
-  // power-cycling mid-boot starts a second run: the frames map gets
-  // overwritten (run A's mounted iframe orphaned, unmount() only ever
-  // removes the currently-mapped one), run A's watchReadiness gate becomes
-  // uncancellable from here, and its 2s timeout can fire SIGNAL LOST over
-  // run B's successful reveal.
-  if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
-  const stored = localStorage.getItem(LAST_CHANNEL_KEY);
-  const target = deck.current ?? (byId.has(stored) ? stored : FEED_ID);
-  const r = deck.tune(target);
-  settle(target, r, null, 'power');
+  // D1: nothing tunes until someone has vouched for this set. The gate needs
+  // rpcReady (myPk/rpcAuth), so the whole tail is async now; acquisitionBoot
+  // awaits rpcReady itself, so its own contract is unchanged. The gate is
+  // checked on BOTH paths below — an install already `acquired` under an
+  // older build must still face it.
+  (async () => {
+    try {
+      await rpcReady;
+    } catch (e) {
+      showNodeDead(String(e));
+      return;
+    }
+    if (!powered) return; // powered off while rpcReady was still resolving
+    if (!(await sponsorGate())) return; // gate owns the screen now
+    // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
+    // power-cycling mid-boot starts a second run: the frames map gets
+    // overwritten (run A's mounted iframe orphaned, unmount() only ever
+    // removes the currently-mapped one), run A's watchReadiness gate becomes
+    // uncancellable from here, and its 2s timeout can fire SIGNAL LOST over
+    // run B's successful reveal.
+    if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
+    const stored = localStorage.getItem(LAST_CHANNEL_KEY);
+    const target = deck.current ?? (byId.has(stored) ? stored : FEED_ID);
+    const r = deck.tune(target);
+    settle(target, r, null, 'power');
+  })();
 }
 
 function powerOff() {
@@ -846,6 +953,7 @@ function powerOff() {
   if (deck.current) advisory(deck.current, 'SWIMCHAIN_CHANNEL_HIDDEN');
   dwell.untuned(); // Task 3: no dwell mining behind the off screen
   gate?.cancel();
+  hideSponsorGate(); // D1: no sponsorship polling behind the off screen either
   staticCtl.stop();
   const off = document.getElementById('off-screen');
   off.hidden = false;
@@ -987,10 +1095,11 @@ strip.addEventListener('wheel', (e) => { e.preventDefault(); flip(e.deltaY > 0 ?
 const rpcReady = (async () => {
   rpcAuth = await invoke('get_rpc_auth'); // blocks until THIS run's node is up, or errors
   myPk = (await rpc('get_identity_info')).public_key; // confirmed: src/rpc/methods.rs:8487
+  myAddress = (await invoke('get_node_address')) ?? null; // D1 gate shows this
   rpcConfig = buildConfigMessage({
     rpcEndpoint,
     rpcAuth,
-    nodeAddress: (await invoke('get_node_address')) ?? undefined,
+    nodeAddress: myAddress ?? undefined,
   });
   for (const [, f] of frames) {
     try { f.contentWindow?.postMessage(rpcConfig, location.origin); } catch { /* not loaded */ }
