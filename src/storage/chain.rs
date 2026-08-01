@@ -879,6 +879,32 @@ impl ChainStore {
         self.fork_branch_tips().map(|t| t.len() as u64).unwrap_or(0)
     }
 
+    /// Whether any competing branch we hold could still overtake us — i.e. its
+    /// tip sits ABOVE our canonical height.
+    ///
+    /// Branches entirely below our tip are archaeology: they cannot be adopted
+    /// without new blocks arriving, and new blocks would raise their tip. They
+    /// are worth REPORTING (an operator may want to know the store holds
+    /// fragments) but they must not make a healthy node describe itself as
+    /// unsynced. Shipping that distinction is the difference between a status
+    /// that means something and an alarm nobody reads: after the 2026-08-01
+    /// reconciliation every fleet node held six dead fragments and reported
+    /// "assembling" for ever.
+    #[must_use]
+    pub fn has_competing_branch_above_tip(&self) -> bool {
+        let our_height = self.get_latest_height().ok().flatten().unwrap_or(0);
+        self.fork_branch_tips()
+            .map(|tips| {
+                tips.iter().any(|h| {
+                    self.get_root_block(h)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|b| b.height > our_height)
+                })
+            })
+            .unwrap_or(false)
+    }
+
     /// The heaviest fork branch we hold that is fully linked and outweighs our
     /// tip — i.e. a chain we could adopt right now, if anything asked.
     ///
