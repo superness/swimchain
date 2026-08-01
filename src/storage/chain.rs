@@ -153,6 +153,15 @@ pub struct ChainStore {
     /// per-block-ish values and tip-vs-incoming comparisons on it are garbage
     /// (how the 2026-07-14 poisoning got past two guards).
     chain_weight_cache: std::sync::RwLock<std::collections::HashMap<BlockHash, u64>>,
+    /// Where the content-gap scan resumes next call, and likewise for the
+    /// side-effects scan. Both used to walk `0..=tip` and stop at their cap,
+    /// so a run of UNFILLABLE low heights (content decayed off the network, or
+    /// no peer holds it) returned the identical list every 30s for ever and
+    /// the heights above them were never reached at all. Rotating the start
+    /// point guarantees every height is eventually offered while keeping the
+    /// per-call work bounded. In-memory: a restart simply begins at zero.
+    gap_scan_cursor: std::sync::atomic::AtomicU64,
+    applied_scan_cursor: std::sync::atomic::AtomicU64,
 }
 
 /// Compact content metadata for indexed lookups
@@ -309,6 +318,8 @@ impl ChainStore {
             space_behavioral_events,
             community_lineage,
             chain_weight_cache: std::sync::RwLock::new(std::collections::HashMap::new()),
+            gap_scan_cursor: std::sync::atomic::AtomicU64::new(0),
+            applied_scan_cursor: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -681,10 +692,25 @@ impl ChainStore {
             return Ok(gaps);
         };
 
-        for height in 0..=tip {
+        // Resume where the last call stopped, wrapping at the tip, so a run of
+        // unfillable low heights cannot starve everything above them.
+        let span = tip + 1;
+        let start = self
+            .gap_scan_cursor
+            .load(std::sync::atomic::Ordering::Relaxed)
+            % span;
+        let mut examined = 0u64;
+        let mut height = start;
+        while examined < span {
+            let this = height;
+            height = (height + 1) % span;
+            examined += 1;
+            self.gap_scan_cursor
+                .store(height, std::sync::atomic::Ordering::Relaxed);
             if gaps.len() >= max {
                 break;
             }
+            let height = this;
             let Some(hash) = self.get_root_hash_at_height(height)? else {
                 continue;
             };
@@ -717,6 +743,11 @@ impl ChainStore {
             }
         }
 
+        // Sorted before returning: the scan now STARTS at a rotating cursor, so
+        // collection order is not ascending, and the caller builds a height
+        // RANGE from first..last (tasks.rs). An unsorted pair would ask for a
+        // backwards or absurd span.
+        gaps.sort_unstable();
         Ok(gaps)
     }
 
@@ -3893,7 +3924,21 @@ impl ChainStore {
         let Some(tip) = self.get_latest_height()? else {
             return Ok(heights);
         };
-        for height in 0..=tip {
+        // Same rotation as find_content_gap_heights: a run of heights whose
+        // side effects can never be applied must not starve the rest.
+        let span = tip + 1;
+        let start = self
+            .applied_scan_cursor
+            .load(std::sync::atomic::Ordering::Relaxed)
+            % span;
+        let mut examined = 0u64;
+        let mut cursor = start;
+        while examined < span {
+            let height = cursor;
+            cursor = (cursor + 1) % span;
+            examined += 1;
+            self.applied_scan_cursor
+                .store(cursor, std::sync::atomic::Ordering::Relaxed);
             if heights.len() >= max {
                 break;
             }
@@ -3904,6 +3949,9 @@ impl ChainStore {
                 heights.push(height);
             }
         }
+        // Sorted for the same reason as find_content_gap_heights: the rotating
+        // start means collection order is not ascending.
+        heights.sort_unstable();
         Ok(heights)
     }
 
