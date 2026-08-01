@@ -75,7 +75,7 @@ fn a_branch_missing_its_lower_half_reports_the_parent_it_waits_on() {
 
     let gaps = store.fork_ancestry_gaps(8);
     assert!(
-        gaps.contains(&root_gap),
+        gaps.iter().any(|(_, h)| *h == root_gap),
         "the branch's missing parent must be reported so something can fetch it \
          — without this a half-built branch is stranded for ever (2026-08-01)"
     );
@@ -142,12 +142,12 @@ fn filling_a_gap_removes_it_so_the_walk_advances() {
     let b13 = block(13, b12.hash(), 0xBB);
     store.put_root_block(&b13).unwrap();
 
-    assert_eq!(store.fork_ancestry_gaps(4), vec![b12.hash()]);
+    assert_eq!(store.fork_ancestry_gaps(4), vec![(13, b12.hash())]);
 
     store.put_root_block(&b12).unwrap();
     assert_eq!(
         store.fork_ancestry_gaps(4),
-        vec![b11.hash()],
+        vec![(12, b11.hash())],
         "filling one gap must expose the next, not repeat the last"
     );
 

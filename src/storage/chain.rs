@@ -805,10 +805,16 @@ impl ChainStore {
     /// more BELOW them, requested nothing, and reported itself "synced" at its
     /// own lower tip. A periodic caller can now walk this list and retry.
     ///
+    /// Returns `(height_of_the_waiting_block, missing_parent_hash)`. The height
+    /// is what makes a RANGE fetch possible: asking a peer for the hundred
+    /// heights below it pulls the branch's ancestry in one message instead of
+    /// one block per request. Single-hash fetching filled ~16 blocks a minute
+    /// on the 2026-08-01 recovery, half an hour for one stranded branch.
+    ///
     /// Bounded, deepest branch first, deterministic on ties — a peer that
     /// manufactures branches must not turn this into an unbounded fetch list.
     #[must_use]
-    pub fn fork_ancestry_gaps(&self, limit: usize) -> Vec<BlockHash> {
+    pub fn fork_ancestry_gaps(&self, limit: usize) -> Vec<(u64, BlockHash)> {
         let mut gaps: Vec<(u64, BlockHash)> = Vec::new();
         let mut seen: std::collections::HashSet<BlockHash> = std::collections::HashSet::new();
 
@@ -828,7 +834,7 @@ impl ChainStore {
 
         gaps.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         gaps.truncate(limit);
-        gaps.into_iter().map(|(_, hash)| hash).collect()
+        gaps
     }
 
     /// Generate a Bitcoin-style locator for the current chain.

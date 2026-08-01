@@ -17,6 +17,9 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use log::{debug, info, warn};
+
+/// Heights per range request when walking a fork branch's ancestry backwards.
+const FORK_RANGE_FETCH: u64 = 100;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{interval, MissedTickBehavior};
@@ -394,10 +397,13 @@ impl BackgroundTaskRunner {
                         // Bounded per tick and self-limiting: a linked store
                         // returns no gaps, and each parent that lands removes
                         // its gap and exposes the next one down.
-                        let gaps = store.fork_ancestry_gaps(8);
+                        let gaps = store.fork_ancestry_gaps(4);
                         if !gaps.is_empty() {
                             let mut asked = 0;
-                            for parent in &gaps {
+                            for (waiting_height, parent) in &gaps {
+                                // BY HASH: the exact parent, which is what
+                                // links the branch even if heights are
+                                // ambiguous across forks.
                                 let get_block =
                                     crate::network::messages::GetBlockPayload::new(*parent);
                                 let envelope =
@@ -410,10 +416,40 @@ impl BackgroundTaskRunner {
                                         asked += 1;
                                     }
                                 }
+
+                                // AND BY RANGE: one parent per request walks a
+                                // branch backwards at the tick rate — measured
+                                // at ~16 blocks a minute during the 2026-08-01
+                                // recovery, half an hour for one stranded
+                                // branch. A peer already on that chain serves
+                                // the whole span from its own canonical index,
+                                // so ask for the hundred heights below the gap
+                                // and let validation sort out what links.
+                                let end = waiting_height.saturating_sub(1);
+                                if end > 0 {
+                                    let start = end.saturating_sub(FORK_RANGE_FETCH - 1).max(1);
+                                    let range = GetBlocksPayload {
+                                        start_height: start,
+                                        end_height: end,
+                                        max_blocks: FORK_RANGE_FETCH as u16,
+                                        include_content: true,
+                                    };
+                                    let envelope =
+                                        crate::types::network::MessageEnvelope::new_fork_agnostic(
+                                            crate::types::network::MessageType::GetBlocks,
+                                            range.to_bytes(),
+                                        );
+                                    for peer_id in peer_ids.iter().take(2) {
+                                        if connection_pool.send_to(peer_id, &envelope).await.is_ok()
+                                        {
+                                            asked += 1;
+                                        }
+                                    }
+                                }
                             }
                             if asked > 0 {
                                 info!(
-                                    "[SYNC-LOOP] Requested {} missing fork ancestor(s) ({} sends)",
+                                    "[SYNC-LOOP] Requested {} missing fork ancestor(s), by hash and by range ({} sends)",
                                     gaps.len(),
                                     asked
                                 );
