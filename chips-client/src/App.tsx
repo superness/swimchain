@@ -13,7 +13,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Keypair } from '@swimchain/core';
-import { useRpc, useGameIdentity, createNewIdentity } from '@swimchain/react';
+import { useRpc, useGameIdentity, useStoredIdentity, createNewIdentity } from '@swimchain/react';
 import { createBrowserHost, CAN_FILE_REPORTS, HAS_THE_BOTTOM, type ChipsHost, type Identity } from './lib/host';
 import { foldChips, saltFor, SALT_TICK_BONUS, type ChipsHeader, type ChipsState, type ChipsReply } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
@@ -162,6 +162,12 @@ export function App() {
   const { mode, identity, hasIdentity, isLoading, sign, saveIdentity } = useGameIdentity();
   const publicKeyHex = identity?.publicKeyHex;
   const address = identity?.address;
+  // The apron-carry pop-out (below) ships the BROWSER keypair — seed and all —
+  // out of a sandboxed in-app browser via URL fragment. That's a browser-mode
+  // feature by nature: a node identity has no seed to carry, and there's no
+  // in-app-browser sandbox when embedded. So read the raw browser StoredIdentity
+  // (which carries seed/createdAt) directly, and gate the pop-out on browser mode.
+  const { identity: browserIdentity } = useStoredIdentity();
 
   const [cookName, setCookName] = useState<string>(() => readName());
   const [nameDraft, setNameDraft] = useState<string>(() => readName() || defaultName());
@@ -2415,12 +2421,12 @@ export function App() {
             fragments never reach the server). If the WebView opens it in
             place, the import no-ops against the same identity — harmless —
             which is why the hint about the ⋯ menu stays visible. */}
-        {inAppBrowser && identity && (
+        {mode === 'browser' && inAppBrowser && browserIdentity && (
           <div className="carry-pill" role="note">
             <span>you&apos;re in an app&apos;s built-in browser — your kitchen lives only here.</span>
             <a
               className="carry-btn"
-              href={buildCarryUrl(window.location.origin + window.location.pathname, identity)}
+              href={buildCarryUrl(window.location.origin + window.location.pathname, browserIdentity)}
               target="_blank" rel="noopener noreferrer"
             >
               pop out &amp; take the apron
