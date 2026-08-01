@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use tokio::time::{timeout, Duration};
 
 use crate::network::{CompactAddr, VersionPayload};
-use crate::types::constants::{HANDSHAKE_TIMEOUT_SECS, PROTOCOL_VERSION, VERSION_TIMEOUT_SECS};
+use crate::types::constants::{
+    HANDSHAKE_TIMEOUT_SECS, PEER_WRITE_TIMEOUT_SECS, PROTOCOL_VERSION, VERSION_TIMEOUT_SECS,
+};
 use crate::types::network::{MessageEnvelope, MessageType};
 use crate::types::serialize::{Deserialize, Serialize};
 
@@ -86,7 +88,16 @@ pub async fn perform_outbound_handshake(
         build_version_payload(local_info, conn.our_nonce(), local_addr, conn.remote_addr());
     let payload_bytes = version_payload.to_bytes();
     let envelope = MessageEnvelope::new_fork_agnostic(MessageType::Version, payload_bytes);
-    conn.send(&envelope).await?;
+    // Bounded: the READ side below has had VERSION_TIMEOUT_SECS all along, but
+    // this write had nothing. A peer that accepts and never reads parks the
+    // handshake task indefinitely (post-#216 it no longer blocks the accept
+    // loop, so it leaks a task rather than the node — still wrong).
+    timeout(
+        Duration::from_secs(PEER_WRITE_TIMEOUT_SECS),
+        conn.send(&envelope),
+    )
+    .await
+    .map_err(|_| TransportError::VersionTimeout(PEER_WRITE_TIMEOUT_SECS))??;
     conn.set_state(ConnectionState::VersionSent)?;
     conn.mark_version_sent();
 

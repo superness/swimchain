@@ -59,7 +59,17 @@ pub async fn connection_handler(
                 _pending_ping_nonce = Some(nonce);
                 let payload = serialize_ping(nonce);
                 let envelope = MessageEnvelope::new_fork_agnostic(MessageType::Ping, payload);
-                if conn.send(&envelope).await.is_err() {
+                // Bounded: an unbounded PING parks the keepalive task for ever
+                // against a peer that stopped reading — and that task is the
+                // very thing meant to notice a dead peer.
+                let sent = tokio::time::timeout(
+                    std::time::Duration::from_secs(
+                        crate::types::constants::PEER_WRITE_TIMEOUT_SECS,
+                    ),
+                    conn.send(&envelope),
+                )
+                .await;
+                if sent.is_err() || sent.is_ok_and(|r| r.is_err()) {
                     let _ = event_tx.send(PeerEvent::Disconnected {
                         reason: "send failed".to_string(),
                     });
