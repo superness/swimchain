@@ -39,6 +39,7 @@ export class SwimchainRpc {
         this.nodeInfo = null;
         this.endpoint = config.endpoint;
         this.auth = config.auth;
+        this.authHeader = config.authHeader;
         this.timeout = config.timeout ?? 30000;
     }
     /**
@@ -79,6 +80,11 @@ export class SwimchainRpc {
             headers['X-CS-Identity'] = this.signatureAuth.publicKey;
             headers['X-CS-Timestamp'] = timestamp;
             headers['X-CS-Signature'] = signatureHex;
+        }
+        else if (this.authHeader) {
+            // Raw auth header, already fully formed (e.g. from a parent frame's
+            // SWIMCHAIN_RPC_CONFIG cookie handover) — emit verbatim, no re-encoding.
+            headers['Authorization'] = this.authHeader;
         }
         else if (this.auth) {
             const credentials = `${this.auth.username}:${this.auth.password}`;
