@@ -1097,6 +1097,10 @@ impl RpcMethods {
                 now,
                 node_identity,
                 self.node.sponsorship_store.as_ref().map(|s| s.as_ref()),
+                // Third formation path. Same reason as the other two: an
+                // already-finalized action must never reach the block, or the
+                // whole block is discarded and takes its blockmates with it.
+                self.node.chain_store.as_ref().map(|s| s.as_ref()),
             )
         };
 

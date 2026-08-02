@@ -164,6 +164,11 @@ async function checkDeadAir(target) {
   // empty space_ids array would mean "all known spaces" per Task 1's RPC
   // contract, crediting an unrelated busy space's recency to this channel.
   if (!isMetered(ch)) return;
+  // See firstRevealDone: never greet a newcomer with a dead-air card.
+  if (!firstRevealDone) {
+    firstRevealDone = true;
+    return;
+  }
   // Dead air is computed from what THIS node holds, and content is fetched on
   // demand — so a set that has only just asked for a channel's content has not
   // got it yet, and a thriving channel classifies as DYING. Caught live: "CH 2
@@ -432,6 +437,17 @@ function advisory(id, type) {
 // fire-and-forget — the bodies land afterwards, over the network.
 const drivenAt = new Map();
 const DEAD_AIR_GRACE_MS = 30_000;
+// A newly vouched-in stranger must NEVER have "THIS CHANNEL IS DYING" as the
+// first thing the network says to them. Dead air is a feature for a channel
+// you deliberately flipped to and found decayed — not a greeting.
+//
+// It fires on a first reveal for reasons that have nothing to do with the
+// channel being dead: the set has just acquired, its node has barely synced,
+// and classifyChannelDeadAir treats a space with NO engagement yet
+// (`lastEngagementTs == null`) as `dying` outright — which a perfectly
+// healthy, freshly-curated space can be. Suppress it for the first reveal
+// only; every flip after that judges normally.
+let firstRevealDone = false;
 
 async function tuneDriver(id) {
   const ch = byId.get(id);
@@ -1192,7 +1208,10 @@ async function acquisitionBoot() {
       listed = await rpc('list_spaces', { limit: 20 });
     } catch { /* best-effort: a transient RPC failure just leaves byId.get(feed).spaces as whatever it already was (channels.json's trio) */ }
     if (listed) {
-      const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
+      // FIRST RUN: curated or nothing. A newcomer must never be handed a
+      // lucky-dip space (see bootstrap.mjs). The ongoing repick below passes
+      // no flag, so an established set can still drift to live spaces.
+      const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES, { curatedOnly: true });
       if (picked !== FALLBACK_FEED_SPACES) {
         // Use it NOW so the set has somewhere to tune, but only WRITE it once
         // the node is informed enough for the ranking to mean anything —

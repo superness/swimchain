@@ -37,9 +37,46 @@
 // contract) internally, which accepts bech32 OR hex equally. So the picked
 // ids are stored and passed through exactly as list_spaces returns them --
 // no re-encoding needed anywhere in this module or in shell.mjs.
-export function pickBootstrap(listSpacesResult, fallbackSpaces) {
+export function pickBootstrap(listSpacesResult, fallbackSpaces, { curatedOnly = false } = {}) {
   const spaces = listSpacesResult?.spaces ?? [];
   const social = spaces.filter((s) => s.class === 'social');
+
+  // CURATED FIRST. Ranking by raw recency hands the first impression to
+  // whichever account posts most often, which on mainnet is an automated
+  // relay: on 2026-08-02 the freshest social space was "Bot talk" (277 posts,
+  // 0.0d) republishing r/dankmemes, so a stranger who had just been vouched
+  // for by a human landed on exactly that. The curated set in channels.json
+  // is the operator's editorial choice for a first run and must win whenever
+  // it is actually present on this node.
+  //
+  // This does NOT reinstate A1's hardcoded-space debt that B5 removed: the
+  // curated ids are preferred only while at least one of them is REAL on this
+  // node (present in list_spaces). If they all decay away or were never
+  // synced, discovery below still takes over, which is the resilience B5 was
+  // after. `curatedLive` is deliberately membership-only — a curated space
+  // with no engagement yet is still the right thing to show a newcomer, and
+  // dead-air has its own separate suppression for a first reveal.
+  const known = new Set(spaces.map((s) => s.space_id));
+  const curatedLive = (fallbackSpaces ?? []).filter((id) => known.has(id));
+  if (curatedLive.length) {
+    // Same-reference signal when nothing changed, matching this function's
+    // existing contract with the shell (see the fallback return below).
+    return curatedLive.length === (fallbackSpaces ?? []).length ? fallbackSpaces : curatedLive;
+  }
+
+  // `curatedOnly` is the FIRST RUN. A newcomer gets the curated set or
+  // nothing -- never a lucky dip. Falling through to recency ranking here is
+  // exactly how a stranger's first screen became an r/dankmemes relay: the
+  // curated spaces simply had not synced yet on a minutes-old node, so
+  // discovery answered instead. Returning the same reference means "nothing
+  // to adopt" and the shell keeps waiting; the curated spaces are on-chain
+  // and will arrive.
+  //
+  // Ongoing re-picks pass curatedOnly=false, so an ESTABLISHED set whose
+  // curated spaces have genuinely decayed still drifts to live ones. That is
+  // the B5 resilience, kept where it belongs and out of the first impression.
+  if (curatedOnly) return fallbackSpaces;
+
   // Same reference, not a copy -- the shell's own signal (matches chart.mjs's
   // toggleMoor idiom: an unchanged `=== ` reference means "nothing to adopt,
   // don't persist") to skip overwriting byId.get(feed).spaces and skip the

@@ -6952,6 +6952,10 @@ impl MessageRouter {
                 now,
                 block_creator,
                 self.sponsorship_store.as_ref().map(|s| s.as_ref()),
+                // Same reason as the tasks.rs formation site: an already-
+                // finalized action must never reach the block, or the whole
+                // block is discarded and takes its blockmates with it.
+                self.chain_store.as_ref().map(|s| s.as_ref()),
             )
         };
 
