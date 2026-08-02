@@ -19,6 +19,12 @@
  *   BOT_HOME        "cx,cy" preferred seed spot (default: random)
  *   BOT_TAG         log label (default reef-bot)
  *   BOT_MS          run duration (default Infinity)
+ *   BOT_PRESENCE_MS how recently a NON-BOT identity must have moved in this
+ *                   region for the bot to play at all (default 15 min; 0 turns
+ *                   the gate off and restores continuous play)
+ *   BOT_PEERS       comma-separated pubkeys that also do NOT count as people
+ *                   (sibling bots sharing the board)
+ *   BOT_IDLE_MS     how often to re-check the board while gated (default 60s)
  */
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -36,6 +42,7 @@ import {
   COST_GROW,
   COST_CONTEST,
 } from './reefEngine.bundle.mjs';
+import { shouldPlay } from './presence.mjs';
 
 const RPC = process.env.RPC_URL || 'http://127.0.0.1:19736';
 const AUTHOR = (process.env.AUTHOR_PUBKEY || '').toLowerCase();
@@ -51,6 +58,14 @@ const GAP = Number(process.env.BOT_INTERVAL_MS || 6000);
 const TAG = process.env.BOT_TAG || 'reef-bot';
 const RUN_MS = Number(process.env.BOT_MS || Infinity);
 const HOME = (process.env.BOT_HOME || '').split(',').map(Number);
+// The bot plays unprompted — it seeds, spreads and contests with or without an
+// opponent — so on a quiet mainnet it builds a reef of its own coral and burns
+// Argon2id for nobody. 15 minutes is longer than a person spends thinking
+// between two proof-of-work moves and short enough that the bot stops soon
+// after they leave. Set 0 to play continuously again.
+const PRESENCE_MS = process.env.BOT_PRESENCE_MS === undefined ? 15 * 60_000 : Number(process.env.BOT_PRESENCE_MS);
+const IDLE_MS = Number(process.env.BOT_IDLE_MS || 60_000);
+const PEERS = (process.env.BOT_PEERS || '').split(',').map((s) => s.trim()).filter(Boolean);
 const NET = 'testnet';
 if (!AUTHOR) throw new Error('AUTHOR_PUBKEY required');
 if (MODE === 'cookie' && !COOKIE && !COOKIE_FILE && process.env.BOT_MODE !== 'status')
@@ -251,7 +266,13 @@ async function readBoard() {
       else if (occ.owner !== AUTHOR) enemyAdjacent.push([nx, ny, occ.vitality]);
     }
   }
-  return { cells, budget, mine, openAdjacent, enemyAdjacent, outcomes, epoch: state.epoch, params: state.params };
+  // The RAW replies travel back out too: the presence gate asks who has been
+  // here and when, which the folded board deliberately does not preserve (the
+  // fold keeps the outcome of a move, not the fact that a person made it).
+  return {
+    cells, budget, mine, openAdjacent, enemyAdjacent, outcomes,
+    epoch: state.epoch, params: state.params, replies: res?.replies ?? [],
+  };
 }
 
 // ── strategy (rule-based, no AI) ──────────────────────────────────────────────
@@ -326,6 +347,13 @@ async function findRegion() {
   const c = await rpc('list_space_posts', { space_id: REEF_SPACE, limit: 100, offset: 0, sort: 'recent' });
   for (const it of c?.items ?? []) if (isReefHeader(it.body)) return it.content_id;
   return '';
+}
+
+/** Human-readable gap for the gate's two log lines. Seconds under a minute:
+ *  "quiet for 0m" is what four and a half seconds used to print. */
+function since(ms) {
+  if (ms === null || ms === undefined) return 'ever';
+  return ms < 60_000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60_000)}m`;
 }
 
 // ── main loop ─────────────────────────────────────────────────────────────────
@@ -428,12 +456,42 @@ async function main() {
     return;
   }
   if (process.env.BOT_MODE === 'repro') { await reproMode(); return; }
-  console.log(`[${TAG}] playing (${PERSONALITY})`);
+  console.log(`[${TAG}] playing (${PERSONALITY})`
+    + (PRESENCE_MS > 0 ? ` · only while someone has moved in the last ${Math.round(PRESENCE_MS / 60000)}m` : ' · presence gate OFF'));
   const deadline = Date.now() + RUN_MS;
   const stats = { ok: 0, fail: 0 };
+  // Logged on TRANSITION only. A line per idle poll would bury the moves that
+  // matter under a wall of "still quiet" at one an hour, forever.
+  let idle = null;
   while (Date.now() < deadline) {
     try {
       const board = await readBoard();
+
+      // THE GATE. Reading the board costs no proof-of-work, so an idle bot is
+      // cheap; every move below costs a real Argon2id hash, which is what must
+      // not be spent on an empty room. A single human move re-opens this on
+      // the next poll — see presence.test.mjs's "one human move wakes a bot
+      // that had gone quiet".
+      //
+      // Standing down does NOT stop hosting the region: readBoard() runs on
+      // every idle poll too, and nodes fetch content on demand only, so that
+      // get_content/get_replies pair is what keeps the reef resident here. An
+      // idle bot that also stopped reading would let the board it is guarding
+      // decay off its own node.
+      const seat = shouldPlay({ replies: board.replies, bots: [AUTHOR, ...PEERS], windowMs: PRESENCE_MS });
+      if (!seat.play) {
+        if (idle !== true) {
+          idle = true;
+          console.log(`[${TAG} ${new Date().toISOString()}] standing down — ${seat.reason} (no one but me for ${since(seat.ageMs)})`);
+        }
+        await sleep(IDLE_MS);
+        continue;
+      }
+      if (idle) {
+        idle = false;
+        console.log(`[${TAG} ${new Date().toISOString()}] someone is here — playing again (last move ${since(seat.ageMs)} ago)`);
+      }
+
       const move = chooseMove(board);
       if (!move) {
         console.log(`[${TAG}] no move available (${board.mine.length} cells) — waiting`);
