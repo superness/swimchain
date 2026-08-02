@@ -168,3 +168,29 @@ test('pickBootstrap: falls back to ranking when NO curated space is present', ()
     'with no curated space present, rank by recency as before'
   );
 });
+
+test('pickBootstrap: FIRST RUN is curated-or-nothing, never a lucky dip', () => {
+  // The curated spaces have not synced yet on a minutes-old node. Falling
+  // through to recency here is exactly how a stranger's first screen became
+  // an r/dankmemes relay. Returning the same reference means "nothing to
+  // adopt" and the shell waits; the curated spaces are on-chain and arrive.
+  const CURATED = ['sp1curated_a', 'sp1curated_b'];
+  const result = { spaces: [space('sp1botrelay', 'social', 9_999_999)] };
+  assert.equal(
+    pickBootstrap(result, CURATED, { curatedOnly: true }),
+    CURATED,
+    'first run must not adopt an uncurated space'
+  );
+});
+
+test('pickBootstrap: an ESTABLISHED set still drifts to live spaces', () => {
+  // Same input, no curatedOnly: B5 resilience must survive for a set whose
+  // curated spaces have genuinely decayed.
+  const CURATED = ['sp1curated_a', 'sp1curated_b'];
+  const result = { spaces: [space('sp1botrelay', 'social', 9_999_999)] };
+  assert.deepEqual(
+    pickBootstrap(result, CURATED),
+    ['sp1botrelay'],
+    'ongoing repick may still adopt a live space when curated ones are gone'
+  );
+});

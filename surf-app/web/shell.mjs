@@ -1208,7 +1208,10 @@ async function acquisitionBoot() {
       listed = await rpc('list_spaces', { limit: 20 });
     } catch { /* best-effort: a transient RPC failure just leaves byId.get(feed).spaces as whatever it already was (channels.json's trio) */ }
     if (listed) {
-      const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
+      // FIRST RUN: curated or nothing. A newcomer must never be handed a
+      // lucky-dip space (see bootstrap.mjs). The ongoing repick below passes
+      // no flag, so an established set can still drift to live spaces.
+      const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES, { curatedOnly: true });
       if (picked !== FALLBACK_FEED_SPACES) {
         // Use it NOW so the set has somewhere to tune, but only WRITE it once
         // the node is informed enough for the ranking to mean anything —

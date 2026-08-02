@@ -37,7 +37,7 @@
 // contract) internally, which accepts bech32 OR hex equally. So the picked
 // ids are stored and passed through exactly as list_spaces returns them --
 // no re-encoding needed anywhere in this module or in shell.mjs.
-export function pickBootstrap(listSpacesResult, fallbackSpaces) {
+export function pickBootstrap(listSpacesResult, fallbackSpaces, { curatedOnly = false } = {}) {
   const spaces = listSpacesResult?.spaces ?? [];
   const social = spaces.filter((s) => s.class === 'social');
 
@@ -63,6 +63,19 @@ export function pickBootstrap(listSpacesResult, fallbackSpaces) {
     // existing contract with the shell (see the fallback return below).
     return curatedLive.length === (fallbackSpaces ?? []).length ? fallbackSpaces : curatedLive;
   }
+
+  // `curatedOnly` is the FIRST RUN. A newcomer gets the curated set or
+  // nothing -- never a lucky dip. Falling through to recency ranking here is
+  // exactly how a stranger's first screen became an r/dankmemes relay: the
+  // curated spaces simply had not synced yet on a minutes-old node, so
+  // discovery answered instead. Returning the same reference means "nothing
+  // to adopt" and the shell keeps waiting; the curated spaces are on-chain
+  // and will arrive.
+  //
+  // Ongoing re-picks pass curatedOnly=false, so an ESTABLISHED set whose
+  // curated spaces have genuinely decayed still drifts to live ones. That is
+  // the B5 resilience, kept where it belongs and out of the first impression.
+  if (curatedOnly) return fallbackSpaces;
 
   // Same reference, not a copy -- the shell's own signal (matches chart.mjs's
   // toggleMoor idiom: an unchanged `=== ` reference means "nothing to adopt,
