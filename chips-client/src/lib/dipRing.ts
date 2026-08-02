@@ -59,9 +59,15 @@ export interface DipNote {
   route: TapRoute;
   /** Which basket. */
   index: number;
-  /** The chip's BIRTH ms — and the join key to `dip <amount>#<ms>` on chain.
-   *  Note the `broke` move does NOT carry it; see noteTapAway('boss'). */
+  /** The chip's BIRTH ms. `at - ms` is the cook duration (see `at` above).
+   *  NO LONGER the join key to the chain: a dip body now carries the ms it was
+   *  DIPPED at, not the ms its chip was cast on — see `wireMs`, and cooking.ts's
+   *  dipFor for why the two had to be separated. */
   ms: number;
+  /** The ms that actually went out in `dip <amount>#<ms>~` — the join key to
+   *  the move on chain, and the fold's ordering key until the move is sealed.
+   *  Null for routes that post no dip. */
+  wireMs: number | null;
   /** How long it actually cooked, as the client measured it. Explains the pot
    *  without anyone having to re-derive it from a tick rate. */
   cookedMs: number;
@@ -124,7 +130,8 @@ export function noteTapAway(
 ): void {
   const worth = chip.pot * 2 ** chip.crackles;
   noteDip({
-    at, route, index, ms: chip.ms, cookedMs: chip.cookedMs,
+    // wireMs null: a tap-away posts no dip, so there is no move to join to.
+    at, route, index, ms: chip.ms, wireMs: null, cookedMs: chip.cookedMs,
     pot: chip.pot, crackles: chip.crackles,
     raw: worth, amount: worth, doubled: false,
     bowlCap: 0, crumbsBefore: 0, room: 0, credited: 0, spilled: 0,

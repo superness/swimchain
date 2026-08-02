@@ -296,6 +296,41 @@ export function dipChip(
 }
 
 /**
+ * Dip a chip AND STAMP IT WITH THE MOMENT IT WAS DIPPED.
+ *
+ * The returned `ms` is the wire/ordering identity and comes from `alloc`, not
+ * from the chip. That distinction is the whole point of this function: until a
+ * move is sealed into a block, `orderReplies` falls back to the body's
+ * authoring-ms, so that number IS the fold's ordering key. A chip carries the
+ * ms it was CAST ON, and reusing it replays the dip as though it happened back
+ * then — before every upgrade bought while the chip cooked. The longer the
+ * cook, the further back it lands and the bigger the pot, so the most valuable
+ * dips are exactly the ones that fold into a stale, smaller bowl cap and are
+ * clamped to nothing.
+ *
+ * Measured on mainnet table 5425dfcd (2026-08-02): dips of 5,857,616 and
+ * 1,376,288 credited ZERO against a 3,000,000 cap the player had already
+ * raised to 200,000,000. `broke`, `spend`, `burn` and the crew payouts have
+ * always taken a fresh allocMs() at the moment of the action; the basket dip
+ * was the one path still handing over the chip's birthday.
+ *
+ * `chipMs` keeps the birth ms so the debug ring can still report a cook
+ * duration (see dipRing's `at - ms`), and so nothing that joins a dip back to
+ * the chip it came from has to re-derive it.
+ */
+export function dipFor(
+  chip: CookingChip,
+  doubleDipMod: number,
+  rng: () => number,
+  alloc: () => number
+): DipResult & { ms: number; chipMs: number; pot: number; cookedMs: number } {
+  const res = dipChip(chip, doubleDipMod, rng);
+  // pot and cookedMs come along because the caller is about to replace the
+  // basket and this is the last moment they exist. See lib/dipRing.ts.
+  return { ...res, ms: alloc(), chipMs: chip.ms, pot: chip.pot, cookedMs: chip.cookedMs };
+}
+
+/**
  * Strictly increasing ms values that TRACK THE WALL CLOCK — dip identity on
  * the wire AND the fold's within-block ordering key. The old +1-per-call
  * allocator (inherited from the miner era, where it was deliberately

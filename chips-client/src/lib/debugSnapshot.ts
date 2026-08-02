@@ -146,7 +146,11 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       // `at` is the tap; `ms` is the chip's BIRTH. They differ by the cook, and
       // reading ms as the tap time is what derailed 2026-07-29 — so the gap is
       // spelled out here rather than left to be re-derived.
-      at: d.at, ms: d.ms, cookedForMs: d.at - d.ms, cookedMs: d.cookedMs,
+      // `wireMs` is what the move carries on chain, so a report can be joined
+      // to `dip <amount>#<ms>~` directly. It tracks `at`, not `ms` — the two
+      // came apart when the dip stopped being stamped with its chip's birthday
+      // (cooking.ts's dipFor).
+      at: d.at, ms: d.ms, wireMs: d.wireMs, cookedForMs: d.at - d.ms, cookedMs: d.cookedMs,
       index: d.index,
       pot: d.pot, crackles: d.crackles,
       raw: d.raw, amount: d.amount, doubled: d.doubled,

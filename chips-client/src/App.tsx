@@ -989,7 +989,10 @@ export function App() {
     }
 
     const crackles = Math.round(Math.log2(res.multi));
-    launchDip(index, { ms: res.ms, bits: visualFor({ ms: res.ms, crackles }).bits }, res.doubled);
+    // chipMs, not the wire ms: a chip's silhouette is seeded from its authoring
+    // ms (Kitchen's xorshift32), so the chip that flies out of the basket has to
+    // carry the same one it wore while it sat there.
+    launchDip(index, { ms: res.chipMs, bits: visualFor({ ms: res.chipMs, crackles }).bits }, res.doubled);
     sfx.dip(res.doubled);
     if (res.doubled) {
       // EXTREMELY celebrated, per the owner: a proc is the game's slot-machine
@@ -1031,8 +1034,11 @@ export function App() {
     // dipRing.ts for the four different bugs this separates.
     const dipId = nextId.current++;
     noteDip({
-      at: Date.now(), route: 'dip', index, ms: res.ms, cookedMs: res.cookedMs,
-      pot: res.pot, crackles,
+      // `ms` is the chip's BIRTH so `at - ms` still reads as the cook duration;
+      // `wireMs` is what went on chain. They are the same number only for a
+      // chip dipped the instant it was cast on. See cooking.ts's dipFor.
+      at: Date.now(), route: 'dip', index, ms: res.chipMs, wireMs: res.ms,
+      cookedMs: res.cookedMs, pot: res.pot, crackles,
       raw: rawAmount, amount: res.amount, doubled: res.doubled,
       bowlCap: state?.bowlCap ?? 0, crumbsBefore: crumbsNow,
       room, credited, spilled,

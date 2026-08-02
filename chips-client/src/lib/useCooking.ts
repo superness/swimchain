@@ -15,7 +15,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { readRack, writeRack } from './rackStore';
 import {
-  tickChip, dipChip, freshChip, createMsAllocator, isGolden,
+  tickChip, dipFor, freshChip, createMsAllocator, isGolden,
   TICK_MS, type CookingChip, type DipResult, type TickMods,
 } from './cooking';
 
@@ -139,18 +139,19 @@ export function useCooking(
    */
   function dip(
     index: number, doubleDipMod: number,
-  ): (DipResult & { ms: number; pot: number; cookedMs: number }) | null {
+  ): (DipResult & { ms: number; chipMs: number; pot: number; cookedMs: number }) | null {
     const chip = latest.current[index];
     if (!chip || chip.pot <= 0) return null;
-    const res = dipChip(chip, doubleDipMod, Math.random);
+    // `ms` is allocated HERE, at the dip, and is what goes on the wire — see
+    // dipFor's header for why handing over the chip's birth ms silently fed
+    // the biggest dips to a stale bowl cap. Allocated before the basket
+    // restarts below so the dip's identity precedes the new chip's.
+    const res = dipFor(chip, doubleDipMod, Math.random, allocRef.current!);
     const next = latest.current.slice();
     next[index] = freshChip(allocRef.current!());
     latest.current = next;
     setChips(next);
-    // pot and cookedMs come along because this is the LAST MOMENT they exist:
-    // the line above already replaced the basket, so nothing downstream can
-    // ask what was actually dipped. See lib/dipRing.ts.
-    return { ...res, ms: chip.ms, pot: chip.pot, cookedMs: chip.cookedMs };
+    return res;
   }
 
   /**
