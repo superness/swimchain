@@ -1,5 +1,6 @@
+<meta charset="utf-8">
 <title>Install Swimchain on Android</title>
-<meta name="description" content="Install the Swimchain Android app — a full node in your pocket. Step-by-step sideload guide for the APK.">
+<meta name="description" content="Install Surf on Android — a full node in your pocket, shown to you as channels you flip between like a TV. Step-by-step sideload guide for the APK.">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
   :root {
@@ -161,29 +162,48 @@
   <span class="eyebrow">Android · full node</span>
   <h1>Install Swimchain on Android</h1>
   <p class="lede">
-    The Swimchain app runs a <strong>full node in your pocket</strong> — no server,
-    no account. Because it's distributed as a sideloaded APK (not through the Play
-    Store), installing takes a few extra taps. Here's the whole thing.
+    <strong>Surf</strong> is a <strong>full node in your pocket</strong> — no server,
+    no account, no feed to scroll. You power on a set and you're watching a channel,
+    and you flip between them like a TV. Because it's distributed as a sideloaded APK
+    (not through the Play Store), installing takes a few extra taps. Here's the whole thing.
   </p>
 </div>
 
 <section class="wrap">
   <div class="dl">
-    <!-- C5 TODO (gated on C4 keystore): repoint to the signed Surf release. Fill: URL https://github.com/superness/swimchain/releases/download/<surf-tag>/<surf-apk>, tag <surf-tag>, size <MB>, sha256 <hash>. Do NOT repoint until the release is uploaded. -->
-    <a class="btn primary" href="https://github.com/superness/swimchain/releases/download/mobile-v0.1.10-alpha/swimchain-android-v0.1.10-alpha.apk">
-      Download the APK
+    <!-- C5 closed 2026-08-02: repointed from the mobile app to the first signed Surf
+         release. Anything here must match the uploaded asset exactly — version, size
+         and sha256 are read off the APK, not typed from memory. -->
+    <a class="btn primary" href="https://github.com/superness/swimchain/releases/download/surf-v0.2.1-alpha/swimchain-surf-v0.2.1-alpha.apk">
+      Download Surf
     </a>
     <span class="pending">Alpha</span>
     <div class="meta">
-      <b>Version:</b> v0.1.10-alpha &nbsp;·&nbsp; <b>Requires:</b> Android 8.0+ (API 26) &nbsp;·&nbsp;
-      <b>Arch:</b> arm64-v8a &nbsp;·&nbsp; <b>Size:</b> 17.6 MB<br>
-      <b>SHA-256:</b> <span style="word-break:break-all">952c308d9e881b04a6047675a4c1e7d1f72f093023700534293ec1742ddd73d4</span><br>
+      <b>Version:</b> v0.2.1-alpha &nbsp;·&nbsp; <b>Requires:</b> Android 8.0+ (API 26) &nbsp;·&nbsp;
+      <b>Arch:</b> arm64-v8a &nbsp;·&nbsp; <b>Size:</b> 17.8 MB<br>
+      <b>SHA-256:</b> <span style="word-break:break-all">39c494b5d37fd55dbe3db6d049f0b36a1f2181381158cff206f7fb00b7f821a6</span><br>
       This is a <b>pre-release alpha</b>. Sideloaded apps don't auto-update &mdash; note
       the version and check back here (or the
-      <a href="https://github.com/superness/swimchain/releases/tag/mobile-v0.1.10-alpha">release notes</a>)
+      <a href="https://github.com/superness/swimchain/releases/tag/surf-v0.2.1-alpha">release notes</a>)
       for new builds.
     </div>
   </div>
+
+  <p class="reassure">
+    <b>This is mainnet, and there is no sandbox.</b> Anything you post, edit or play is
+    a real, signed action under your own identity the moment you submit it.
+  </p>
+  <p class="reassure">
+    <b>Someone has to vouch for you.</b> A new set stays dark until a person approves
+    your request — that's deliberate, not a fault. The app shows you how to ask, and
+    tunes itself in the moment you're approved.
+  </p>
+  <p class="reassure">
+    Looking for the older <b>Swimchain</b> app — the one with forums, chat and a feed?
+    It's still here:
+    <a href="https://github.com/superness/swimchain/releases/tag/mobile-v0.1.10-alpha">v0.1.10-alpha</a>.
+    Different app, different package — installing Surf won't replace it.
+  </p>
 
   <ol class="steps">
     <li>
@@ -232,39 +252,36 @@
       </p>
       <div class="shots">
         <figure class="shot">
-          <img src="/img/android-play-protect.png" alt="Google Play Protect 'App scan recommended' dialog for Swimchain" loading="lazy">
+          <img src="/img/android-play-protect.png" alt="Google Play Protect 'App scan recommended' dialog shown when installing a sideloaded app" loading="lazy">
           <figcaption>Tap "Scan app"…</figcaption>
         </figure>
         <figure class="shot">
-          <img src="/img/android-scan-safe.png" alt="Google Play Protect result: 'This app looks safe' for Swimchain, with an Install button" loading="lazy">
+          <img src="/img/android-scan-safe.png" alt="Google Play Protect result: 'This app looks safe', with an Install button" loading="lazy">
           <figcaption>…Google confirms it's safe, then tap "Install."</figcaption>
         </figure>
       </div>
     </li>
 
     <li>
-      <h3>Open the app &amp; allow notifications</h3>
+      <h3>Power on the set &amp; allow notifications</h3>
       <p>
-        Launch Swimchain and tap <b>Allow</b> on the notification prompt. The node runs
+        Launch <b>Surf</b> and tap <b>Allow</b> on the notification prompt. The node runs
         as a background service with a persistent notification while it syncs the chain —
-        that's how a full node stays alive on mobile.
+        that's how a full node stays alive on mobile. Surf opens on static while it finds
+        its first signal; that's the node syncing, not a fault.
       </p>
-      <figure class="shot">
-        <img src="/img/android-notifications.png" alt="Swimchain running (node synced, 1 peer) with the 'Allow Swimchain to send you notifications?' prompt" loading="lazy">
-        <figcaption>The app is already running a node behind the prompt — tap "Allow."</figcaption>
-      </figure>
     </li>
   </ol>
 
   <p class="reassure">
     These warnings appear for <b>any</b> app installed outside the Play Store — they're not
-    specific to Swimchain. You can verify the download against the SHA-256 checksum above.
+    specific to Surf. You can verify the download against the SHA-256 checksum above.
   </p>
 
   <div class="next-step">
     <h3>Installed? Here's what to do next.</h3>
     <p>
-      The app creates your identity on first launch. Next you'll get sponsored so you can
+      Surf creates your identity on first launch. Next you'll get sponsored so you can
       post, and find your first spaces — walk through it step by step.
     </p>
     <a class="btn primary" href="/getting-started?p=android">Getting started &rarr;</a>
