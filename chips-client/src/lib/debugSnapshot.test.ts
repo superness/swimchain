@@ -39,7 +39,8 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
   // bowl was already at its rim. Everything about it looks like a lost dip
   // unless the cap numbers travel WITH it.
   dips: [{
-    at: 1785277999500, route: 'dip', index: 1, ms: 1785277999000, cookedMs: 500,
+    at: 1785277999500, route: 'dip', index: 1, ms: 1785277999000,
+    wireMs: 1785277999500, cookedMs: 500,
     pot: 128_125, crackles: 5,
     raw: 2_050_000, amount: 4_100_000, doubled: true,
     bowlCap: 4_000_000, crumbsBefore: 4_000_000, room: 0,
@@ -276,7 +277,8 @@ const input = (over: Partial<SnapshotInput> = {}): SnapshotInput => ({
 {
   clearDipRing();
   const mk = (i: number): DipNote => ({
-    at: 1000 + i, route: 'dip', index: 0, ms: 5000 + i, cookedMs: 0, pot: 1, crackles: 0,
+    at: 1000 + i, route: 'dip', index: 0, ms: 5000 + i, wireMs: 5000 + i,
+    cookedMs: 0, pot: 1, crackles: 0,
     raw: i, amount: i, doubled: false,
     bowlCap: 9, crumbsBefore: 0, room: 9, credited: i, spilled: 0, queuedId: i,
   });
