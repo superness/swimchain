@@ -84,6 +84,11 @@ pub struct FormationGate {
     /// Latest height advertised BY EACH peer, so "am I behind?" can require
     /// corroboration from independent peers rather than trusting one claim.
     peer_heights: Mutex<HashMap<[u8; 32], u64>>,
+    /// Whether the corroboration hold has been announced. Its OWN flag, not
+    /// `behind_logged`: that one is cleared on every call that clears the
+    /// validated-block brake, so sharing it logged this line at INFO every
+    /// few seconds for the whole of a catch-up.
+    corroboration_logged: AtomicBool,
 }
 
 impl FormationGate {
@@ -100,6 +105,7 @@ impl FormationGate {
             behind_logged: AtomicBool::new(false),
             defer_logged: AtomicBool::new(false),
             peer_heights: Mutex::new(HashMap::new()),
+            corroboration_logged: AtomicBool::new(false),
         }
     }
 
@@ -133,6 +139,12 @@ impl FormationGate {
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
+    }
+
+    /// The highest chain height any peer has advertised since process start.
+    #[must_use]
+    pub fn best_peer_height(&self) -> u64 {
+        self.best_peer_height.load(Ordering::Relaxed)
     }
 
     /// How many DISTINCT peers advertise a height strictly above `threshold`.
@@ -188,6 +200,7 @@ impl FormationGate {
         // Caught up again — let the next lag log once more rather than going
         // silent for the process lifetime.
         self.behind_logged.store(false, Ordering::Relaxed);
+        self.corroboration_logged.store(false, Ordering::Relaxed);
 
         if self.open.load(Ordering::Relaxed) {
             return true;
@@ -234,9 +247,14 @@ impl FormationGate {
             let behind_by = our_height.saturating_add(FORM_BEHIND_TOLERANCE);
             let corroborating = self.peers_claiming_above(behind_by);
             if corroborating >= CORROBORATING_PEERS {
-                if !self.behind_logged.swap(true, Ordering::Relaxed) {
+                if !self.corroboration_logged.swap(true, Ordering::Relaxed) {
                     info!(
                         "[BLOCKS] Deferring block formation past grace: {} peers report a chain above us (our height {}, best peer height {}) — refusing to mint a competing chain",
+                        corroborating, our_height, best_peer
+                    );
+                } else {
+                    debug!(
+                        "[BLOCKS] Still deferring past grace: {} peers above us (our height {}, best peer height {})",
                         corroborating, our_height, best_peer
                     );
                 }
