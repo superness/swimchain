@@ -14,6 +14,7 @@ import { classifyChannelDeadAir, classifyAfterFlare, classifyDeadAir, freshestTs
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
 import { isSponsored, requestSponsorship, sponsorshipState } from './sponsorship.mjs';
+import { planTapThrough } from './tapthru.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -1336,6 +1337,81 @@ strip.addEventListener('touchend', (e) => {
   if (Math.abs(dy) > 60) flip(dy < 0 ? +1 : -1);
 });
 strip.addEventListener('wheel', (e) => { e.preventDefault(); flip(e.deltaY > 0 ? +1 : -1); }, { passive: false });
+
+// --- tap-through: a strip must not eat a tap meant for the channel ---------
+// Both strips sit above the deck (z 6500/6510 vs 0) so the shell can own its
+// drags — which also makes them swallow every TAP in the top 56px and the
+// right 56px of whatever is tuned. Measured 2026-08-02: that is exactly where
+// chips' "close the boards" button lives, so an open leaderboard could not be
+// closed from inside the set at all. See tapthru.mjs for why z-index and
+// pointer-events cannot solve this on their own.
+
+/**
+ * What would have received this point if the strips weren't in the way.
+ *
+ * Deliberately asks the document instead of consulting a list of overlays:
+ * #sponsor-gate, #signal-lost, #dead-air, #node-dead and #off-screen all sit
+ * BELOW the strips, and a hand-kept list of them would go stale the first time
+ * one is added — silently making a gated set tappable again.
+ */
+function hitUnderStrips(x, y) {
+  const strips = [document.getElementById('flip-strip'), document.getElementById('chart-strip')];
+  const saved = strips.map((s) => s.style.pointerEvents);
+  strips.forEach((s) => { s.style.pointerEvents = 'none'; });
+  const el = document.elementFromPoint(x, y);
+  strips.forEach((s, i) => { s.style.pointerEvents = saved[i]; });
+  return el;
+}
+
+function deliverTap(frame, pt) {
+  try {
+    const win = frame.contentWindow;
+    const el = frame.contentDocument?.elementFromPoint(pt.x, pt.y);
+    if (!win || !el) return;
+    // ONE click — not the pointerdown/mouseup/click sequence a real finger
+    // makes. A control listening to both pointerdown AND click would fire
+    // twice, and every dismiss control the channels ship is an onClick.
+    // Constructed in the FRAME's realm so the event is same-realm to its
+    // listeners.
+    el.dispatchEvent(new win.MouseEvent('click', {
+      bubbles: true, cancelable: true, composed: true, clientX: pt.x, clientY: pt.y,
+    }));
+  } catch { /* cross-origin or frame torn down mid-gesture */ }
+}
+
+function attachTapThrough(el) {
+  el.addEventListener('pointerdown', (e) => {
+    const sx = e.clientX, sy = e.clientY, t0 = performance.now();
+    // Capture the pointer so the RELEASE is guaranteed to come back to this
+    // strip. Measured in a harness 2026-08-02: a pointer released over the
+    // channel iframe delivers its pointerup INTO the frame's document and the
+    // shell never learns the gesture ended. Touch pointers get implicit
+    // capture and were always fine — which is why the chart pull-down works on
+    // the phone — but nothing was guaranteeing it. This also hardens the
+    // chart-strip's own open handler above, which listens on `document` and
+    // therefore depended on that release bubbling back.
+    try { el.setPointerCapture(e.pointerId); } catch { /* capture refused; document listener still covers the common case */ }
+    const onUp = (e2) => {
+      document.removeEventListener('pointerup', onUp);
+      const frame = frames.get(deck.current);
+      const pt = planTapThrough({
+        dx: e2.clientX - sx, dy: e2.clientY - sy, dtMs: performance.now() - t0,
+        powered, acquired, vouched, chartOpen,
+        hitIsCurrentFrame: !!frame && hitUnderStrips(e2.clientX, e2.clientY) === frame,
+        frameRect: frame?.getBoundingClientRect() ?? null,
+        clientX: e2.clientX, clientY: e2.clientY,
+      });
+      if (pt && frame) deliverTap(frame, pt);
+    };
+    document.addEventListener('pointerup', onUp);
+    // A cancelled gesture (system back-swipe, call, window blur) never reaches
+    // pointerup. Drop the listener rather than leaving it to fire on whatever
+    // release comes next.
+    document.addEventListener('pointercancel', () => document.removeEventListener('pointerup', onUp), { once: true });
+  });
+}
+attachTapThrough(strip);
+attachTapThrough(document.getElementById('chart-strip'));
 
 // --- boot: static immediately; node plumbing resolves behind it ---
 const rpcReady = (async () => {
