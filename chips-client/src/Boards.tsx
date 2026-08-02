@@ -18,6 +18,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChipsHost } from './lib/host';
 import { foldChips, type ChipsHeader } from './lib/chipsEngine';
 import { verifyReplies } from './lib/chipsVerify';
+import { planBoardsPass } from './lib/boardsPass';
 import { DIP_TIERS } from './lib/chipsConst';
 import { compact } from './lib/format';
 
@@ -50,7 +51,19 @@ const PASS_INTERVAL_MS = 60_000;
  */
 const TABLES_FOLDED_PER_PASS = 6;
 
-export function useBoards(host: ChipsHost | null): {
+/**
+ * `foldReady` gates the EXPENSIVE half only — hosting still runs from the first
+ * pass, because that is this browser's contribution to keeping other people's
+ * tables alive and it is only a name lookup.
+ *
+ * Measured on a Pixel, 2026-08-02: with no gate, a first load folds six foreign
+ * tables through the single verify worker before the player's own table reaches
+ * it — an Argon2id-8MiB hash per bank per table, for a board panel that is
+ * CLOSED by default. The player waits on a leaderboard they cannot see. Passing
+ * `state !== null` here puts their own game first; the teaser strip fills in on
+ * the pass that follows instead of the one that blocks.
+ */
+export function useBoards(host: ChipsHost | null, foldReady: boolean): {
   rows: BoardRow[];
   hosting: boolean;
   /** Tables this browser asked for by name on the last pass. NOT `rows.length`:
@@ -65,6 +78,12 @@ export function useBoards(host: ChipsHost | null): {
   // boards would show six rows at a time and flicker the rest away.
   const knownRef = useRef<Map<string, BoardRow>>(new Map());
   const cursorRef = useRef(0);
+  // Read at the fold step rather than at pass entry, so a pass already in
+  // flight when the player's own table lands still folds on this pass instead
+  // of idling until the next one.
+  const foldRef = useRef(foldReady);
+  foldRef.current = foldReady;
+  const passRef = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     if (!host) return;
@@ -77,15 +96,27 @@ export function useBoards(host: ChipsHost | null): {
       setHosting(true);
       try {
         const tables = await host.listTables();
+        const byId = new Map(tables.map((t) => [t.tableId, t]));
+
+        // What this pass will do. Pure arithmetic, and tested in
+        // boardsPass.test.ts — including the two ways this is easy to get
+        // wrong: gating hosting along with folding, and burning the fold
+        // window on a pass that folded nothing.
+        const plan = planBoardsPass(
+          tables.map((t) => t.tableId),
+          foldRef.current,
+          cursorRef.current,
+          TABLES_FOLDED_PER_PASS,
+        );
 
         // THE HOSTING CALLS. Every table, every pass, uncapped: this loop is
         // the only reason anyone else's table stays on this node, and asking
         // for content by name is cheap. Everything below is just arithmetic.
-        for (const t of tables) {
+        for (const id of plan.host) {
           if (cancelled) return;
-          try { await host.requestContent(t.tableId); } catch { /* next pass */ }
+          try { await host.requestContent(id); } catch { /* next pass */ }
         }
-        if (!cancelled) setHosted(tables.length);
+        if (!cancelled) setHosted(plan.host.length);
 
         // Drop rows for tables that have fallen off the board entirely.
         const live = new Set(tables.map((t) => t.tableId));
@@ -93,11 +124,13 @@ export function useBoards(host: ChipsHost | null): {
           if (!live.has(id)) knownRef.current.delete(id);
         }
 
-        const count = Math.min(TABLES_FOLDED_PER_PASS, tables.length);
-        const start = tables.length > 0 ? cursorRef.current % tables.length : 0;
-        for (let k = 0; k < count; k++) {
+        // THE EXPENSIVE HALF — one real Argon2id-8MiB hash per bank. `plan.fold`
+        // is empty until the player's own table has folded, so a first load can
+        // no longer queue six foreign boards ahead of the player's own game.
+        for (const id of plan.fold) {
           if (cancelled) return;
-          const t = tables[(start + k) % tables.length];
+          const t = byId.get(id);
+          if (!t) continue;
           try {
             const replies = await host.loadTable(t.tableId);
             const verified = await verifyReplies(t.tableId, t.authorId, replies);
@@ -113,7 +146,7 @@ export function useBoards(host: ChipsHost | null): {
           }
           if (!cancelled) setRows([...knownRef.current.values()]);
         }
-        cursorRef.current = start + count;
+        cursorRef.current = plan.nextCursor;
       } catch {
         /* the whole listing failed — try again next pass */
       } finally {
@@ -122,13 +155,23 @@ export function useBoards(host: ChipsHost | null): {
       }
     }
 
+    passRef.current = pass;
     void pass();
     const iv = setInterval(() => void pass(), PASS_INTERVAL_MS);
     return () => {
       cancelled = true;
       clearInterval(iv);
+      passRef.current = null;
     };
   }, [host]);
+
+  // The pass that was skipped while the player's own table folded must not cost
+  // them a full PASS_INTERVAL_MS of empty boards — run one the moment the gate
+  // opens. If a pass is already in flight it will fold on its own, because the
+  // fold step reads `foldRef` rather than a value captured at pass entry.
+  useEffect(() => {
+    if (foldReady) void passRef.current?.();
+  }, [foldReady]);
 
   return { rows, hosting, hosted };
 }
