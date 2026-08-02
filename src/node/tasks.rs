@@ -2891,7 +2891,16 @@ impl BackgroundTaskRunner {
                             // Reuse the quantized `now` from the eligibility check above so
                             // the block's stored timestamp is the exact instant we judged
                             // eligibility at — keeping formation and peer validation in lockstep.
-                            builder.build_root_block(now, node_identity, sponsorship_store.as_ref().map(|s| s.as_ref()))
+                            builder.build_root_block(
+                                now,
+                                node_identity,
+                                sponsorship_store.as_ref().map(|s| s.as_ref()),
+                                // Filter already-finalized actions HERE, so one
+                                // stale entry cannot cost this block every other
+                                // action in it (see builder.rs). The backstop
+                                // below stays as the last line of defence.
+                                Some(&chain_store),
+                            )
                         };
 
                         block_count += 1;

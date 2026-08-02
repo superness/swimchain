@@ -923,6 +923,7 @@ impl BlockBuilder {
         timestamp: u64,
         block_creator: [u8; 32],
         sponsorship_store: Option<&crate::sponsorship::SponsorshipStore>,
+        chain_store: Option<&crate::storage::chain::ChainStore>,
     ) -> (RootBlock, Vec<SpaceBlock>, Vec<ContentBlock>) {
         // DETERMINISTIC: Quantize timestamp to 10-second windows
         // This ensures nodes forming blocks at nearly the same time
@@ -1010,6 +1011,54 @@ impl BlockBuilder {
                     );
                 }
             }
+        }
+
+        // Drop actions already finalized on-chain, BEFORE they can reach a block.
+        //
+        // tasks.rs has a backstop that rejects a formed block containing one of
+        // these -- correctly, because emitting it "yields a block every synced
+        // peer rejects... permanently forking us off the network". But that
+        // backstop discards the WHOLE block, and by then this function has
+        // already drained the mempool AND persisted the emptied set (see the
+        // persist() at the end). Nothing re-adds them. So ONE stale action
+        // erased every valid action that shared its block, from memory and from
+        // mempool.bin.
+        //
+        // Measured on mainnet 2026-08-02, before this filter existed: the seed
+        // formed 6 blocks in 3 hours and rejected 5 of them; the bot rejected 5
+        // of 8. Five distinct actions, on both binaries -- a recurring pattern,
+        // not one stuck entry.
+        //
+        // Same store-less convention as the sponsorship filter above: with no
+        // store we cannot verify and must NOT gate.
+        if let Some(cs) = chain_store {
+            for threads in space_threads.values_mut() {
+                for thread in threads {
+                    thread.actions.retain(|action| {
+                        let h = Self::action_hash(action);
+                        match cs.is_action_finalized(&h) {
+                            Ok(Some(height)) => {
+                                log::info!(
+                                    "[BLOCK_BUILDER] Dropping already-finalized action {} (height {}) from the block being formed",
+                                    hex::encode(&h[..8]),
+                                    height
+                                );
+                                false
+                            }
+                            // Unknown or unreadable: keep it. The tasks.rs
+                            // backstop still stands behind this.
+                            _ => true,
+                        }
+                    });
+                }
+            }
+            // A thread emptied by that filter must not emit an empty content
+            // block, and a space with no threads left must not emit a space
+            // block.
+            for threads in space_threads.values_mut() {
+                threads.retain(|t| !t.actions.is_empty());
+            }
+            space_threads.retain(|_, threads| !threads.is_empty());
         }
 
         // Re-add removed actions back to mempool for next block
@@ -1530,7 +1579,7 @@ mod tests {
         );
 
         let (_root, _spaces, content_blocks) =
-            builder.build_root_block(2000, [1u8; 32], Some(&store));
+            builder.build_root_block(2000, [1u8; 32], Some(&store), None);
 
         let actors: Vec<[u8; 32]> = content_blocks
             .iter()
@@ -1614,7 +1663,7 @@ mod tests {
         );
 
         let (_root, _spaces, content_blocks) =
-            builder.build_root_block(2000, [1u8; 32], Some(&store));
+            builder.build_root_block(2000, [1u8; 32], Some(&store), None);
 
         let spaces_with_actions: Vec<[u8; 32]> = content_blocks
             .iter()
@@ -1968,7 +2017,7 @@ mod tests {
             BranchPath::root(),
         );
 
-        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None);
+        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None, None);
 
         assert_eq!(root.total_pow, 50);
         assert_eq!(root.height, 1);
@@ -1996,7 +2045,7 @@ mod tests {
             BranchPath::root(),
         );
 
-        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None);
+        let (root, spaces, contents) = builder.build_root_block(1000, [0u8; 32], None, None);
 
         assert_eq!(root.total_pow, 50);
         assert_eq!(spaces.len(), 2); // Two different spaces
@@ -2014,7 +2063,7 @@ mod tests {
             make_test_action(30),
             BranchPath::root(),
         );
-        let (root1, _, _) = builder.build_root_block(1000, [0u8; 32], None);
+        let (root1, _, _) = builder.build_root_block(1000, [0u8; 32], None, None);
 
         // Second block
         builder.add_action(
@@ -2023,7 +2072,7 @@ mod tests {
             make_test_action(30),
             BranchPath::root(),
         );
-        let (root2, _, _) = builder.build_root_block(1030, [0u8; 32], None);
+        let (root2, _, _) = builder.build_root_block(1030, [0u8; 32], None, None);
 
         assert_eq!(root2.prev_root_hash, root1.hash());
         assert_eq!(root2.height, 2);
@@ -2359,7 +2408,7 @@ mod tests {
         assert!(!builder.space_action_counts.is_empty());
 
         // Build root block - counts should be cleared
-        let (_root, _spaces, _contents) = builder.build_root_block(1000, [0u8; 32], None);
+        let (_root, _spaces, _contents) = builder.build_root_block(1000, [0u8; 32], None, None);
 
         assert_eq!(builder.total_action_count, 0);
         assert!(builder.space_action_counts.is_empty());
@@ -2460,7 +2509,7 @@ mod tests {
         let db = sled::Config::new().temporary(true).open().unwrap();
         let store = SponsorshipStore::from_db(&db).unwrap();
         let (root, _spaces, contents) =
-            builder.build_root_block(1_700_000_000, [0u8; 32], Some(&store));
+            builder.build_root_block(1_700_000_000, [0u8; 32], Some(&store), None);
 
         let kept: usize = contents
             .iter()
@@ -2469,5 +2518,98 @@ mod tests {
             .count();
         assert_eq!(kept, 1, "genesis CreateSpace must be included in the block");
         assert!(!root.space_block_hashes.is_empty());
+    }
+
+    // MEASURED ON MAINNET 2026-08-02: the seed formed 6 blocks in 3 hours and
+    // rejected 5 of them; the bot rejected 5 of 8. Cause: build_root_block
+    // drains the mempool unconditionally AND persists the emptied set, then
+    // tasks.rs's backstop rejects the whole block for containing one
+    // already-finalized action — so every VALID action that shared that block
+    // was erased from memory and from mempool.bin, with no re-add.
+    #[test]
+    fn one_already_finalized_action_does_not_cost_its_blockmates() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::storage::chain::ChainStore::open(dir.path().join("chain")).unwrap();
+
+        let mut b = BlockBuilder::new(1);
+        let stale = make_test_action(1);
+        b.add_action(
+            [0xDDu8; 32],
+            [0xDDu8; 32],
+            stale.clone(),
+            BranchPath::root(),
+        );
+        let (root, _spaces, contents) = b.build_root_block(1000, [0u8; 32], None, None);
+        for c in &contents {
+            store
+                .mark_content_block_actions_finalized(c, root.height)
+                .unwrap();
+        }
+        assert!(
+            store
+                .is_action_finalized(&BlockBuilder::action_hash(&stale))
+                .unwrap()
+                .is_some(),
+            "precondition: the stale action must be finalized, or this test proves nothing"
+        );
+
+        let mut b2 = BlockBuilder::new(1);
+        let good_a = make_test_action(1);
+        let good_b = make_test_action(1);
+        b2.add_action(
+            [0xDDu8; 32],
+            [0xDDu8; 32],
+            stale.clone(),
+            BranchPath::root(),
+        );
+        b2.add_action(
+            [0xDDu8; 32],
+            [0xDDu8; 32],
+            good_a.clone(),
+            BranchPath::root(),
+        );
+        b2.add_action(
+            [0xDDu8; 32],
+            [0xDDu8; 32],
+            good_b.clone(),
+            BranchPath::root(),
+        );
+
+        let (_r2, _s2, c2) = b2.build_root_block(2000, [0u8; 32], None, Some(&store));
+        let hashes: Vec<[u8; 32]> = c2
+            .iter()
+            .flat_map(|c| c.actions.iter())
+            .map(BlockBuilder::action_hash)
+            .collect();
+
+        assert!(
+            !hashes.contains(&BlockBuilder::action_hash(&stale)),
+            "the already-finalized action must be filtered out"
+        );
+        assert!(
+            hashes.contains(&BlockBuilder::action_hash(&good_a))
+                && hashes.contains(&BlockBuilder::action_hash(&good_b)),
+            "the two GOOD actions must survive — losing them is the bug this fixes"
+        );
+    }
+
+    // Same convention the sponsorship filter above sets: with no store we
+    // cannot verify and must NOT gate, or every store-less test silently
+    // loses its content.
+    #[test]
+    fn a_store_less_builder_still_emits_everything() {
+        let mut b = BlockBuilder::new(1);
+        b.add_action(
+            [0xEEu8; 32],
+            [0xEEu8; 32],
+            make_test_action(1),
+            BranchPath::root(),
+        );
+        let (_r, _s, c) = b.build_root_block(3000, [0u8; 32], None, None);
+        assert_eq!(
+            c.iter().flat_map(|x| x.actions.iter()).count(),
+            1,
+            "no store means no gating"
+        );
     }
 }

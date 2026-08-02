@@ -7,14 +7,33 @@
       "name": "FEED",
       "spacesNote": "fallback only -- live bootstrap ranks list_spaces (Surf Phase B, decision B5). shell.mjs's pickBootstrap() overwrites this array at first-signal acquisition with the top-3 'social'-classed spaces by last_activity, and persists the pick to localStorage['surf.feedSpaces'] so every later boot re-applies it before this file is even read again. This trio is used ONLY when list_spaces returns no 'social' space at all (a fresh/empty node) or on a first-ever run before any pick has landed.",
       "spaces": [
-        "01000f8857cd77a75d8fcd7951d99ede",
-        "01000da9416b0bd33114a11234a1397d",
-        "01000c35f149d92a466db1e1705d41cb"
+        "sp1qqqsqrug2lxh0f6a3lxhj5wenm0qkf4vcm",
+        "sp1qqqsqrdfg94sh5e3zjs3yd9p897szsthzr"
       ]
     },
-    { "id": "wiki", "number": 4,  "name": "WIKI", "spaces": [] },
-    { "id": "reef", "number": 50, "name": "REEF", "spaces": [] },
-    { "id": "chess", "number": 60, "name": "CHESS", "spaces": [] },
-    { "id": "chips", "number": 70, "name": "CHIPS", "spaces": [] }
+    {
+      "id": "wiki",
+      "number": 4,
+      "name": "WIKI",
+      "spaces": []
+    },
+    {
+      "id": "reef",
+      "number": 50,
+      "name": "REEF",
+      "spaces": []
+    },
+    {
+      "id": "chess",
+      "number": 60,
+      "name": "CHESS",
+      "spaces": []
+    },
+    {
+      "id": "chips",
+      "number": 70,
+      "name": "CHIPS",
+      "spaces": []
+    }
   ]
 }
