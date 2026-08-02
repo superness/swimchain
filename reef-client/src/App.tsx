@@ -288,6 +288,24 @@ export function App() {
   // record it. Runs once per identity (guarded by a ref).
   useEffect(() => {
     if (!rpc || !connected || !me || sponsored || sponsoringRef.current) return;
+    // D1: in node mode `me` is the player's REAL phone identity, and the Surf
+    // shell has already gated the whole set on a full, unscoped sponsorship.
+    // ensureReefSponsored claims reef's SPACE-SCOPED offer — running it here
+    // would hand that identity a reef-only grant (and burn a slot) on every
+    // Surf install, which is the patchwork the shell gate exists to prevent.
+    // Standalone browser play is untouched.
+    if (mode === 'node') {
+      void (async () => {
+        const st = await rpc
+          .call<{ has_sponsorship?: boolean }>('get_sponsorship_status', {
+            identity: me.publicKeyHex,
+          })
+          .catch(() => null);
+        if (st?.has_sponsorship) setSponsored(true);
+        else setSponsorPhase('This set is not sponsored yet — Surf handles sponsorship');
+      })();
+      return;
+    }
     sponsoringRef.current = true;
     setSponsorPhase('Checking your access…');
     ensureReefSponsored(rpc, me, (phase) => setSponsorPhase(phase))
@@ -303,7 +321,7 @@ export function App() {
       .finally(() => {
         sponsoringRef.current = false;
       });
-  }, [rpc, connected, me, sponsored]);
+  }, [rpc, connected, me, sponsored, mode]);
 
   // Reads require signature auth too, so wait until the keypair is ready — otherwise the
   // first fetch races ahead of auth and returns "Authentication required".

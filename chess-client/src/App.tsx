@@ -110,6 +110,22 @@ export function App() {
   // already sponsored, otherwise claim a standing auto-approve offer and wait.
   useEffect(() => {
     if (!rpc || !connected || !me || sponsored || sponsoringRef.current) return;
+    // D1: see reef-client's identical guard. In node mode `me` is the player's
+    // REAL phone identity and Surf has already gated the set on a full,
+    // unscoped sponsorship; claiming chess's SPACE-SCOPED offer here would
+    // hand it a chess-only grant and burn a slot on every Surf install.
+    if (mode === 'node') {
+      void (async () => {
+        const st = await rpc
+          .call<{ has_sponsorship?: boolean }>('get_sponsorship_status', {
+            identity: me.publicKeyHex,
+          })
+          .catch(() => null);
+        if (st?.has_sponsorship) setSponsored(true);
+        else setSponsorPhase('This set is not sponsored yet — Surf handles sponsorship');
+      })();
+      return;
+    }
     sponsoringRef.current = true;
     setSponsorPhase('Checking your access…');
     ensureChessSponsored(rpc, me, (phase) => setSponsorPhase(phase))
@@ -125,7 +141,7 @@ export function App() {
       .finally(() => {
         sponsoringRef.current = false;
       });
-  }, [rpc, connected, me, sponsored]);
+  }, [rpc, connected, me, sponsored, mode]);
 
   // Reads require signature auth too, so wait until the keypair (publicKeyHex) is
   // ready — otherwise the first fetch races ahead of auth and returns "Authentication

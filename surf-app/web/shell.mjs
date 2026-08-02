@@ -13,6 +13,7 @@ import { mineSignSubmit } from './engage.mjs';
 import { classifyChannelDeadAir, classifyAfterFlare, classifyDeadAir, freshestTs, isMetered, pickFlareTarget, flareTargetReady } from './deadair.mjs';
 import { chartRows, toggleMoor, loadMoored } from './chart.mjs';
 import { pickBootstrap, loadFeedSpaces, FEED_SPACES_KEY } from './bootstrap.mjs';
+import { isSponsored, requestSponsorship, sponsorshipState } from './sponsorship.mjs';
 
 if (!window.__TAURI__) {
   document.body.innerHTML = '<pre style="color:#f66;padding:2em">not inside the set (no Tauri runtime)</pre>';
@@ -68,6 +69,7 @@ if (storedFeedSpaces) byId.get(FEED_ID).spaces = storedFeedSpaces;
 const rpcEndpoint = await invoke('get_rpc_endpoint');
 let rpcAuth = null;
 let myPk = null; // node identity pubkey hex; follow_space requires it as `user`
+let myAddress = null; // bech32 node address; the D1 gate shows it to hand to a sponsor
 async function rpc(method, params = {}) {
   if (!rpcAuth) throw new Error('rpc not ready');
   const res = await fetch(rpcEndpoint, {
@@ -162,6 +164,24 @@ async function checkDeadAir(target) {
   // empty space_ids array would mean "all known spaces" per Task 1's RPC
   // contract, crediting an unrelated busy space's recency to this channel.
   if (!isMetered(ch)) return;
+  // Dead air is computed from what THIS node holds, and content is fetched on
+  // demand — so a set that has only just asked for a channel's content has not
+  // got it yet, and a thriving channel classifies as DYING. Caught live: "CH 2
+  // FEED / LAST SIGNAL: 8 DAYS AGO / THIS CHANNEL IS DYING" on a minutes-old
+  // set, while mainnet's own social spaces had activity that same day.
+  //
+  // NOTE: `get_sync_status.state === 'synced'` is NOT the guard — that is
+  // chain-level and flips true almost immediately (a set read SYNC 100% while
+  // holding 42MB against a full node's 132MB). The honest condition is whether
+  // THIS channel has been driven and given time for bodies to land.
+  const since = Date.now() - (drivenAt.get(target) ?? 0);
+  if (since < DEAD_AIR_GRACE_MS) {
+    // Not "never" — just not yet. Look again once the grace has passed, so a
+    // genuinely decayed channel still gets its card.
+    setTimeout(() => { if (deck.current === target) checkDeadAir(target); },
+      DEAD_AIR_GRACE_MS - since + 250);
+    return;
+  }
   let entries;
   try {
     entries = (await rpc('get_space_health', { space_ids: ch.spaces }))?.spaces ?? [];
@@ -406,9 +426,17 @@ function advisory(id, type) {
 //                         src/rpc/types.rs:552-567 (ListSpaceContentParams)
 //   request_content:     { content_id: "sha256:<hex>" } (prefix optional server-side)
 //                         feed-client/src/lib/rpc.ts:550-552; src/rpc/methods.rs:11433-11442
+// When each channel's spaces were last actually driven (follow + request).
+// Dead air is a verdict about decay; it must not be reached before the set has
+// asked for the content and given it a moment to arrive. `request_content` is
+// fire-and-forget — the bodies land afterwards, over the network.
+const drivenAt = new Map();
+const DEAD_AIR_GRACE_MS = 30_000;
+
 async function tuneDriver(id) {
   const ch = byId.get(id);
   if (!myPk || !(ch.spaces ?? []).length) return;
+  drivenAt.set(id, Date.now());
   for (const space of ch.spaces) {
     try {
       await rpc('follow_space', { user: myPk, space_id: space });
@@ -495,7 +523,7 @@ function settle(target, tuneResult, from, kindOverride = null) {
 }
 
 function flip(dir) {
-  if (!powered || !acquired) return; // the dial exists once there is signal
+  if (!powered || !acquired || !vouched) return; // the dial exists once there is signal AND someone vouched
   // Task 5 (live-discovered hardening): the vertical dial must not silently
   // change the channel underneath an open #chart drawer — keyboard/wheel
   // flip isn't a gesture the drawer's z-index occlusion protects against
@@ -551,6 +579,7 @@ function showSignalLost(ch) {
 //      fresh gate, not a background retry loop.
 function showNodeDead(msg) {
   if (acquisitionPollHandle) { clearInterval(acquisitionPollHandle); acquisitionPollHandle = null; }
+  stopAcquireTicker();
   document.getElementById('acquire').hidden = true;
   if (powered) seamOn();
   const el = document.getElementById('node-dead');
@@ -562,6 +591,164 @@ document.getElementById('node-details').addEventListener('click', () => {
   const pre = document.getElementById('node-error');
   pre.hidden = !pre.hidden;
 });
+
+// --- D1: the set does not transmit until a person vouches for you ----------
+// Runs on EVERY power-on, before any channel work, and is deliberately NOT
+// cached the way `acquired` is: a sponsorship can lapse, and a set that kept
+// transmitting on a revoked one would be lying about its own standing.
+//
+// Surf claims ONLY unscoped offers (see sponsorship.mjs). The games claim
+// space-scoped ones; that funnel gave this identity a reef-only grant and a
+// chess-only grant and never an actual sponsorship.
+let sponsorPoll = null;
+let offerRetry = null; // declared here, not beside submitRequest: hideSponsorGate() reads it
+// `vouched` gates the DIAL itself, not just the screen. An install that was
+// already `acquired` under a pre-D1 build has powered && acquired both true,
+// so without this the flip strip and the Chart would happily keep tuning
+// channels underneath the gate overlay. "Whole set gated" has to mean the
+// dial is dead, not merely covered.
+let vouched = false;
+
+function sponsorStatus(text) {
+  document.getElementById('sponsor-status').textContent = text;
+}
+
+// D1: approval is INSTANT, but a set whose node has not yet synced the
+// sponsor's own ancestry cannot VALIDATE the grant — the node logs
+// "Sponsor <x> not found in sponsorship store" and retries until the sponsor
+// chain lands (router.rs, "Stage 2: sponsorship — idempotent, retried").
+// Observed live on a 10-minute-old node: approved at 19:08, still gated at
+// 19:13. Saying only "waiting for a person" through that window is a lie —
+// the person may already have said yes. Name the real reason.
+const WAITING = 'Request sent. A person has to approve it — this set tunes itself in the moment they do.';
+let claimSent = false;
+
+async function syncTail() {
+  try {
+    const s = await rpc('get_sync_status');
+    if (s?.state && s.state !== 'synced') {
+      return ` This set is still catching up (${s.chain_percent ?? 0}%) — even once someone approves, it cannot confirm the grant until it has.`;
+    }
+  } catch { /* a nicety; never let it block or break the gate */ }
+  return '';
+}
+
+function showSponsorGate() {
+  document.getElementById('acquire').hidden = true;
+  stopAcquireTicker();
+  staticCtl.stop();
+  document.getElementById('sponsor-addr').textContent = myAddress ?? myPk ?? '(node identity unavailable)';
+  document.getElementById('sponsor-gate').hidden = false;
+}
+
+function hideSponsorGate() {
+  document.getElementById('sponsor-gate').hidden = true;
+  if (sponsorPoll) { clearInterval(sponsorPoll); sponsorPoll = null; }
+  if (offerRetry) { clearTimeout(offerRetry); offerRetry = null; }
+}
+
+// Poll until a person approves. 8s, not 1s: the claim has to gossip to the
+// sponsor's node, be approved by hand, and then the Sponsor action still has
+// to be mined into a block. This is minutes-scale; a tight poll would just
+// hammer the node to watch the same `false` go by.
+function startSponsorPoll() {
+  if (sponsorPoll) return;
+  sponsorPoll = setInterval(async () => {
+    if (await isSponsored(rpc, myPk)) {
+      hideSponsorGate();
+      sponsorStatus('');
+      powerOn(); // re-enters, passes the gate, and tunes for real
+      return;
+    }
+    // Keep the reason current: a set that was behind may have caught up, and
+    // one that just claimed may now be waiting on sync rather than on a human.
+    if (claimSent) sponsorStatus(WAITING + (await syncTail()));
+  }, 8000);
+}
+
+// A sponsor is a person deciding whether to vouch for a stranger; nobody
+// approves a blind claim. The button stays dead until they've written
+// something, and sponsorship.mjs refuses an empty application anyway.
+document.getElementById('sponsor-note').addEventListener('input', (e) => {
+  document.getElementById('sponsor-btn').disabled = !e.target.value.trim();
+});
+
+// A fresh set has not met the network yet, so its offer store is empty for the
+// first sweep or two. That is worth WAITING through, not reporting as "nothing
+// open" — so the request retries itself instead of making the newcomer keep
+// tapping. Bounded, and every attempt is visible.
+const OFFER_RETRY_MS = 10_000;
+const OFFER_RETRY_MAX = 30; // ~5 minutes of a set introducing itself
+
+async function submitRequest(attempt = 0) {
+  const btn = document.getElementById('sponsor-btn');
+  const note = document.getElementById('sponsor-note');
+  btn.disabled = true;
+  sponsorStatus(attempt ? 'Looking for an open sponsorship…' : 'Proving this set is real…');
+  try {
+    await requestSponsorship({ rpc, sign, pubkeyHex: myPk, applicationText: note.value });
+    note.disabled = true;
+    btn.hidden = true;
+    claimSent = true;
+    sponsorStatus(WAITING + (await syncTail()));
+    startSponsorPoll();
+  } catch (e) {
+    const msg = String(e?.message);
+    if (msg === 'no-offers-yet' && attempt < OFFER_RETRY_MAX) {
+      sponsorStatus('This set has not met the network yet — still finding the open sponsorships. Keeping the request going.');
+      offerRetry = setTimeout(() => submitRequest(attempt + 1), OFFER_RETRY_MS);
+      return;
+    }
+    btn.disabled = !note.value.trim();
+    sponsorStatus(
+      msg === 'no-offers-yet'
+        ? 'Still cannot see any sponsorships from this set. Ask someone already on the network to sponsor the address above.'
+        : msg === 'no-unscoped-offer'
+          ? 'No open sponsorship to request right now — the only offers visible are tied to single games. Ask someone already on the network to sponsor the address above.'
+          : msg === 'application-required'
+            ? 'Say something first — a person reads this before they vouch for you.'
+            : `Request failed: ${e?.message ?? e}`
+    );
+  }
+}
+
+document.getElementById('sponsor-btn').addEventListener('click', () => submitRequest(0));
+
+document.getElementById('sponsor-copy').addEventListener('click', async () => {
+  const text = document.getElementById('sponsor-addr').textContent ?? '';
+  try {
+    await navigator.clipboard.writeText(text);
+    sponsorStatus('Address copied.');
+  } catch {
+    // WebView clipboard can be denied; selecting it is still a usable handoff.
+    const r = document.createRange();
+    r.selectNodeContents(document.getElementById('sponsor-addr'));
+    const sel = getSelection();
+    sel.removeAllRanges(); sel.addRange(r);
+    sponsorStatus('Copy unavailable — the address is selected, copy it by hand.');
+  }
+});
+
+/** @returns true when the set may tune; false when the gate now owns the screen. */
+async function sponsorGate() {
+  const st = await sponsorshipState(rpc, myPk);
+  if (st.sponsored) { vouched = true; hideSponsorGate(); return true; }
+  vouched = false;
+  showSponsorGate();
+  // A claim already in flight survives an app restart, but `claimSent` does
+  // not — so without this, relaunching mid-wait showed a bare "no one has
+  // vouched for this set" to somebody who had already asked, and sometimes to
+  // somebody the network had already APPROVED (this node just hadn't applied
+  // it yet). Don't ask them to queue twice.
+  if (st.pending) {
+    claimSent = true;
+    document.getElementById('sponsor-btn').hidden = true;
+    document.getElementById('sponsor-note').disabled = true;
+    sponsorStatus(WAITING + (await syncTail()));
+  }
+  startSponsorPoll(); // a sponsor may act without them ever pressing the button
+  return false;
+}
 
 document.getElementById('retune').addEventListener('click', () => {
   gate?.cancel();
@@ -575,7 +762,7 @@ document.getElementById('retune').addEventListener('click', () => {
 // Guard: the chart is available only once acquired (mirrors flip()'s own
 // "the dial exists once there is signal" guard).
 async function openChart() {
-  if (!powered || !acquired || chartOpen) return;
+  if (!powered || !acquired || !vouched || chartOpen) return;
   chartOpen = true;
   document.getElementById('chart').hidden = false;
   await renderChart();
@@ -777,7 +964,7 @@ document.getElementById('chart-moored').addEventListener('pointerdown', (e) => {
 // instead of stepping a neighbor.
 function tuneFromChart(id) {
   closeChart();
-  if (!powered || !acquired) return;
+  if (!powered || !acquired || !vouched) return;
   if (deck.current === id) return; // already tuned; nothing to settle
   dwell.untuned();
   const from = deck.current;
@@ -824,17 +1011,42 @@ function powerOn() {
   bloom.classList.remove('blooming'); void bloom.offsetWidth; bloom.classList.add('blooming');
   setTimeout(() => { bloom.hidden = true; }, 750);
   staticCtl.start();
-  // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
-  // power-cycling mid-boot starts a second run: the frames map gets
-  // overwritten (run A's mounted iframe orphaned, unmount() only ever
-  // removes the currently-mapped one), run A's watchReadiness gate becomes
-  // uncancellable from here, and its 2s timeout can fire SIGNAL LOST over
-  // run B's successful reveal.
-  if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
-  const stored = localStorage.getItem(LAST_CHANNEL_KEY);
-  const target = deck.current ?? (byId.has(stored) ? stored : FEED_ID);
-  const r = deck.tune(target);
-  settle(target, r, null, 'power');
+  // D1: nothing tunes until someone has vouched for this set. The gate needs
+  // rpcReady (myPk/rpcAuth), so the whole tail is async now; acquisitionBoot
+  // awaits rpcReady itself, so its own contract is unchanged. The gate is
+  // checked on BOTH paths below — an install already `acquired` under an
+  // older build must still face it.
+  (async () => {
+    // The longest silence of a first run is HERE, before acquisitionBoot ever
+    // runs: `rpcReady` blocks on the node coming up, which on a fresh install
+    // means minting an identity at proof-of-work difficulty 20. Put the
+    // readout on screen before that await, or the newcomer watches unexplained
+    // static through the slowest part and cannot tell it from a hang.
+    if (!acquired) {
+      document.getElementById('acquire').hidden = false;
+      startAcquireTicker();
+    }
+    try {
+      await rpcReady;
+    } catch (e) {
+      showNodeDead(String(e));
+      return;
+    }
+    if (!powered) return; // powered off while rpcReady was still resolving
+    if (!(await sponsorGate())) return; // gate owns the screen now
+    startFeedRepick(); // keep re-ranking the feed as the node learns
+    // Review fix 2: acquisitionBoot is not re-entrant. Without this guard,
+    // power-cycling mid-boot starts a second run: the frames map gets
+    // overwritten (run A's mounted iframe orphaned, unmount() only ever
+    // removes the currently-mapped one), run A's watchReadiness gate becomes
+    // uncancellable from here, and its 2s timeout can fire SIGNAL LOST over
+    // run B's successful reveal.
+    if (!acquired) { if (!acquiring) { acquiring = true; acquisitionBoot(); } return; }
+    const stored = localStorage.getItem(LAST_CHANNEL_KEY);
+    const target = deck.current ?? (byId.has(stored) ? stored : FEED_ID);
+    const r = deck.tune(target);
+    settle(target, r, null, 'power');
+  })();
 }
 
 function powerOff() {
@@ -846,16 +1058,116 @@ function powerOff() {
   if (deck.current) advisory(deck.current, 'SWIMCHAIN_CHANNEL_HIDDEN');
   dwell.untuned(); // Task 3: no dwell mining behind the off screen
   gate?.cancel();
+  hideSponsorGate(); // D1: no sponsorship polling behind the off screen either
+  stopFeedRepick();
   staticCtl.stop();
   const off = document.getElementById('off-screen');
   off.hidden = false;
   off.classList.remove('collapsing'); void off.offsetWidth; off.classList.add('collapsing');
 }
 
+// --- the cold start has to SHOW something ---------------------------------
+// A first run is genuinely long: identity proof-of-work, then a mainnet sync,
+// then enough post bodies to fill a screen. A single blinking line over static
+// gives a newcomer no way to tell "working" from "hung", and the honest answer
+// (peers heard, chain %, pictures found) is data the set already has. Values
+// come from the node, never from a timer — nothing here fakes forward motion.
+let acqTicker = null;
+let acqItems = 0; // published by acquisitionBoot's own poll; not a second RPC
+
+async function paintAcquire() {
+  const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+  set('acq-identity', myPk ? 'forged' : 'forging…');
+  set('acq-picture', `${acqItems} of 3`);
+  try {
+    const s = await rpc('get_sync_status');
+    set('acq-peers', s?.peer_count === 1 ? '1 heard' : `${s?.peer_count ?? 0} heard`);
+    set('acq-chain', s?.state === 'synced' ? 'caught up' : `${s?.chain_percent ?? 0}%`);
+  } catch {
+    // rpcReady hasn't resolved yet (identity PoW still running) — say so
+    // rather than printing a stale or invented number.
+    set('acq-peers', '…');
+    set('acq-chain', '…');
+  }
+}
+
+function startAcquireTicker() {
+  if (acqTicker) return;
+  paintAcquire();
+  acqTicker = setInterval(paintAcquire, 1500);
+}
+
+function stopAcquireTicker() {
+  if (acqTicker) { clearInterval(acqTicker); acqTicker = null; }
+}
+
+// --- the feed's spaces are a PICK, and it must not be made once, blind -----
+// acquisitionBoot ranks the node's own social spaces by last_activity — at
+// the single most ill-informed moment in the set's life, seconds after first
+// boot, when those values are whatever it happened to have fetched. Worse, it
+// PERSISTED that choice, so a set that locked onto stale spaces stayed locked
+// across every future launch. Caught live: the card read "LAST SIGNAL: 9 DAYS
+// AGO" while mainnet's freshest social spaces were 0.0d and 1.0d old.
+// So: keep re-ranking as the node learns, and adopt a better answer whenever
+// one appears.
+let feedRepick = null;
+const FEED_REPICK_MS = 60_000;
+
+function sameSpaces(a, b) {
+  if (a.length !== b.length) return false;
+  const seen = new Set(a);
+  return b.every((x) => seen.has(x));
+}
+
+/** True once the node is at least chain-caught-up — the floor for WRITING a pick. */
+async function informedEnoughToPersist() {
+  try {
+    const s = await rpc('get_sync_status');
+    return s?.state === 'synced' && (s?.peer_count ?? 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+async function repickFeedSpaces() {
+  let listed;
+  try {
+    listed = await rpc('list_spaces', { limit: 20 });
+  } catch {
+    return; // transient; the next tick tries again
+  }
+  const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
+  if (picked === FALLBACK_FEED_SPACES) return; // nothing to adopt
+  if (sameSpaces(picked, byId.get(FEED_ID).spaces ?? [])) return;
+
+  byId.get(FEED_ID).spaces = picked;
+  if (await informedEnoughToPersist()) {
+    localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+  }
+  hud.note(`feed re-picked (${picked.length} spaces)`);
+  // The channel on screen now points somewhere else: drive the new spaces and
+  // throw away any dead-air verdict, which was about the OLD ones.
+  if (deck.current === FEED_ID) {
+    hideDeadAirCard();
+    tuneDriver(FEED_ID);
+    checkDeadAir(FEED_ID);
+  }
+}
+
+function startFeedRepick() {
+  if (feedRepick) return;
+  feedRepick = setInterval(repickFeedSpaces, FEED_REPICK_MS);
+}
+
+function stopFeedRepick() {
+  if (feedRepick) { clearInterval(feedRepick); feedRepick = null; }
+}
+
 // --- section 3.1: first-signal acquisition (runs once, then persisted) ---
 async function acquisitionBoot() {
   seamOn();
   document.getElementById('acquire').hidden = false;
+  startAcquireTicker();
   try {
     await rpcReady; // rpcAuth + myPk + rpcConfig (boot section below)
     const feed = FEED_ID;
@@ -882,8 +1194,14 @@ async function acquisitionBoot() {
     if (listed) {
       const picked = pickBootstrap(listed, FALLBACK_FEED_SPACES);
       if (picked !== FALLBACK_FEED_SPACES) {
+        // Use it NOW so the set has somewhere to tune, but only WRITE it once
+        // the node is informed enough for the ranking to mean anything —
+        // otherwise a first-boot guess becomes a permanent lock (it did).
+        // repickFeedSpaces keeps re-ranking either way.
         byId.get(feed).spaces = picked;
-        localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+        if (await informedEnoughToPersist()) {
+          localStorage.setItem(FEED_SPACES_KEY, JSON.stringify(picked));
+        }
       }
     }
     deck.tune(feed);
@@ -893,7 +1211,8 @@ async function acquisitionBoot() {
     await new Promise((resolve) => {
       acquisitionPollHandle = setInterval(async () => {
         try {
-          if ((await localItemCount(byId.get(feed).spaces)) >= N) {
+          acqItems = await localItemCount(byId.get(feed).spaces);
+          if (acqItems >= N) {
             clearInterval(acquisitionPollHandle);
             acquisitionPollHandle = null;
             resolve();
@@ -904,6 +1223,7 @@ async function acquisitionBoot() {
       }, 2000);
     });
     acquired = true;
+    stopAcquireTicker();
     localStorage.setItem(ACQUIRED_KEY, '1');
     acquiring = false; // review fix 2: boot is done; a future power-off/on is a normal cycle
     // The feed's prefs sync and first load ran before the follows existed —
@@ -943,8 +1263,23 @@ function onKey(e) {
   else if (e.key === 'Escape' && chartOpen) closeChart();
 }
 window.addEventListener('keydown', onKey);
-document.getElementById('export-btn').addEventListener('click', () => exportResults(timer, hud));
-document.getElementById('hud-toggle').addEventListener('click', () => hud.toggle());
+// The HUD and the results export live behind INVISIBLE 44px corner buttons.
+// A single tap was enough, and the flip strip runs down the right edge to the
+// bottom-right corner — so reaching for a flip could summon a perf readout
+// over a shipping build (observed on the Pixel). Require three deliberate taps
+// inside 800ms; the `m`/`e` keys are unchanged for desktop/dev.
+function onTripleTap(el, fn) {
+  let n = 0;
+  let resetTimer = null; // NOT `timer` — that's the module-level flip timer
+  el.addEventListener('click', () => {
+    n += 1;
+    clearTimeout(resetTimer);
+    if (n >= 3) { n = 0; fn(); return; }
+    resetTimer = setTimeout(() => { n = 0; }, 800);
+  });
+}
+onTripleTap(document.getElementById('export-btn'), () => exportResults(timer, hud));
+onTripleTap(document.getElementById('hud-toggle'), () => hud.toggle());
 document.getElementById('off-screen').addEventListener('click', () => { if (!powered) powerOn(); });
 
 const strip = document.getElementById('flip-strip');
@@ -987,10 +1322,11 @@ strip.addEventListener('wheel', (e) => { e.preventDefault(); flip(e.deltaY > 0 ?
 const rpcReady = (async () => {
   rpcAuth = await invoke('get_rpc_auth'); // blocks until THIS run's node is up, or errors
   myPk = (await rpc('get_identity_info')).public_key; // confirmed: src/rpc/methods.rs:8487
+  myAddress = (await invoke('get_node_address')) ?? null; // D1 gate shows this
   rpcConfig = buildConfigMessage({
     rpcEndpoint,
     rpcAuth,
-    nodeAddress: (await invoke('get_node_address')) ?? undefined,
+    nodeAddress: myAddress ?? undefined,
   });
   for (const [, f] of frames) {
     try { f.contentWindow?.postMessage(rpcConfig, location.origin); } catch { /* not loaded */ }

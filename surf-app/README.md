@@ -446,6 +446,51 @@ touching or scrolling inside a channel itself never flips. Flips are
 disabled until the set has acquired its first signal (`acquired` in
 `localStorage`); before that, only power toggling does anything.
 
+## Sponsorship gate (D1)
+
+Surf shows a sponsorship screen instead of the dial until the phone's node
+identity holds a **real, unscoped** sponsorship. There is no auto-onboarding
+here: a person already on the network has to sponsor the address the screen
+shows. That is the membership model, not a rough edge.
+
+The gate runs on every power-on (after `rpcReady`, before any channel work)
+and is deliberately **not** cached the way `surf.acquired` is — a sponsorship
+can lapse, and a set that kept transmitting on a revoked one would be lying
+about its own standing. `vouched` gates the **dial**, not just the screen: an
+install already `acquired` under a pre-D1 build has `powered && acquired` both
+true, so without it the flip strip and the Chart would keep tuning channels
+underneath the overlay.
+
+**Surf only ever claims offers with a null `space_scope`** (`web/sponsorship.mjs`).
+The games' own onboarding (`ensureReefSponsored` and friends) claims
+*space-scoped* offers; running that funnel for the phone identity gave it a
+reef-only grant, then a chess-only grant, and never an actual sponsorship —
+WIKI read "not sponsored" while REEF and CHESS were both mid-claim, and every
+install burned a slot from each game's sponsor. reef/chess/chips therefore
+skip their own auto-sponsor entirely when `mode === 'node'`; standalone
+browser play is unchanged.
+
+### The sponsor's side
+
+`approve_sponsorship_claim` needs the claimant's pubkey, and no RPC
+enumerates pending claimants — but the CLI takes the **address**, which is
+exactly what the gate puts on screen:
+
+```bash
+sw sponsor offer-list                          # find the offer + pending count
+sw sponsor approve <offer_id> <claimant_addr>  # the address from the gate
+```
+
+`sw sponsor direct` is **genesis-only**, so a non-genesis sponsor must use the
+claim→approve path above.
+
+**Operator prerequisite:** a standing unscoped offer with real slots and a far
+expiry must exist on mainnet, and somebody has to work its approval queue. As
+of 2026-08-01 the only unscoped offer on mainnet was probationary, manual,
+**1 slot**, expiring in a week — with nothing claimable the gate falls back to
+"ask someone already on the network to sponsor this address", which is honest
+but is not a funnel.
+
 ## Accepted debt
 
 | Item | Phase |
