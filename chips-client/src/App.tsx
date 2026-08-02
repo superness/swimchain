@@ -1899,7 +1899,10 @@ export function App() {
     return () => clearTimeout(t);
   }, [notice]);
 
-  const { rows, hosting, hosted } = useBoards(host);
+  // Boards fold AFTER this player's own table does — see useBoards(`foldReady`).
+  // `state` is null until the player's own fold completes, which is exactly the
+  // window where six foreign Argon2id folds used to get in front of them.
+  const { rows, hosting, hosted } = useBoards(host, state !== null);
   const seatLine = useFlavour(SEAT_LINES, Boolean(me) && !seated);
   const tableLine = useFlavour(TABLE_LINES, seated && !tableId);
 
