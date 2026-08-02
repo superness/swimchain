@@ -1078,10 +1078,24 @@ h1, h2, h3, p { margin: 0; }
   animation: raise .28s cubic-bezier(.2,.9,.3,1);
 }
 @keyframes raise { from { opacity: 0; transform: translateY(3%); } to { opacity: 1; transform: none; } }
+/* BOTTOM-LEFT, not the top-right corner this used to sit in.
+   Surf lays two input strips over every channel — a 56px-tall band across the
+   top (#chart-strip) and a 56px-wide band down the right edge (#flip-strip) —
+   and the old `top: 14px; right: 20px` box sat wholly inside the first one, so
+   inside the set the boards could be opened and never closed. Surf now hands
+   swallowed taps back (surf-app/web/tapthru.mjs); this keeps the button out of
+   the bands regardless, and costs nothing in a plain browser tab.
+   `fixed`, not `absolute`: .boards-panel scrolls on a phone, and an absolutely
+   positioned close would scroll away with the boards. */
 .boards-close {
-  position: absolute; top: 14px; right: 20px; font-size: 30px; line-height: 1;
-  color: #8ba086; padding: 6px 12px;
+  position: fixed; left: 20px; bottom: 20px; z-index: 1;
+  width: 46px; height: 46px; border-radius: 50%;
+  font-size: 26px; line-height: 1; color: #8ba086;
+  border: 1px solid rgba(139, 160, 134, .3);
+  background: rgba(10, 14, 11, .82);
+  backdrop-filter: blur(2px);
 }
+.boards-close:hover { color: #e8f0e4; border-color: rgba(139, 160, 134, .7); }
 .boards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: clamp(16px, 3vw, 44px); }
 .board {
   background: linear-gradient(160deg, #1d2620, #121815);
