@@ -1309,6 +1309,25 @@ impl NodeManager {
 
         let router = Arc::new(router_builder.build());
         self.router = Some(router.clone());
+
+        // Repair a short sponsorship store before we validate anything against
+        // it. Blocks written by the pre-two-stage build carry legacy marks that
+        // used to claim the sponsorship stage had run; a node whose store is
+        // therefore missing a grant rejects every block depending on it,
+        // forever, while looking like it is merely syncing (mainnet
+        // 2026-08-01: pinned at 1156 against a network at 1927, 3842
+        // rejections of one identity in one space).
+        //
+        // This runs AFTER the router exists (it needs reconcile_block_side_effects)
+        // but BEFORE the node starts ingesting blocks, so the store is whole
+        // before it is used to judge anything. No-op on a healthy node.
+        let healed = router.repair_sponsorship_store(10_000);
+        if healed > 0 {
+            info!(
+                "[STARTUP] Repaired the sponsorship stage for {} block(s)",
+                healed
+            );
+        }
         info!("[CONTENT-SYNC] Message router initialized with decay tracking, spam attestation, block relay, and branch-selective sync");
 
         self.set_state(NodeState::Bootstrapping);
@@ -1702,6 +1721,43 @@ impl NodeManager {
                                 let stream = conn.into_stream();
                                 let peer_conn = pool.add(stream, peer_id, established).await;
 
+                                // START READING BEFORE WE WRITE A SINGLE BYTE.
+                                //
+                                // This used to be spawned at the END of setup, after the
+                                // I_HAVE inventory burst (1676 messages on a real node) and
+                                // after the initial GETBLOCKS. Writing that much without ever
+                                // draining the socket deadlocks the pair: the peer answers,
+                                // our receive buffer fills and is never read, so the peer's
+                                // writes block, so the peer stops reading, so OUR writes
+                                // block. The node then reports `send timed out (peer not
+                                // reading)` — describing a stall it caused itself.
+                                //
+                                // Observed on mainnet 2026-08-01: GETBLOCKS failed to EVERY
+                                // peer (a08a5c2f, e07fac22, c4060cb1, 434e2a9e), so the one
+                                // request that starts catch-up never left, and the node sat
+                                // at height 1551 against a network at 1930. Responses sent
+                                // from inside the read loop worked fine the whole time —
+                                // that asymmetry is the tell.
+                                //
+                                // peer_conn is an Arc, so the loop takes its own handle and
+                                // the sends below keep using this one.
+                                {
+                                    let router_clone = router.clone();
+                                    let pool_clone = pool.clone();
+                                    let cm_clone = cm.clone();
+                                    let conn_for_loop = peer_conn.clone();
+                                    tokio::spawn(async move {
+                                        BackgroundTaskRunner::message_read_loop(
+                                            conn_for_loop,
+                                            peer_id,
+                                            router_clone,
+                                            pool_clone,
+                                            cm_clone,
+                                        )
+                                        .await;
+                                    });
+                                }
+
                                 // Add to DHT routing table for peer discovery
                                 if let Some(ref dht) = self.dht {
                                     let dht_id = DhtNodeId::from_bytes(peer_id);
@@ -1782,7 +1838,7 @@ impl NodeManager {
 
                                 // Feed the handshake height to the solo-block formation gate
                                 if let Some(gate) = router.formation_gate() {
-                                    gate.note_peer_height(info.start_height as u64);
+                                    gate.note_peer_height(peer_id, info.start_height as u64);
                                 }
 
                                 // Chain negotiation: Compare heights and sync if peer is ahead
@@ -1830,21 +1886,9 @@ impl NodeManager {
                                     }
                                 }
 
-                                // Spawn message read loop for this outbound connection
-                                let router_clone = router.clone();
-                                let pool_clone = pool.clone();
-                                let cm_clone = cm.clone();
-
-                                tokio::spawn(async move {
-                                    BackgroundTaskRunner::message_read_loop(
-                                        peer_conn,
-                                        peer_id,
-                                        router_clone,
-                                        pool_clone,
-                                        cm_clone,
-                                    )
-                                    .await;
-                                });
+                                // (The read loop is already running — it is started the
+                                // moment the connection joins the pool, above, so this
+                                // connection is never written to while unread.)
 
                                 info!(
                                     "[BOOTSTRAP] Outbound connection to {} ({}) fully integrated",
@@ -1900,6 +1944,29 @@ impl NodeManager {
                 let established = conn.is_established();
                 let stream = conn.into_stream();
                 let peer_conn = pool.add(stream, peer_id, established).await;
+                {
+                    // START READING BEFORE WRITING ANYTHING TO THIS CONNECTION.
+                    // Writing a burst (I_HAVE inventory, GETBLOCKS, GETMEMPOOL) before the
+                    // read loop exists deadlocks the pair: the peer answers, our receive
+                    // buffer fills unread, the peer's writes block, the peer stops reading,
+                    // and our writes time out as "peer not reading". Measured on mainnet
+                    // 2026-08-01: 54,258 failed sends and ZERO successful block requests.
+                    // peer_conn is an Arc, so the loop takes its own handle.
+                    let router_clone = router.clone();
+                    let pool_clone = pool.clone();
+                    let cm_clone = cm.clone();
+                    let conn_for_loop = peer_conn.clone();
+                    tokio::spawn(async move {
+                        BackgroundTaskRunner::message_read_loop(
+                            conn_for_loop,
+                            peer_id,
+                            router_clone,
+                            pool_clone,
+                            cm_clone,
+                        )
+                        .await;
+                    });
+                }
 
                 // Add to DHT
                 if let Some(ref dht) = self.dht {
@@ -1970,7 +2037,7 @@ impl NodeManager {
 
                 // Feed the handshake height to the solo-block formation gate
                 if let Some(gate) = router.formation_gate() {
-                    gate.note_peer_height(info.start_height as u64);
+                    gate.note_peer_height(peer_id, info.start_height as u64);
                 }
 
                 // Chain sync if peer is ahead
@@ -2003,20 +2070,6 @@ impl NodeManager {
                 }
 
                 // Spawn message read loop
-                let router_clone = router.clone();
-                let pool_clone = pool.clone();
-                let cm_clone = cm.clone();
-
-                tokio::spawn(async move {
-                    BackgroundTaskRunner::message_read_loop(
-                        peer_conn,
-                        peer_id,
-                        router_clone,
-                        pool_clone,
-                        cm_clone,
-                    )
-                    .await;
-                });
 
                 info!(
                     "[BOOTSTRAP] Outbound connection to {} ({}) integrated",
@@ -2467,6 +2520,29 @@ impl NodeManager {
                 let established = conn.is_established();
                 let stream = conn.into_stream();
                 let peer_conn = pool.add(stream, peer_id, established).await;
+                {
+                    // START READING BEFORE WRITING ANYTHING TO THIS CONNECTION.
+                    // Writing a burst (I_HAVE inventory, GETBLOCKS, GETMEMPOOL) before the
+                    // read loop exists deadlocks the pair: the peer answers, our receive
+                    // buffer fills unread, the peer's writes block, the peer stops reading,
+                    // and our writes time out as "peer not reading". Measured on mainnet
+                    // 2026-08-01: 54,258 failed sends and ZERO successful block requests.
+                    // peer_conn is an Arc, so the loop takes its own handle.
+                    let router_clone = router.clone();
+                    let pool_clone = pool.clone();
+                    let cm_clone = cm.clone();
+                    let conn_for_loop = peer_conn.clone();
+                    tokio::spawn(async move {
+                        BackgroundTaskRunner::message_read_loop(
+                            conn_for_loop,
+                            peer_id,
+                            router_clone,
+                            pool_clone,
+                            cm_clone,
+                        )
+                        .await;
+                    });
+                }
                 info!(
                     "[OUTBOUND] Added connection to {} to pool",
                     hex::encode(&peer_id[..8])
@@ -2559,20 +2635,6 @@ impl NodeManager {
                 }
 
                 // Spawn message reading task for this outbound connection
-                let router_clone = router.clone();
-                let pool_clone = pool.clone();
-                let cm_clone = cm.clone();
-
-                tokio::spawn(async move {
-                    BackgroundTaskRunner::message_read_loop(
-                        peer_conn,
-                        peer_id,
-                        router_clone,
-                        pool_clone,
-                        cm_clone,
-                    )
-                    .await;
-                });
 
                 info!(
                     "[OUTBOUND] Spawned message loop for {}",

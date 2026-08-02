@@ -1256,7 +1256,7 @@ async fn test_formation_gate_closed_defers_solo_block() {
     );
 
     // A peer ahead of us must also keep the gate closed.
-    gate.note_peer_height(50);
+    gate.note_peer_height([1u8; 32], 50);
     router.try_form_block_if_threshold_met().await;
     assert_eq!(
         chain_store.get_latest_height().unwrap(),
@@ -1273,7 +1273,7 @@ async fn test_formation_gate_peer_parity_allows_block() {
     use std::time::Duration;
 
     let gate = Arc::new(FormationGate::new(Duration::from_secs(3600)));
-    gate.note_peer_height(0); // parity with our (empty) chain
+    gate.note_peer_height([1u8; 32], 0); // parity with our (empty) chain
     let (router, chain_store, _dir) = make_formation_gate_router(gate);
 
     router.try_form_block_if_threshold_met().await;

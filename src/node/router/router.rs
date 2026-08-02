@@ -5144,6 +5144,72 @@ impl MessageRouter {
     /// chain has landed (transient skips leave the block at stage 1).
     ///
     /// Returns `true` once the block is fully applied (now or previously).
+    /// Re-run the idempotent sponsorship stage for canonical blocks that never
+    /// completed it, so a node with a short sponsorship store repairs itself.
+    ///
+    /// Without this, nothing ever re-visits an old block: a node that missed a
+    /// grant rejects every block depending on it, forever, while `get_sync_status`
+    /// reports ordinary progress. Observed on mainnet 2026-08-01 — pinned at
+    /// height 1156 against a network at 1927, 3842 rejections of a single
+    /// identity in a single space.
+    ///
+    /// Safe on every startup: stage 1 is guarded by `state < 1` so the
+    /// non-idempotent content effects cannot re-apply, and stage 2 is
+    /// idempotent by design. Bounded so a long chain cannot stall boot.
+    ///
+    /// Returns how many blocks reached full application.
+    pub(crate) fn repair_sponsorship_store(&self, limit: usize) -> usize {
+        let Some(chain_store) = &self.chain_store else {
+            return 0;
+        };
+        let pending = match chain_store.blocks_needing_sponsorship_repair(limit) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!("[REPAIR] Could not scan for unapplied sponsorship: {}", e);
+                return 0;
+            }
+        };
+        if pending.is_empty() {
+            return 0;
+        }
+        info!(
+            "[REPAIR] {} block(s) never completed the sponsorship stage — re-applying",
+            pending.len()
+        );
+        let mut healed = 0usize;
+        let mut awaiting_content = 0usize;
+        let mut missing_root = 0usize;
+        let mut lowest_incomplete: Option<u64> = None;
+        for (height, hash) in pending {
+            match chain_store.get_root_block(&hash) {
+                Ok(Some(root)) => {
+                    if self.reconcile_block_side_effects(&root) {
+                        healed += 1;
+                    } else if !chain_store.root_content_complete(&root).unwrap_or(false) {
+                        // The dominant reason a repair cannot proceed, and the
+                        // one worth naming: side effects deliberately never run
+                        // on partially backfilled content, so a block whose
+                        // content this node never finished fetching keeps its
+                        // grant unapplied. Reporting a bare "healed 0" hides
+                        // that the real blocker is content backfill.
+                        awaiting_content += 1;
+                        lowest_incomplete =
+                            Some(lowest_incomplete.map_or(height, |l: u64| l.min(height)));
+                    }
+                }
+                _ => missing_root += 1,
+            }
+        }
+        info!(
+            "[REPAIR] Sponsorship repair: {} applied, {} awaiting content backfill{}, {} root(s) missing",
+            healed,
+            awaiting_content,
+            lowest_incomplete.map_or(String::new(), |h| format!(" (lowest height {})", h)),
+            missing_root
+        );
+        healed
+    }
+
     pub(crate) fn reconcile_block_side_effects(&self, root: &crate::blocks::RootBlock) -> bool {
         let chain_store = match &self.chain_store {
             Some(store) => store,

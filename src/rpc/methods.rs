@@ -1443,11 +1443,56 @@ impl RpcMethods {
             None => (0, 0, None, false),
         };
 
+        // OUR HEIGHT, needed BEFORE the state is chosen — "am I behind?" cannot
+        // be answered without it, and answering it wrong is what hid a broken
+        // node for three and a half days.
+        let our_height = self
+            .node
+            .chain_store
+            .as_ref()
+            .and_then(|cs| cs.get_latest_height().ok().flatten())
+            .unwrap_or(0);
+
+        // What the PEERS say. A node that cannot fetch never validates a block
+        // above its own tip, so every store-derived signal looks healthy while
+        // it falls further behind: on 2026-08-01 this node reported
+        // `state: synced` at height 364 with three peers all advertising 1915,
+        // and earlier reported "synced, 100%" while 379 behind on a private
+        // fork. Peer claims are free to make, so ONE is not enough to call
+        // ourselves behind — the same CORROBORATING_PEERS bar the formation
+        // gate uses, so "behind" means the same thing in both places.
+        let (peers_above, best_peer_height) = match self
+            .node
+            .router
+            .as_ref()
+            .and_then(|r| r.formation_gate())
+        {
+            Some(gate) => (
+                gate.peers_claiming_above(
+                    our_height.saturating_add(crate::node::formation_gate::FORM_BEHIND_TOLERANCE),
+                ),
+                gate.best_peer_height(),
+            ),
+            None => (0, 0),
+        };
+        let corroborated_behind =
+            peers_above >= crate::node::formation_gate::CORROBORATING_PEERS;
+
         // Calculate chain sync percentage
         let (state, chain_percent) = match sync_state {
             SyncState::Idle => {
                 if peer_count == 0 {
                     ("offline".to_string(), 0)
+                } else if corroborated_behind {
+                    // NEVER call this synced. Reported as a percentage of the
+                    // chain peers agree exists, so the number moves while it
+                    // catches up instead of sitting at a reassuring 100.
+                    let pct = if best_peer_height > 0 {
+                        ((our_height as f64 / best_peer_height as f64) * 100.0) as u8
+                    } else {
+                        0
+                    };
+                    ("behind".to_string(), pct.min(99))
                 } else if adoptable.is_some() {
                     // We are holding a heavier chain we have not adopted. This
                     // is never "synced" — it is the deadlock state.

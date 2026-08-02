@@ -3866,7 +3866,22 @@ impl ChainStore {
     pub fn side_effects_state(&self, root_hash: &BlockHash) -> Result<u8, StorageError> {
         match self.applied_side_effects.get(root_hash)? {
             Some(v) if v.len() >= 9 => Ok(v[8]),
-            Some(_) => Ok(2), // legacy 8-byte value: treat as fully applied
+            // Legacy 8-byte value, written before side effects were staged.
+            // Stage 1 (content effects) DID run for these -- that code predates
+            // the split -- but stage 2 (sponsorship) did not exist, so reporting
+            // 2 asserts something that never happened AND permanently blocks the
+            // idempotent sponsorship retry, because reconcile_block_side_effects
+            // returns early on `state >= 2`. A node whose store is short then
+            // rejects every dependent block forever: observed 2026-08-01, pinned
+            // at height 1156 against a network at 1927, 3842 rejections of one
+            // identity in one space, with no way to recover.
+            //
+            // Report 1 instead: stage 1 stays shut (it is guarded by
+            // `if state < 1`, so the non-idempotent increments -- reactions,
+            // engagements, behavioural clustering -- cannot double-apply) while
+            // the idempotent sponsorship stage gets to run and repair the store.
+            // IF THAT GUARD IS EVER REMOVED, THIS BECOMES A DOUBLE-COUNTING BUG.
+            Some(_) => Ok(1),
             None => Ok(0),
         }
     }
@@ -3885,6 +3900,41 @@ impl ChainStore {
     /// # Errors
     ///
     /// Returns error if database write fails.
+    /// Canonical blocks whose side effects never reached stage 2 (sponsorship).
+    ///
+    /// Ascending by height, because a later block's authorization may depend on
+    /// an earlier block's grant — the caller must re-apply them in the order the
+    /// chain recorded them.
+    ///
+    /// This is what makes a short sponsorship store recoverable. Without it,
+    /// nothing ever re-visits an old block, so a node that missed a grant
+    /// rejects every dependent block forever (mainnet 2026-08-01: pinned at
+    /// 1156 against a network at 1927).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database read fails.
+    pub fn blocks_needing_sponsorship_repair(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(u64, BlockHash)>, StorageError> {
+        let mut out = Vec::new();
+        let Some(tip) = self.get_latest_height()? else {
+            return Ok(out);
+        };
+        for height in 1..=tip {
+            if out.len() >= limit {
+                break;
+            }
+            if let Some(hash) = self.get_root_hash_at_height(height)? {
+                if self.side_effects_state(&hash)? < 2 {
+                    out.push((height, hash));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn set_side_effects_state(
         &self,
         root_hash: &BlockHash,
@@ -5508,5 +5558,47 @@ mod tests {
         let fetched = store.get_space(&good_id).unwrap();
         assert!(fetched.is_some(), "accepted space must be persisted");
         assert_eq!(fetched.unwrap().name, "Test Space");
+    }
+
+    /// The 2026-08-01 wedge: a node pinned at height 1156 against a network at
+    /// 1927, rejecting the same block 3842 times, because blocks written by the
+    /// pre-two-stage build claimed the sponsorship stage had already run.
+    #[test]
+    fn legacy_side_effect_mark_does_not_claim_sponsorship_applied() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+        let hash: BlockHash = [7u8; 32];
+
+        // Exactly what a pre-two-stage build wrote: 8 bytes, height only, no
+        // stage byte. The sponsorship stage did not exist yet.
+        store
+            .applied_side_effects
+            .insert(&hash, &42u64.to_be_bytes()[..])
+            .unwrap();
+
+        // Reporting 2 here asserts something that never happened, and
+        // reconcile_block_side_effects returns early on `state >= 2` -- which
+        // permanently blocks the idempotent sponsorship retry that exists to
+        // repair exactly this. 1 keeps stage 1 shut (`if state < 1`) while
+        // letting stage 2 run.
+        assert_eq!(
+            store.side_effects_state(&hash).unwrap(),
+            1,
+            "a legacy mark must not claim the sponsorship stage ran"
+        );
+    }
+
+    #[test]
+    fn modern_side_effect_mark_round_trips_its_stage() {
+        let dir = tempdir().unwrap();
+        let store = ChainStore::open(dir.path().join("chain")).unwrap();
+        let hash: BlockHash = [8u8; 32];
+
+        store.set_side_effects_state(&hash, 42, 1).unwrap();
+        assert_eq!(store.side_effects_state(&hash).unwrap(), 1);
+        store.set_side_effects_state(&hash, 42, 2).unwrap();
+        assert_eq!(store.side_effects_state(&hash).unwrap(), 2);
+        // Absent means nothing ran.
+        assert_eq!(store.side_effects_state(&[9u8; 32]).unwrap(), 0);
     }
 }
