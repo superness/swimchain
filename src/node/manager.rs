@@ -1309,6 +1309,25 @@ impl NodeManager {
 
         let router = Arc::new(router_builder.build());
         self.router = Some(router.clone());
+
+        // Repair a short sponsorship store before we validate anything against
+        // it. Blocks written by the pre-two-stage build carry legacy marks that
+        // used to claim the sponsorship stage had run; a node whose store is
+        // therefore missing a grant rejects every block depending on it,
+        // forever, while looking like it is merely syncing (mainnet
+        // 2026-08-01: pinned at 1156 against a network at 1927, 3842
+        // rejections of one identity in one space).
+        //
+        // This runs AFTER the router exists (it needs reconcile_block_side_effects)
+        // but BEFORE the node starts ingesting blocks, so the store is whole
+        // before it is used to judge anything. No-op on a healthy node.
+        let healed = router.repair_sponsorship_store(10_000);
+        if healed > 0 {
+            info!(
+                "[STARTUP] Repaired the sponsorship stage for {} block(s)",
+                healed
+            );
+        }
         info!("[CONTENT-SYNC] Message router initialized with decay tracking, spam attestation, block relay, and branch-selective sync");
 
         self.set_state(NodeState::Bootstrapping);

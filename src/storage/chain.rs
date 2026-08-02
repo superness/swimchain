@@ -3900,6 +3900,41 @@ impl ChainStore {
     /// # Errors
     ///
     /// Returns error if database write fails.
+    /// Canonical blocks whose side effects never reached stage 2 (sponsorship).
+    ///
+    /// Ascending by height, because a later block's authorization may depend on
+    /// an earlier block's grant — the caller must re-apply them in the order the
+    /// chain recorded them.
+    ///
+    /// This is what makes a short sponsorship store recoverable. Without it,
+    /// nothing ever re-visits an old block, so a node that missed a grant
+    /// rejects every dependent block forever (mainnet 2026-08-01: pinned at
+    /// 1156 against a network at 1927).
+    ///
+    /// # Errors
+    ///
+    /// Returns error if a database read fails.
+    pub fn blocks_needing_sponsorship_repair(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(u64, BlockHash)>, StorageError> {
+        let mut out = Vec::new();
+        let Some(tip) = self.get_latest_height()? else {
+            return Ok(out);
+        };
+        for height in 1..=tip {
+            if out.len() >= limit {
+                break;
+            }
+            if let Some(hash) = self.get_root_hash_at_height(height)? {
+                if self.side_effects_state(&hash)? < 2 {
+                    out.push((height, hash));
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn set_side_effects_state(
         &self,
         root_hash: &BlockHash,
