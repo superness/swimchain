@@ -21,7 +21,9 @@
 //! as soon as the gate opens. Regtest uses a zero grace window (gate is
 //! effectively always open) so single-node dev flows are unchanged.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use log::{debug, info};
@@ -37,6 +39,19 @@ pub const FORMATION_GRACE_SECS: u64 = 90;
 /// more behind means a chain we have verified exists and we have not caught
 /// up to it — minting there manufactures a competing history.
 pub const FORM_BEHIND_TOLERANCE: u64 = 2;
+
+/// How many DISTINCT peers must independently say we are materially behind
+/// before grace expiry is allowed to mint anyway.
+///
+/// One is not enough: a single peer advertising an unreachable height is the
+/// exact denial of service `open_is_sticky_against_advertised_heights` exists
+/// to defeat. Two independent peers agreeing is corroboration, and a node the
+/// network agrees is far behind must not manufacture a competing history.
+pub const CORROBORATING_PEERS: usize = 2;
+
+/// Cap on remembered peer claims, so connection churn cannot grow this without
+/// bound.
+const MAX_TRACKED_PEERS: usize = 64;
 
 /// Gate that defers block formation until the node has confirmed it is not
 /// the lone height-authority (or a grace window expires). Shared by every
@@ -66,6 +81,9 @@ pub struct FormationGate {
     /// Whether the "deferring" info line has been emitted (first defer logs
     /// at info, the rest at debug).
     defer_logged: AtomicBool,
+    /// Latest height advertised BY EACH peer, so "am I behind?" can require
+    /// corroboration from independent peers rather than trusting one claim.
+    peer_heights: Mutex<HashMap<[u8; 32], u64>>,
 }
 
 impl FormationGate {
@@ -81,6 +99,7 @@ impl FormationGate {
             best_block_height: AtomicU64::new(0),
             behind_logged: AtomicBool::new(false),
             defer_logged: AtomicBool::new(false),
+            peer_heights: Mutex::new(HashMap::new()),
         }
     }
 
@@ -97,9 +116,16 @@ impl FormationGate {
     /// Record a peer handshake carrying the peer's advertised chain height.
     /// Call this from every connection path that completes a VERSION
     /// handshake (outbound bootstrap, outbound integrate, inbound accept).
-    pub fn note_peer_height(&self, height: u64) {
+    pub fn note_peer_height(&self, peer_id: [u8; 32], height: u64) {
         self.seen_peer.store(true, Ordering::Relaxed);
         self.best_peer_height.fetch_max(height, Ordering::Relaxed);
+        // Per-peer, so corroboration can be counted. A peer's newest claim
+        // replaces its previous one; the global max above is unchanged.
+        if let Ok(mut map) = self.peer_heights.lock() {
+            if map.len() < MAX_TRACKED_PEERS || map.contains_key(&peer_id) {
+                map.insert(peer_id, height);
+            }
+        }
         let offset = self.started.elapsed().as_millis() as u64;
         let _ = self.first_peer_offset_ms.compare_exchange(
             0,
@@ -107,6 +133,15 @@ impl FormationGate {
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
+    }
+
+    /// How many DISTINCT peers advertise a height strictly above `threshold`.
+    #[must_use]
+    pub fn peers_claiming_above(&self, threshold: u64) -> usize {
+        self.peer_heights
+            .lock()
+            .map(|m| m.values().filter(|h| **h > threshold).count())
+            .unwrap_or(0)
     }
 
     /// Whether the gate has already opened (sticky).
@@ -177,6 +212,36 @@ impl FormationGate {
             offset_plus_one => Duration::from_millis(offset_plus_one - 1) + self.grace,
         };
         if self.started.elapsed() >= deadline {
+            // GRACE MUST NOT MINT INTO A CHAIN THE NETWORK AGREES EXISTS.
+            //
+            // The brake above reads validated blocks, which is unforgeable —
+            // but a node that cannot FETCH never validates anything above its
+            // own tip, so the brake stays silent and grace mints anyway.
+            // That is exactly how the chips util node forked itself on
+            // 2026-08-01: an outbound-connection deadlock meant zero
+            // successful GETBLOCKS (54,258 failed sends), so `best_block`
+            // never rose, grace expired 90s in, and it minted 946 actions at
+            // height 1551 with total_pow=13241 — instantly heavier
+            // (cum_pow 76,710) than the network's block at that height
+            // (63,477). Fork choice then CORRECTLY pinned it to its own
+            // private chain, permanently.
+            //
+            // One peer's advertised height is a free claim and must never
+            // gate us (see `open_is_sticky_against_advertised_heights`).
+            // CORROBORATING_PEERS independent peers saying the same thing is
+            // evidence, and waiting is strictly better than manufacturing a
+            // competing history.
+            let behind_by = our_height.saturating_add(FORM_BEHIND_TOLERANCE);
+            let corroborating = self.peers_claiming_above(behind_by);
+            if corroborating >= CORROBORATING_PEERS {
+                if !self.behind_logged.swap(true, Ordering::Relaxed) {
+                    info!(
+                        "[BLOCKS] Deferring block formation past grace: {} peers report a chain above us (our height {}, best peer height {}) — refusing to mint a competing chain",
+                        corroborating, our_height, best_peer
+                    );
+                }
+                return false;
+            }
             if !self.open.swap(true, Ordering::Relaxed) {
                 info!(
                     "[BLOCKS] Formation gate OPEN: grace window ({}s) expired without confirming network tip (our height {}, best peer height {})",
@@ -235,7 +300,7 @@ mod tests {
     #[test]
     fn behind_peer_defers_until_parity() {
         let gate = FormationGate::new(LONG_GRACE);
-        gate.note_peer_height(5);
+        gate.note_peer_height([1u8; 32], 5);
         assert!(!gate.allow_formation(3), "behind the peer tip: must defer");
         assert!(gate.allow_formation(5), "at the peer tip: must allow");
     }
@@ -246,9 +311,9 @@ mod tests {
         // advertising an unreachable height must never freeze formation.
         // (The validated-block brake below is the forgery-resistant signal.)
         let gate = FormationGate::new(LONG_GRACE);
-        gate.note_peer_height(5);
+        gate.note_peer_height([2u8; 32], 5);
         assert!(gate.allow_formation(5));
-        gate.note_peer_height(500);
+        gate.note_peer_height([3u8; 32], 500);
         assert!(gate.allow_formation(0));
     }
 
@@ -316,7 +381,7 @@ mod tests {
         // The DoS guard: handshake claims are free to make, so they must not
         // reach the brake. Only validated blocks (which cost PoW) do.
         let gate = FormationGate::new(Duration::ZERO);
-        gate.note_peer_height(u64::MAX);
+        gate.note_peer_height([4u8; 32], u64::MAX);
         assert!(
             gate.allow_formation(10),
             "a peer claiming an absurd height must not stop us forming"
@@ -328,7 +393,7 @@ mod tests {
         // Two fresh nodes bootstrapping a new network: connected at parity,
         // forming is correct.
         let gate = FormationGate::new(LONG_GRACE);
-        gate.note_peer_height(0);
+        gate.note_peer_height([5u8; 32], 0);
         assert!(gate.allow_formation(0));
     }
 
@@ -336,8 +401,8 @@ mod tests {
     fn peer_height_is_max_over_all_handshakes() {
         // A junk-low peer must not lower the bar set by a real peer.
         let gate = FormationGate::new(LONG_GRACE);
-        gate.note_peer_height(76);
-        gate.note_peer_height(0);
+        gate.note_peer_height([6u8; 32], 76);
+        gate.note_peer_height([7u8; 32], 0);
         assert!(!gate.allow_formation(10));
         assert!(gate.allow_formation(76));
     }
@@ -345,7 +410,7 @@ mod tests {
     #[test]
     fn grace_expiry_opens_gate() {
         let gate = FormationGate::new(Duration::from_millis(50));
-        gate.note_peer_height(1_000_000); // unreachable parity
+        gate.note_peer_height([8u8; 32], 1_000_000); // unreachable parity
         std::thread::sleep(Duration::from_millis(120));
         assert!(
             gate.allow_formation(0),
@@ -358,7 +423,7 @@ mod tests {
         let gate = FormationGate::new(Duration::from_millis(150));
         std::thread::sleep(Duration::from_millis(100));
         // Peer connects late in the window: deadline restarts from now.
-        gate.note_peer_height(1_000_000);
+        gate.note_peer_height([9u8; 32], 1_000_000);
         std::thread::sleep(Duration::from_millis(100));
         // ~200ms elapsed since start but only ~100ms since first handshake:
         // still inside the extended window.
@@ -368,5 +433,72 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(120));
         assert!(gate.allow_formation(0));
+    }
+
+    // The 2026-08-01 self-fork: an outbound-connection deadlock meant the node
+    // never validated a block above its own tip, so the validated-block brake
+    // stayed silent, grace expired, and it minted a competing chain that fork
+    // choice then correctly pinned it to for ever. Corroborating peers are the
+    // signal that survives being unable to fetch.
+    #[test]
+    fn grace_does_not_mint_when_two_peers_report_a_chain_above_us() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xB2; 32], 1915);
+        assert!(
+            !gate.allow_formation(1551),
+            "two independent peers reporting a chain 364 blocks above us must stop a solo mint"
+        );
+    }
+
+    // ...but ONE peer must not be able to freeze formation, which is the whole
+    // reason advertised heights are otherwise ignored.
+    #[test]
+    fn a_single_peer_claim_still_cannot_freeze_formation() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], u64::MAX);
+        assert!(
+            gate.allow_formation(1551),
+            "one advertised height is a free claim and must never gate formation"
+        );
+    }
+
+    #[test]
+    fn peers_within_tolerance_do_not_hold_the_gate() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1552);
+        gate.note_peer_height([0xB2; 32], 1553);
+        assert!(
+            gate.allow_formation(1551),
+            "a same-height race is normal; only a materially higher chain holds the gate"
+        );
+    }
+
+    #[test]
+    fn the_same_peer_reconnecting_is_not_two_peers() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xA1; 32], 1915);
+        assert_eq!(
+            gate.peers_claiming_above(1553),
+            1,
+            "one peer, twice, is one peer"
+        );
+        assert!(
+            gate.allow_formation(1551),
+            "corroboration must mean DISTINCT peers, or reconnect churn forges it"
+        );
+    }
+
+    #[test]
+    fn catching_up_releases_the_corroboration_hold() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xB2; 32], 1915);
+        assert!(!gate.allow_formation(1551));
+        assert!(
+            gate.allow_formation(1915),
+            "once we reach the height they reported, the hold must lift"
+        );
     }
 }
