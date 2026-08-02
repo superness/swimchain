@@ -53,6 +53,25 @@ pub const CORROBORATING_PEERS: usize = 2;
 /// bound.
 const MAX_TRACKED_PEERS: usize = 64;
 
+/// How long peer CLAIMS alone may hold formation shut past grace.
+///
+/// The asymmetry this encodes is the whole security argument:
+///
+///   * A block we have VALIDATED above our tip is unforgeable — raising it
+///     costs real proof-of-work — so it brakes formation for as long as it
+///     stands, with no time limit.
+///   * A handshake height is FREE to assert. Letting it brake indefinitely
+///     hands any two peers a way to silence a block producer, which is a
+///     liveness attack on a network with few producers.
+///
+/// So claims may DELAY, not veto. The bound is safe because an honest node
+/// that is really behind starts validating real blocks within seconds of
+/// asking (measured 2026-08-01: 0 -> 344 blocks in 90s once the
+/// read-before-write deadlock was fixed), at which point the unforgeable brake
+/// takes over and this timer stops mattering. Ten minutes is far longer than
+/// that hand-off needs and far shorter than an attacker would want.
+const CORROBORATION_MAX_HOLD: Duration = Duration::from_secs(600);
+
 /// Gate that defers block formation until the node has confirmed it is not
 /// the lone height-authority (or a grace window expires). Shared by every
 /// block-formation site via `MessageRouter::formation_gate()`.
@@ -84,6 +103,13 @@ pub struct FormationGate {
     /// Latest height advertised BY EACH peer, so "am I behind?" can require
     /// corroboration from independent peers rather than trusting one claim.
     peer_heights: Mutex<HashMap<[u8; 32], u64>>,
+    /// When the corroboration hold began, as millis from `started` +1 (0 = not
+    /// holding). Bounds how long free-to-assert peer claims may delay us.
+    corroboration_since_ms: AtomicU64,
+    /// How long claims may hold. A field, not the constant directly, so tests
+    /// can exercise the expiry deterministically instead of trying to fake a
+    /// ten-minute-old clock against a process that started milliseconds ago.
+    corroboration_max_hold: Duration,
     /// Whether the corroboration hold has been announced. Its OWN flag, not
     /// `behind_logged`: that one is cleared on every call that clears the
     /// validated-block brake, so sharing it logged this line at INFO every
@@ -105,6 +131,8 @@ impl FormationGate {
             behind_logged: AtomicBool::new(false),
             defer_logged: AtomicBool::new(false),
             peer_heights: Mutex::new(HashMap::new()),
+            corroboration_since_ms: AtomicU64::new(0),
+            corroboration_max_hold: CORROBORATION_MAX_HOLD,
             corroboration_logged: AtomicBool::new(false),
         }
     }
@@ -139,6 +167,16 @@ impl FormationGate {
             Ordering::Relaxed,
             Ordering::Relaxed,
         );
+    }
+
+    /// Same as `new`, with a shortened claim-hold bound so tests can reach the
+    /// expiry without sleeping for ten minutes.
+    #[cfg(test)]
+    #[must_use]
+    pub fn new_with_hold(grace: Duration, hold: Duration) -> Self {
+        let mut g = Self::new(grace);
+        g.corroboration_max_hold = hold;
+        g
     }
 
     /// The highest chain height any peer has advertised since process start.
@@ -199,8 +237,14 @@ impl FormationGate {
         }
         // Caught up again — let the next lag log once more rather than going
         // silent for the process lifetime.
+        // NOTE: only `behind_logged` is cleared here. The corroboration clock
+        // must NOT be, because this line is reached on EVERY call that clears
+        // the validated-block brake — including every call made WHILE the
+        // corroboration hold is running. Clearing it here restarted the timer
+        // on each tick, so the bound never elapsed and free-to-assert peer
+        // claims became a permanent veto. It is cleared where it is actually
+        // no longer held, below.
         self.behind_logged.store(false, Ordering::Relaxed);
-        self.corroboration_logged.store(false, Ordering::Relaxed);
 
         if self.open.load(Ordering::Relaxed) {
             return true;
@@ -208,6 +252,10 @@ impl FormationGate {
 
         let best_peer = self.best_peer_height.load(Ordering::Relaxed);
         if self.seen_peer.load(Ordering::Relaxed) && our_height >= best_peer {
+            // Reached parity: whatever hold was running is over, and a LATER
+            // lag must get a full window rather than inherit a spent clock.
+            self.corroboration_since_ms.store(0, Ordering::Relaxed);
+            self.corroboration_logged.store(false, Ordering::Relaxed);
             if !self.open.swap(true, Ordering::Relaxed) {
                 info!(
                     "[BLOCKS] Formation gate OPEN: synced with peer tip (our height {} >= best peer height {})",
@@ -247,6 +295,37 @@ impl FormationGate {
             let behind_by = our_height.saturating_add(FORM_BEHIND_TOLERANCE);
             let corroborating = self.peers_claiming_above(behind_by);
             if corroborating >= CORROBORATING_PEERS {
+                // Start (or read) the hold clock. Claims may delay, not veto —
+                // see CORROBORATION_MAX_HOLD.
+                let now_ms = self.started.elapsed().as_millis() as u64;
+                let since = match self.corroboration_since_ms.compare_exchange(
+                    0,
+                    now_ms.saturating_add(1),
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => now_ms,
+                    Err(prev) => prev - 1,
+                };
+                if Duration::from_millis(now_ms.saturating_sub(since))
+                    >= self.corroboration_max_hold
+                {
+                    // Held this long on peer claims alone and STILL no validated
+                    // block above our tip (that brake is checked first and would
+                    // have returned already). The claims are unbacked: either the
+                    // peers are lying, or that chain is unreachable to us. Waiting
+                    // for ever is how a free assertion becomes a veto.
+                    if !self.open.swap(true, Ordering::Relaxed) {
+                        info!(
+                            "[BLOCKS] Formation gate OPEN: {} peers claimed a chain above us for {}s but delivered no block above our tip (our height {}, best peer height {}) — treating the claim as unbacked",
+                            corroborating,
+                            self.corroboration_max_hold.as_secs(),
+                            our_height,
+                            best_peer
+                        );
+                    }
+                    return true;
+                }
                 if !self.corroboration_logged.swap(true, Ordering::Relaxed) {
                     info!(
                         "[BLOCKS] Deferring block formation past grace: {} peers report a chain above us (our height {}, best peer height {}) — refusing to mint a competing chain",
@@ -260,6 +339,10 @@ impl FormationGate {
                 }
                 return false;
             }
+            // Not held: fewer than CORROBORATING_PEERS report a chain above us.
+            // Clear the clock so a LATER lag gets a full window of its own.
+            self.corroboration_since_ms.store(0, Ordering::Relaxed);
+            self.corroboration_logged.store(false, Ordering::Relaxed);
             if !self.open.swap(true, Ordering::Relaxed) {
                 info!(
                     "[BLOCKS] Formation gate OPEN: grace window ({}s) expired without confirming network tip (our height {}, best peer height {})",
@@ -517,6 +600,71 @@ mod tests {
         assert!(
             gate.allow_formation(1915),
             "once we reach the height they reported, the hold must lift"
+        );
+    }
+
+    // SECURITY PROPERTY: a handshake height is free to assert, so two peers
+    // must be able to DELAY formation but never to veto it. Without a bound,
+    // any two colluding peers could silence a block producer indefinitely —
+    // a liveness attack on a network with few producers.
+    #[test]
+    fn peer_claims_delay_formation_but_cannot_veto_it_for_ever() {
+        // 60ms hold instead of 10 minutes; the logic under test is identical.
+        let gate = FormationGate::new_with_hold(Duration::ZERO, Duration::from_millis(60));
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xB2; 32], 1915);
+
+        assert!(
+            !gate.allow_formation(1551),
+            "two peers reporting a chain above us must hold formation at first"
+        );
+
+        std::thread::sleep(Duration::from_millis(90));
+
+        assert!(
+            gate.allow_formation(1551),
+            "claims unbacked by a single delivered block must not veto formation for ever"
+        );
+    }
+
+    // The mirror of the above: UNFORGEABLE evidence has no time limit. Raising
+    // the validated-block height costs real proof-of-work, so it may brake for
+    // as long as it stands.
+    #[test]
+    fn a_validated_block_brakes_without_any_time_limit() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xB2; 32], 1915);
+        gate.note_validated_block(1651);
+
+        // Even with the corroboration clock long expired, the validated-block
+        // brake is checked first and must still refuse.
+        gate.corroboration_since_ms.store(1, Ordering::Relaxed);
+        assert!(
+            !gate.allow_formation(1551),
+            "a validated chain above us must brake formation with no time limit"
+        );
+    }
+
+    #[test]
+    fn the_hold_clock_resets_once_we_are_no_longer_held() {
+        let gate = FormationGate::new(Duration::ZERO);
+        gate.note_peer_height([0xA1; 32], 1915);
+        gate.note_peer_height([0xB2; 32], 1915);
+        assert!(!gate.allow_formation(1551));
+        assert_ne!(
+            gate.corroboration_since_ms.load(Ordering::Relaxed),
+            0,
+            "clock should be running"
+        );
+
+        // Catch up: the hold lifts and the clock must clear, so a LATER lag
+        // gets its own full window rather than inheriting a spent one.
+        assert!(gate.allow_formation(1915));
+        assert_eq!(
+            gate.corroboration_since_ms.load(Ordering::Relaxed),
+            0,
+            "clock should reset"
         );
     }
 }

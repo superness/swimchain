@@ -1461,22 +1461,18 @@ impl RpcMethods {
         // fork. Peer claims are free to make, so ONE is not enough to call
         // ourselves behind — the same CORROBORATING_PEERS bar the formation
         // gate uses, so "behind" means the same thing in both places.
-        let (peers_above, best_peer_height) = match self
-            .node
-            .router
-            .as_ref()
-            .and_then(|r| r.formation_gate())
-        {
-            Some(gate) => (
-                gate.peers_claiming_above(
-                    our_height.saturating_add(crate::node::formation_gate::FORM_BEHIND_TOLERANCE),
+        let (peers_above, best_peer_height) =
+            match self.node.router.as_ref().and_then(|r| r.formation_gate()) {
+                Some(gate) => (
+                    gate.peers_claiming_above(
+                        our_height
+                            .saturating_add(crate::node::formation_gate::FORM_BEHIND_TOLERANCE),
+                    ),
+                    gate.best_peer_height(),
                 ),
-                gate.best_peer_height(),
-            ),
-            None => (0, 0),
-        };
-        let corroborated_behind =
-            peers_above >= crate::node::formation_gate::CORROBORATING_PEERS;
+                None => (0, 0),
+            };
+        let corroborated_behind = peers_above >= crate::node::formation_gate::CORROBORATING_PEERS;
 
         // Calculate chain sync percentage
         let (state, chain_percent) = match sync_state {
