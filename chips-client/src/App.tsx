@@ -51,7 +51,7 @@ import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
 import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
-import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, forfeitsOnRefuse } from './lib/chipsConst';
+import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, forfeitsOnRefuse, CHAR_ABILITIES } from './lib/chipsConst';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
@@ -2217,6 +2217,21 @@ export function App() {
    *  hooks than during the previous render" and the whole app goes black
    *  (it did, exactly here). It is a loop over ~11 crew members; the memo
    *  was never worth a hook. */
+  /** Scoop is only calling you over if he has something you can actually take.
+   *
+   *  The banner used to stand on `char > 0`, which is not the same question.
+   *  The operator finished the table with 2 grains, already owning The Crack
+   *  (1), against a cheapest remaining ability of 3 — so the banner sat there
+   *  saying "he is looking at your 2 grains" and offering a shop with nothing
+   *  buyable in it, with no way to dismiss it because it is a banner and there
+   *  is nothing to dismiss. "he wants me to buy something, I have 2 grains, I
+   *  can buy nothing - he doesn't close his popup asking me to buy something."
+   *
+   *  This is the same rule `dealIds` applies to every other critter: a price
+   *  tag appears when you can pay it. Scoop was the one shouting on credit. */
+  const scoopHasDeal = state !== null
+    && Object.values(CHAR_ABILITIES).some((a) => !state.charOwned.has(a.key) && state.char >= a.cost);
+
   const dealIds = ((): Set<string> => {
     const out = new Set<string>();
     if (!state) return out;
@@ -2510,7 +2525,7 @@ export function App() {
           `charOwned.size > 0` — i.e. permanently, from the first purchase on —
           because it was the shop's only door. Tapping scoop is that door now,
           so this can go back to meaning what it says. */}
-      {state && state.char > 0 && !scoopOpen && !porcOpen && (
+      {state && scoopHasDeal && !scoopOpen && !porcOpen && (
         <div className="scoop-call" role="status">
           <span className="scoop-call-art" aria-hidden="true"><CritterArt id="scoop" /></span>
           <span className="vote-text">

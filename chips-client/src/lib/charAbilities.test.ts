@@ -12,9 +12,12 @@
  *
  * Run: npx tsx src/lib/charAbilities.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { foldChips, type ChipsHeader, type ChipsReply } from './chipsEngine';
 import { projectedCrumbs, soggyLook } from './sogProjection';
-import { UPGRADES, deepBandFloor, START_BOWL_CAP } from './chipsConst';
+import { UPGRADES, deepBandFloor, START_BOWL_CAP, CHAR_ABILITIES } from './chipsConst';
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -90,6 +93,38 @@ function withCrack(): ChipsReply[] {
   // never moves reads as a bug.
   check('without it, the pile looks soggy', soggyLook(base, later) > 0.9, soggyLook(base, later));
   check('with it, the pile never slumps', soggyLook(tiled, later) === 0, soggyLook(tiled, later));
+}
+
+// ---------------------------------------------------------------------------
+// SCOOP ONLY CALLS YOU OVER IF HE HAS SOMETHING YOU CAN TAKE.
+//
+// The call banner stood on `char > 0`, which is a different question from "can
+// you buy anything". The operator finished the table holding 2 grains and
+// already owning The Crack (cost 1); the cheapest thing left is The Grain at 3.
+// So the banner sat there reading "he is looking at your 2 grains" and pointing
+// at a shop with nothing buyable in it — and being a BANNER rather than a modal
+// there was nothing to close: "he wants me to buy something, I have 2 grains, I
+// can buy nothing - he doesn't close his popup asking me to buy something."
+//
+// This is the rule every other critter already follows (`dealIds`): a price tag
+// appears when you can pay it. Scoop was the one shouting on credit.
+{
+  const affordable = (char: number, owned: string[]): boolean =>
+    Object.values(CHAR_ABILITIES).some((a) => !owned.includes(a.key) && char >= a.cost);
+
+  check('THE REPORTED CASE: 2 grains, owns crack -> no call', affordable(2, ['crack']) === false);
+  check('3 grains, owns crack -> the grain is reachable, call', affordable(3, ['crack']) === true);
+  check('0 grains -> no call', affordable(0, []) === false);
+  check('1 grain, owns nothing -> the crack is reachable, call', affordable(1, []) === true);
+  check('everything owned, grains to spare -> no call',
+    affordable(99, Object.values(CHAR_ABILITIES).map((a) => a.key)) === false);
+
+  // And the component must ask THAT question, not the old one.
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
+  check('the banner is gated on affordability', app.includes('{state && scoopHasDeal && !scoopOpen'));
+  check('...and not on char alone', !app.includes('{state && state.char > 0 && !scoopOpen'));
+  check('scoopHasDeal weighs owned AND cost',
+    app.includes('!state.charOwned.has(a.key) && state.char >= a.cost'));
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
