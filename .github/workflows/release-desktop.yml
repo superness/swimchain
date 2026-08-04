@@ -106,12 +106,70 @@ jobs:
           timestamp-rfc3161: http://timestamp.acs.microsoft.com
           timestamp-digest: SHA256
 
-      # build.sh re-runs `cargo build --release` (a no-op here) and then copies
-      # target/release/sw.exe into src-tauri/binaries — so it picks up the
-      # signed binary from the step above.
-      - name: Build desktop bundle
-        shell: bash
-        run: bash desktop-app/build.sh
+      # Stage the SIGNED sidecar ourselves rather than letting the build script
+      # rebuild it. build.ps1's Step 1 runs `cargo build` and copies the result;
+      # if cargo decides to relink, it would overwrite the signature we just
+      # applied and ship an unsigned sidecar that still looks fine. -SkipNode
+      # skips both the build and that copy, so we do the copy here.
+      - name: Stage the signed sidecar
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path desktop-app/src-tauri/binaries | Out-Null
+          Copy-Item target/release/sw.exe desktop-app/src-tauri/binaries/sw.exe -Force
+          $sig = Get-AuthenticodeSignature desktop-app/src-tauri/binaries/sw.exe
+          Write-Host "staged sidecar signature: $($sig.Status)"
+
+      # build.ps1, NOT build.sh. build.sh stops at 8 steps and never builds the
+      # launcher apps, so `src-tauri/apps/` (gitignored) stays empty and Tauri
+      # fails with "resource path `apps` doesn't exist" on any clean checkout.
+      # build.ps1 Step 7 builds app-shell against each client and stages them.
+      # -SkipTauri: stop before packaging so the launcher app exes staged in
+      # Step 7 can be signed first. They land on users' disks, so an unsigned
+      # one is exactly what Defender deleted.
+      - name: Build desktop bundle (stop before packaging)
+        shell: pwsh
+        run: ./desktop-app/build.ps1 -SkipNode -SkipTauri
+
+      # build.ps1 sets $ErrorActionPreference = "Continue" and reports failures
+      # as warnings, so it can exit 0 having produced nothing. Assert the things
+      # that must exist rather than trusting the exit code.
+      - name: Verify launcher apps were staged
+        shell: pwsh
+        run: |
+          $appsDir = "desktop-app/src-tauri/apps"
+          if (-not (Test-Path $appsDir)) { throw "apps/ was not created - launcher apps did not build" }
+          $apps = Get-ChildItem $appsDir -Directory
+          if ($apps.Count -eq 0) { throw "apps/ is empty - launcher apps did not build" }
+          foreach ($a in $apps) {
+            $exe = Get-ChildItem $a.FullName -Filter "*-app.exe" -ErrorAction SilentlyContinue
+            if (-not $exe) { throw "$($a.Name): no *-app.exe staged" }
+            Write-Host ("{0,-10} {1,12:N0} bytes" -f $a.Name, $exe[0].Length)
+          }
+          Write-Host "$($apps.Count) launcher apps staged"
+
+      # Sign the launcher app exes BEFORE Tauri packages them into the bundle.
+      - name: Sign launcher apps
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/desktop-app/src-tauri/apps
+          files-folder-filter: exe
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Everything bundled is now signed, so package.
+      - name: Package the Tauri bundle
+        shell: pwsh
+        working-directory: desktop-app
+        run: npx tauri build
 
       - name: Sign the installer and shell
         if: steps.signing.outputs.enabled == 'true'
@@ -144,14 +202,25 @@ jobs:
           sha256sum target/release/sw.exe >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Verify the bundled sidecar is signed
+      # Every executable that reaches a user's disk must be signed, not just the
+      # installer. Defender deleted the extracted sidecar, not the installer.
+      - name: Verify everything bundled is signed
         shell: pwsh
         continue-on-error: true
         run: |
-          $sig = Get-AuthenticodeSignature desktop-app/src-tauri/binaries/sw.exe
-          Write-Host "bundled sw.exe signature: $($sig.Status)"
-          if ($sig.Status -ne 'Valid') {
-            Write-Warning "Sidecar is NOT signed. Defender may delete it on user machines."
+          $targets = @('desktop-app/src-tauri/binaries/sw.exe')
+          $targets += (Get-ChildItem desktop-app/src-tauri/apps -Recurse -Filter *.exe -ErrorAction SilentlyContinue).FullName
+          $unsigned = @()
+          foreach ($t in $targets) {
+            $s = (Get-AuthenticodeSignature $t).Status
+            "{0,-12} {1}" -f $s, (Split-Path $t -Leaf)
+            if ($s -ne 'Valid') { $unsigned += $t }
+          }
+          if ($unsigned.Count -gt 0) {
+            Write-Warning "$($unsigned.Count) bundled executable(s) NOT signed - Defender may delete them on user machines:"
+            $unsigned | ForEach-Object { Write-Warning "  $_" }
+          } else {
+            Write-Host "all $($targets.Count) bundled executables signed"
           }
 
       - uses: actions/upload-artifact@v4

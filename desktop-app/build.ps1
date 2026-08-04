@@ -7,6 +7,7 @@ param(
     [switch]$SkipClients,     # Skip building clients (use existing)
     [switch]$ClientsOnly,     # Only build clients
     [switch]$CheckPrereqs,    # Only check prerequisites
+    [switch]$SkipTauri,       # Stop before `npx tauri build` (release CI signs first)
     [switch]$Force            # Continue on non-critical errors
 )
 
@@ -341,17 +342,28 @@ function Build-All {
     }
 
     # Step 10: Build Tauri app
-    Write-Step "Step 10: Building Tauri application..."
-    $tauriOutput = npx tauri build 2>&1 | Out-String
-
-    # Check for output files
-    $BundleDir = Join-Path $ScriptDir "src-tauri\target\release\bundle"
-    $ExeExists = Get-ChildItem -Path $BundleDir -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
-    if ($ExeExists) {
-        Write-Success "Tauri build complete"
+    #
+    # -SkipTauri exists for release CI, which must sign every executable BEFORE
+    # they are packaged: the launcher app exes staged in Step 7 end up on users'
+    # disks, and an unsigned executable is what Windows Defender deleted on
+    # 2026-08-03 (Trojan:Win32/Bearfoos.B!ml on the sidecar). Signing after
+    # bundling would be too late for anything already inside the installer, so
+    # CI stops here, signs apps/, then runs `npx tauri build` itself.
+    if ($SkipTauri) {
+        Write-Step "Step 10: Skipping Tauri build (-SkipTauri)"
     } else {
-        Write-Warning "Tauri build may have failed:"
-        Write-Host $tauriOutput -ForegroundColor Red
+        Write-Step "Step 10: Building Tauri application..."
+        $tauriOutput = npx tauri build 2>&1 | Out-String
+
+        # Check for output files
+        $BundleDir = Join-Path $ScriptDir "src-tauri\target\release\bundle"
+        $ExeExists = Get-ChildItem -Path $BundleDir -Recurse -Filter "*.exe" -ErrorAction SilentlyContinue
+        if ($ExeExists) {
+            Write-Success "Tauri build complete"
+        } else {
+            Write-Warning "Tauri build may have failed:"
+            Write-Host $tauriOutput -ForegroundColor Red
+        }
     }
 
     # Summary
