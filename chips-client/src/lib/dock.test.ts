@@ -172,6 +172,17 @@ const at = (bottom: number, height: number): DockBox => ({ top: VH - bottom - he
   // sat here for two rounds of edits looking like it did.
   check('no dead `bottom` offset on the bowl ticket',
     bottomCalcOf('bowl-ticket') === null, bottomCalcOf('bowl-ticket'));
+
+  // THE STAGE SCROLLS, so bounding the column's HEIGHT was never enough — its
+  // contents could still come to REST under the crew ledge, which is z-index 15
+  // against the stage's 2 and carries a `rgba(12, 8, 5, .55)` gradient. Painted
+  // over rather than hidden, which reads as a card gone faint: the bowl ticket's
+  // `em` measured 84 on the device against a declared 185, and its pill 8
+  // against 14 — 45%, exactly a .55 black veil. Only PADDING keeps scrolled
+  // content off the ledge.
+  const stagePad = /\.stage\s*\{[^}]*padding-bottom:\s*calc\(([^;]+)\)/.exec(css);
+  check('the stage reserves the dock as padding', stagePad !== null && stagePad[1].includes('--dock-h'),
+    stagePad?.[1]);
 }
 
 console.log('');
