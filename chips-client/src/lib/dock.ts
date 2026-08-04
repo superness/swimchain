@@ -76,6 +76,47 @@ export function dockHeight(boxes: DockBox[], viewportH: number, pad = 8): number
  *  stack it cannot see. */
 export const DOCKED_SELECTORS = ['.crew-toast', '.crew-row', '.tut-banner', '.working'] as const;
 
+/**
+ * THE HEIGHT OF EACH RUNG OF THE BOTTOM STACK, as it actually rendered.
+ *
+ * The stack was built out of one constant:
+ *
+ *     --bench-h: clamp(38px, 11vw, 52px);
+ *     .crew-toast { bottom: calc(... + var(--bench-h)) }
+ *     .crier      { bottom: calc(... + var(--bench-h) + 44px) }
+ *
+ * At 448px wide that resolves to 49px. The bench is **91px** tall — a critter
+ * is `clamp(60px, 16vw, 84px)` before its name pill and the ledge's padding.
+ * So the chat strip was placed 42px too low, i.e. INSIDE the bench: measured
+ * toast bottom 793 against bench top 746, a 47px overlap, landing squarely on
+ * the critters and on the `buy` tags that sit at their top edge (operator,
+ * 2026-08-04: "the critter dialog is already obscuring the critters themselves
+ * so it is hard to see them and their buy icons"). The crier then stacked on
+ * the same wrong base plus a hand-picked 44px and made no allowance for the
+ * strip's own height at all, so it landed on the strip ("the other type of
+ * popups stack on top of those dialog popups").
+ *
+ * Every rung is now measured from the rung below it. A constant cannot describe
+ * a bench whose height comes from a viewport clamp, or a strip whose height is
+ * however many lines somebody wrote.
+ */
+export interface StackHeights {
+  /** The crew ledge, as rendered. */
+  bench: number;
+  /** The chat strip, or 0 when nobody is speaking. */
+  toast: number;
+}
+
+export function measureStack(doc: Document): StackHeights {
+  const h = (sel: string): number => {
+    const el = doc.querySelector(sel);
+    if (!el) return 0;
+    const r = el.getBoundingClientRect();
+    return r.height > 0 ? Math.round(r.height) : 0;
+  };
+  return { bench: h('.crew-row'), toast: h('.crew-toast') };
+}
+
 /** Measure the live dock. Split from `dockHeight` so the rules above are
  *  testable without a DOM. */
 export function measureDock(doc: Document, viewportH: number): number | null {

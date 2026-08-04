@@ -57,7 +57,7 @@ import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFlo
 import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
-import { measureDock, DOCKED_SELECTORS } from './lib/dock';
+import { measureDock, measureStack, DOCKED_SELECTORS } from './lib/dock';
 import { queuedBuyKeys as queuedBuyKeysOf } from './lib/chipsAfford';
 import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
@@ -1909,6 +1909,15 @@ export function App() {
       // take over, which is the correct behaviour when nothing is docked.
       if (h === null) root.style.removeProperty('--dock-h');
       else root.style.setProperty('--dock-h', `${h}px`);
+
+      // EACH RUNG SITS ON THE ONE BELOW IT, at the height it really is. See
+      // measureStack — the constant these replace was 49px against a bench
+      // that measures 91px, which is why the chat strip sat on the critters
+      // and the banners sat on the strip.
+      const stack = measureStack(document);
+      if (stack.bench > 0) root.style.setProperty('--bench-real', `${stack.bench}px`);
+      else root.style.removeProperty('--bench-real');
+      root.style.setProperty('--toast-real', `${stack.toast}px`);
     };
     const schedule = () => { if (raf === 0) raf = requestAnimationFrame(publish); };
 
@@ -1938,6 +1947,8 @@ export function App() {
       ro.disconnect();
       mo.disconnect();
       document.documentElement.style.removeProperty('--dock-h');
+      document.documentElement.style.removeProperty('--bench-real');
+      document.documentElement.style.removeProperty('--toast-real');
     };
   }, []);
 

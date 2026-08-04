@@ -9,7 +9,12 @@
  *
  * Run: npx tsx src/lib/dock.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { dockHeight, type DockBox } from './dock';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
 
 let failures = 0;
 function check(name: string, cond: boolean, extra?: unknown) {
@@ -95,6 +100,59 @@ const at = (bottom: number, height: number): DockBox => ({ top: VH - bottom - he
   const tall = [at(62, 43), { top: 20, height: 300 }];
   const d = dockHeight(tall, VH)!;
   check('the reservation is clamped', d === Math.round(VH * 0.55), d);
+}
+
+// ---------------------------------------------------------------------------
+// 6) THE RUNGS OF THE BOTTOM STACK.
+//
+//    `--bench-h: clamp(38px, 11vw, 52px)` resolves to 49px at 448px wide. The
+//    bench measures 91px — a critter is `clamp(60px, 16vw, 84px)` before its
+//    name pill and the ledge's padding. So the chat strip, positioned off that
+//    constant, sat 42px too low: measured toast bottom 793 against bench top
+//    746, i.e. ON the critters and on the `buy` tags at their top edge. The
+//    crier then added a hand-picked 44px to the same wrong base with no
+//    allowance for the strip's height, and landed on the strip.
+//
+//    Measured, the same three boxes clear each other: toast 697-745 under a
+//    bench topping at 746, crier 610-684 under a strip topping at 697.
+{
+  const css = readFileSync(join(HERE, '..', 'styles.css'), 'utf8');
+
+  check('the stack is driven by measured rungs, not the raw constant',
+    /--rung-bench:\s*var\(--bench-real/.test(css) && /--rung-toast:\s*var\(--toast-real/.test(css));
+
+  /** The `bottom: calc(...)` a selector is positioned by, found by plain
+   *  string search. Built regexes kept losing their backslashes through the
+   *  template literal and silently matching nothing, which is a test that
+   *  passes for the wrong reason waiting to happen. */
+  function bottomCalcOf(sel: string): string | null {
+    const at = css.indexOf(`.${sel} { bottom: calc(`);
+    if (at < 0) return null;
+    const open = css.indexOf('calc(', at) + 'calc('.length;
+    let depth = 1;
+    for (let i = open; i < css.length; i++) {
+      if (css[i] === '(') depth++;
+      else if (css[i] === ')' && --depth === 0) return css.slice(open, i);
+    }
+    return null;
+  }
+
+  // The strip must clear the bench, and the crier must clear BOTH. If any of
+  // these goes back to reading `--bench-h` directly, the overlap returns.
+  for (const sel of ['crew-toast', 'crier', 'tut-banner', 'bowl-ticket']) {
+    const calc = bottomCalcOf(sel);
+    check(`.${sel} positions off the measured bench`, calc !== null && calc.includes('--rung-bench'), calc);
+  }
+  for (const sel of ['crier', 'tut-banner', 'bowl-ticket']) {
+    const calc = bottomCalcOf(sel);
+    check(`.${sel} also clears the chat strip`, calc !== null && calc.includes('--rung-toast'), calc);
+  }
+  check('the chat strip itself does NOT reserve for itself',
+    (bottomCalcOf('crew-toast') ?? '').includes('--rung-toast') === false);
+
+  // The constants stay as the before-measurement fallback — removing them
+  // would leave the stack at 0 for the first frame.
+  check('the constant survives as a fallback', /--bench-real,\s*var\(--bench-h\)\)/.test(css));
 }
 
 console.log('');
