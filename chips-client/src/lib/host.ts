@@ -472,7 +472,35 @@ export function createBrowserHost(rpc: SwimchainRpc): ChipsHost {
         // Sequential, not parallel: each part mines a real PoW, and firing
         // several miners at once on a phone is how you get a browser to kill
         // the tab holding the report you are trying to file.
-        const cid = await postOne(`chips report — ${stamp} (${n + 1}/${parts.length})`, parts[n]);
+        //
+        // AND RETRIED, because this loop used to have no catch at all. One
+        // throw on part 2 of 3 ended the whole thing, leaving part 1 committed
+        // on chain and the tail gone — while the caller swallowed the error and
+        // the UI still said "report copied". Observed on 4 of 12 reports
+        // (2026-08-04): every incomplete one was missing a SUFFIX (1 of 2, 1 of
+        // 2, 1 of 3), which is the signature of a stopped loop rather than of
+        // anything lost in transit.
+        //
+        // A truncated report that looks whole is the exact failure this file's
+        // chunking exists to prevent; losing the tail to a dropped submit is
+        // the same wrong arriving by a different road.
+        let cid: string | null = null;
+        let lastErr: unknown = null;
+        for (let attempt = 0; attempt < 3 && cid === null; attempt++) {
+          if (attempt > 0) await new Promise((r) => setTimeout(r, 400 * attempt));
+          try {
+            cid = await postOne(`chips report — ${stamp} (${n + 1}/${parts.length})`, parts[n]);
+          } catch (e) { lastErr = e; }
+        }
+        if (cid === null) {
+          // Name what DID land. A report known to be 1-of-3 is worth far more
+          // than one silently believed to be whole, and the caller turns this
+          // into something the player can actually read.
+          throw new Error(
+            `report part ${n + 1}/${parts.length} failed after 3 attempts` +
+            ` (${n} of ${parts.length} parts filed as ${stamp}): ${String(lastErr)}`
+          );
+        }
         if (first === null) first = cid;
       }
       return first;
