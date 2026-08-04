@@ -58,6 +58,7 @@ import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { measureDock, DOCKED_SELECTORS } from './lib/dock';
+import { queuedBuyKeys as queuedBuyKeysOf } from './lib/chipsAfford';
 import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
@@ -1089,7 +1090,8 @@ export function App() {
     // guarantees a lit jar and this guard never disagree.
     setQueue((q) => {
       const activeBuys = activeFor(q, table, author).filter(isBuyMove);
-      if (activeBuys.some((m) => m.key === key)) return q; // exact duplicate — already queued
+      // Same predicate the chip-eating gates use — see queuedBuyKeys' note.
+      if (queuedBuyKeysOf(activeFor(q, table, author)).has(key)) return q;
       const cost = UPGRADES[key]?.cost;
       if (cost === undefined) return q;
       const committed = pendingBuyCost(activeBuys, foldedIdsRef.current, (k) => UPGRADES[k]?.cost);
@@ -1105,6 +1107,13 @@ export function App() {
   function onJar(key: string): void {
     if (!host || !me || !tableId) return;
     if (state?.owned.has(key)) return;
+    // Paid for, just not confirmed yet. Arming again is how a chip got eaten
+    // for nothing — say so instead, because "nothing happens" is what made the
+    // player try again in the first place.
+    if (queuedBuyKeys.has(key)) {
+      setNotice('that one is already bought — it is still going through');
+      return;
+    }
     const vendor = vendorOf(key);
     if (!vendor) return;
     if (feeding && feeding.jarKey === key) { setFeeding(null); setBubble(null); return; }
@@ -1152,6 +1161,16 @@ export function App() {
     if (cost === undefined || !canAffordBuy(crumbsNow, pendingCommitted, cost)) {
       setFeeding(null);
       setNotice('the crumbs came up short — the deal is off');
+      return;
+    }
+    // THE CHIP IS EATEN ON THE NEXT LINE AND CANNOT BE PUT BACK, so every
+    // reason `onBuy` might refuse has to be settled BEFORE it. `onBuy` refuses
+    // a jar it already has queued — and it does so with a bare `return q`,
+    // which is invisible. That combination is what turned a mistimed second
+    // feed into a chip that simply vanished.
+    if (queuedBuyKeys.has(f.jarKey)) {
+      setFeeding(null);
+      setNotice('that one is already bought — it is still going through');
       return;
     }
     const taken = take(index);
@@ -1564,6 +1583,15 @@ export function App() {
   function onCritterClick(id: string): void {
     if (feeding && feeding.vendor.id === id) { setFeeding(null); setBubble(null); return; }
     if (id === 'angel' && angelNow.glowing) { onBless(); return; }
+    // SCOOP IS A DOOR LIKE EVERY OTHER CRITTER. He was the one who wasn't:
+    // his shop could be reached ONLY from the `.scoop-call` banner, which is
+    // why that banner had to stay up for the rest of the game once you had
+    // bought anything — removing it would have sealed the shop. So it sat
+    // there forever advertising an offer that was already spent (operator,
+    // 2026-08-04: "scoop's shop offer never goes away even after I have spent
+    // my one point on him"). With the dog himself as the entrance, the banner
+    // is free to be what it looks like: a call you can answer and be done with.
+    if (id === 'scoop') { setScoopOpen(true); sfx.pop(); return; }
     // A committee with the floor open wants lobbying, not shopping.
     if (id === 'committee' && vote.phase === 'open' && !vote.lobbied) {
       setVote(lobby);
@@ -2115,6 +2143,22 @@ export function App() {
     ? pendingBuyCost(activeFor(queue, tableId, me.publicKeyHex).filter(isBuyMove), foldedIdsRef.current, (k) => UPGRADES[k]?.cost)
     : 0;
 
+  /** Jars with a buy ALREADY QUEUED and not yet folded.
+   *
+   *  A jar you have just paid for does not enter `owned` until the chain
+   *  confirms it, and on the operator's phone that took a median of 14s and up
+   *  to 44s (report 23b527be-41723). For that whole window the game looks
+   *  exactly as it did before you bought — so you arm the vendor and feed it a
+   *  second chip. `onFeed` ate that chip, then `onBuy`'s duplicate guard
+   *  dropped the buy with `return q` and said nothing: the chip was gone and
+   *  nothing came back. Operator, 2026-08-04: "I am buying upgrades but it
+   *  keeps not giving me them - but it takes my chip."
+   *
+   *  Checked BEFORE the chip is eaten, in the two places that eat one. */
+  const queuedBuyKeys = tableId && me
+    ? queuedBuyKeysOf(activeFor(queue, tableId, me.publicKeyHex))
+    : new Set<string>();
+
   /** Critters with at least one jar you can afford this instant. The shop
    *  has no other entrance now, so this badge is the ONLY thing telling a
    *  player their crumbs will buy something.
@@ -2414,7 +2458,11 @@ export function App() {
           first frame; the moment you break something he finally says what for.
           Shown whenever there is char to spend or anything already bought, so
           a player who owns the lot can still go and look at it. */}
-      {state && (state.char > 0 || state.charOwned.size > 0) && !scoopOpen && !porcOpen && (
+      {/* ONLY while there is char to spend. It used to also stand whenever
+          `charOwned.size > 0` — i.e. permanently, from the first purchase on —
+          because it was the shop's only door. Tapping scoop is that door now,
+          so this can go back to meaning what it says. */}
+      {state && state.char > 0 && !scoopOpen && !porcOpen && (
         <div className="scoop-call" role="status">
           <span className="scoop-call-art" aria-hidden="true"><CritterArt id="scoop" /></span>
           <span className="vote-text">

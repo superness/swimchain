@@ -35,6 +35,28 @@ export function isBuyMove(m: QueuedMove): m is BuyMove {
 }
 
 /**
+ * Jars with a buy already queued for this table/author — the exact set
+ * `onBuy` refuses to queue a second time.
+ *
+ * IT EXISTS SO THAT REFUSAL CANNOT BE A SURPRISE. `onBuy` drops a duplicate
+ * with a bare `return q`, and the vendor path (`onFeed`) eats the chip you
+ * paid with BEFORE it calls `onBuy` — so a buy dropped here was a chip gone
+ * for nothing, silently. It is reachable because a bought jar does not enter
+ * `owned` until the chain confirms it, which on the operator's phone took a
+ * median of 14s and up to 44s: for that whole window the shop looks untouched
+ * and invites the second purchase that eats the chip (operator, 2026-08-04:
+ * "I am buying upgrades but it keeps not giving me them - but it takes my
+ * chip").
+ *
+ * Every gate that can consume something must ask THIS function, not its own
+ * copy of the predicate — three call sites drifting apart is how the hole
+ * opened in the first place. `queue` must already be `activeFor`-filtered.
+ */
+export function queuedBuyKeys(activeQueue: readonly QueuedMove[]): Set<string> {
+  return new Set(activeQueue.filter(isBuyMove).map((m) => m.key));
+}
+
+/**
  * Sum of cost for queued buys whose id the last completed fold did NOT yet
  * consume — i.e. buys queued after (or in the same tick as, before) that
  * fold, whose cost `crumbsNow` therefore does not yet reflect.
