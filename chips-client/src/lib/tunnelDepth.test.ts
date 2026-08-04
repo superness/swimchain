@@ -9,6 +9,9 @@
  *
  * Run: npx tsx src/lib/tunnelDepth.test.ts
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { tunnelDepth, bandAt, bandsAround, DEEP_BANDS } from './tunnelDepth';
 import { DIP_TIERS } from './chipsConst';
 
@@ -131,6 +134,58 @@ for (let i = 0; i < LAST; i++) {
       contiguous && holdsFront && w[0].ordinal >= 0,
       w.map((b) => b.ordinal).join(','));
   }
+}
+
+// ---------------------------------------------------------------------------
+// THE HEADER NAMES THE BAND YOU ARE STANDING IN.
+//
+// It used to read `DIP_TIERS[dipIndex].label`, and `dipIndex` stops at the last
+// tier — so the moment you reached The Abyssal Dip it froze there forever while
+// this function kept walking you down the same shaft, past the dip tiers and
+// into The Porcelain, The Table, The Floor, The Dirt, The Lava. The background
+// draws that ladder correctly, so the strata and the header disagreed, which is
+// a confusing thing to do to somebody who has just beaten a boss.
+//
+// Operator: "it does show me table\floor\dirt in the background so like I SEE
+// that but then I also see 'abyssal dip' and I'm like huh confused."
+{
+  const LIFE = 7.2e9;          // deep in the last tier
+  const LAST_TIER = DIP_TIERS.length - 1;
+
+  // Early game the answer is still a dip tier — this must not have changed.
+  check('in the dip tiers it still names the dip',
+    bandAt(tunnelDepth(0, DIP_TIERS[0].minLifetime, 0).layer).label === DIP_TIERS[0].label,
+    bandAt(tunnelDepth(0, DIP_TIERS[0].minLifetime, 0).layer).label);
+
+  // Past them it names the descent, and it MOVES as bands are broken.
+  const seen = [0, 1, 2, 3, 4].map((broken) =>
+    bandAt(tunnelDepth(LAST_TIER, LIFE, broken).layer).label);
+  check('the header walks the descent as bands break',
+    JSON.stringify(seen) === JSON.stringify(
+      ['The Porcelain', 'The Table', 'The Floor', 'The Dirt', 'The Lava']), seen);
+
+  // THE REPORTED CASE: porcelain and table beaten. The old readout said "The
+  // Abyssal Dip"; the background said The Floor. They agree now.
+  const standing = bandAt(tunnelDepth(LAST_TIER, LIFE, 2).layer).label;
+  check('THE REPORTED CASE: two bands broken -> The Floor', standing === 'The Floor', standing);
+  check('...and it is no longer the frozen dip label', standing !== DIP_TIERS[LAST_TIER].label);
+
+  // One ladder, one answer: whatever the header names, the bed draws, because
+  // both read `bandAt` of the same layer.
+  for (const broken of [0, 2, 4]) {
+    const layer = tunnelDepth(LAST_TIER, LIFE, broken).layer;
+    check(`header and bed agree at broken=${broken}`,
+      bandsAround(layer, 0, 0)[0].label === bandAt(layer).label);
+  }
+
+  // AND THE HEADER MUST ACTUALLY ASK. Everything above tests the function; the
+  // bug was that the component never called it. Reverting the readout to
+  // `tier.label` passed every assertion above, so read the call site too.
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
+  check('the header renders the standing band', app.includes('{standing?.label ?? tier.label}'));
+  check('...and not the frozen dip label alone', !app.includes('<strong>{tier.label}</strong>'));
+  check('`standing` comes from tunnelDepth + bandAt',
+    app.includes('bandAt(tunnelDepth(state.dipIndex, state.lifetimeChips, state.broken).layer)'));
 }
 
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
