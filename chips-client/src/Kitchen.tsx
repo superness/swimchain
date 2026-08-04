@@ -575,9 +575,22 @@ export interface KitchenProps {
   wingCoolS: number;
   /** The basket whose whistle was last tapped-and-refused, and when. */
   wingNope: { index: number; at: number } | null;
+  /** THE CRUMB READOUT, UNDER THE RACK. Passed in rather than imported so the
+   *  kitchen keeps knowing nothing about the tunnel — this slot is a hole in
+   *  the layout, not a dependency.
+   *
+   *  It lived in the counter column, where it shared the bottom of a phone
+   *  screen with the crew bench and their chatter and kept getting sat on. The
+   *  room under the rack came free when THE PLATE went away (see `.pot-worth`
+   *  below): each fryer used to carry a caption with the pot, the ladder and
+   *  the payout, all three of which are now ON the basket, and nothing took
+   *  the space back (operator, 2026-08-03: "there is a good amount of space
+   *  there wasted"). The number you watch belongs under the thing you watch
+   *  it come from. */
+  readout?: React.ReactNode;
 }
 
-export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCoolS, wingNope, polishOf }: KitchenProps) {
+export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerch, onShoo, feedMode, blessAt, wingIndex, wingSince, oracleIndex, overcookAt, onOvercook, ceiling, onWingCall, wingCoolS, wingNope, polishOf, readout }: KitchenProps) {
   return (
     <section className="kitchen" aria-label="the fryers">
       <div className={`rack rack-${Math.min(4, Math.max(1, chips.length))}`}>
@@ -606,6 +619,11 @@ export function Kitchen({ chips, onDip, crackles, ticks, capRoom, ratAt, ratPerc
           />
         ))}
       </div>
+      {/* Under the rack, in the room the plate left behind. `.kitchen` is a
+          centred flex column, so this needs no positioning of its own — which
+          is the whole point of putting it here rather than floating it over
+          the same space. */}
+      {readout}
     </section>
   );
 }

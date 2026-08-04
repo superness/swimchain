@@ -200,17 +200,31 @@ export interface CrewRowProps {
 export function CrewRow({ crew, bubble, feedingId, angel, ratAway, dealIds, onCritterClick }: CrewRowProps) {
   const speaker = bubble ? crew.find((m) => m.id === bubble.id) : null;
   return (
-    <div className="crew-row" aria-label="your crew">
+    <>
       {/* THE PHONE'S VOICE: on small screens the per-critter bubbles are
           hidden (34px critters on a bench can't carry them) and the current
           line becomes this one full-width chat strip above the bench —
           always whole, never clipped, never covering a card. Desktop hides
-          it and keeps the bubbles. */}
+          it and keeps the bubbles.
+
+          A SIBLING OF THE BENCH, NEVER A CHILD OF IT. It was the first child
+          of `.crew-row`, and the bench centres itself with
+          `.critter:first-child { margin-left: auto }` — so the moment anyone
+          spoke, no critter was `:first-child` any more, the centring switched
+          off, and the whole bench slid left. Measured at 390x740: every
+          critter jumped 53px on each line and 53px back when it expired
+          (operator: "the critters reposition themselves back and forth - I
+          think triggered by their dialogs" — it was). Desktop had the same
+          disease more quietly: the toast is `display:none` there but STILL a
+          child, so it shifted every `:nth-child(2n)/(3n)` loiter delay by one
+          and the cast twitched on every line. The strip is `position: fixed`
+          in the one place it renders, so it never needed to be inside. */}
       {bubble && (
         <div key={bubble.key} className="crew-toast" role="status">
           {speaker && <strong>{speaker.name}</strong>} {bubble.line}
         </div>
       )}
+      <div className="crew-row" aria-label="your crew">
       {crew.map((m) => {
         if (m.id === 'rat' && ratAway) return null;
         const glowing = m.id === 'angel' && angel.glowing;
@@ -245,7 +259,8 @@ export function CrewRow({ crew, bubble, feedingId, angel, ratAway, dealIds, onCr
           </button>
         );
       })}
-    </div>
+      </div>
+    </>
   );
 }
 

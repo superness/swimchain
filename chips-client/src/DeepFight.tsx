@@ -44,8 +44,11 @@ export function DeepFightScreen({ fight, best, ready, onHit, onLeave, broke }: {
   const willFinish = best !== null && finishes(fight, worth);
   const more = best !== null && worth > 0 ? blowsLeft(fight, worth) : Infinity;
 
+  // `deep-screen`, never `deep`: the bare class collided with the Long Fry's
+  // state modifier in Kitchen.tsx and turned a ×64 basket into a full-screen
+  // blackout. See the note above `.deep-screen` in styles.css.
   return (
-    <div className="deep" role="dialog" aria-label={fight.label}>
+    <div className="deep-screen" role="dialog" aria-label={fight.label}>
       <div className={`deep-bed${broke ? ' through' : ''}`} data-band={fight.band} aria-hidden="true" />
 
       <div className="deep-words">

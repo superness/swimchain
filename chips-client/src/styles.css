@@ -278,10 +278,25 @@ h1, h2, h3, p { margin: 0; }
 .stage {
   position: relative; z-index: 2; min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1.45fr) minmax(280px, .55fr);
+  /* `auto`, NOT `minmax(280px, .55fr)`. The counter column was a shelf, then a
+     shelf plus the crumb readout, and is now a single pill that only exists
+     once you have struck the floor — so a 280px floor on it reserved a quarter
+     of the room for nothing, and squeezed the fryers to pay for it. `auto`
+     sizes to what is actually in there, and to zero when that is nothing.
+     (The crumb readout moved under the rack — see Kitchen.tsx's `readout`.) */
+  grid-template-columns: minmax(0, 1.45fr) auto;
   gap: clamp(10px, 2vw, 40px);
   padding: clamp(10px, 2vh, 28px) clamp(14px, 2.4vw, 44px) clamp(12px, 2vh, 24px);
 }
+/* An empty track is still a track, and the gap beside it is still drawn. When
+   the counter has nothing in it at all, drop the column outright so the rack
+   gets the whole room. Falls back harmlessly to the `auto` track above
+   wherever `:has()` is unsupported. */
+.stage:has(> .counter:empty) { grid-template-columns: minmax(0, 1fr); }
+/* ...and an empty box with padding is not empty as far as the layout is
+   concerned: measured 36px of pure `padding-top` sitting under the rack at
+   1280x720 with nothing in the column at all. */
+.counter:empty { padding: 0; gap: 0; }
 /* the tiled splashback behind the station. Fades out fast — it is scenery, and
    the dip has to stay the bed of the scene. */
 .stage::before {
@@ -2807,8 +2822,12 @@ h1, h2, h3, p { margin: 0; }
   .crier { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 44px); }
   .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
   .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 8px); }
-  /* and the scrolling column stops short of the whole stack */
-  .counter { max-height: calc(100dvh - 240px - var(--safe)); }
+  /* And the scrolling column stops short of the whole stack — of the stack
+     that is ACTUALLY there, not of the number 240. `--dock-h` is measured
+     from the live boxes and published by App.tsx (see lib/dock.ts); the
+     constant survives only as the value used before the first measurement
+     lands, and on the vanishing chance that nothing measurable is docked. */
+  .counter { max-height: calc(100dvh - var(--dock-h, calc(240px + var(--safe)))); }
 }
 
 /* ── THE PORCELAIN ────────────────────────────────────────────────────────
@@ -3042,7 +3061,21 @@ h1, h2, h3, p { margin: 0; }
 }
 .deep-go:hover { color: #fff; border-color: rgba(255, 200, 150, .9); background: rgba(60, 34, 18, .6); }
 
-.deep {
+/* `.deep-screen`, NOT `.deep` — a bare one-word class for a FULL-SCREEN
+   TAKEOVER is a landmine, and it went off. `deep` is also the Long Fry's state
+   modifier, worn by three elements in Kitchen.tsx the moment a chip reaches its
+   sixth crackle: the basket button, its `×64` label, and the sixth pip. Every
+   rule that styles that state is a compound (`.basket.golden.deep`, `.pip.deep`,
+   `.multi-read b.deep`) and so outranks this block on colour — but none of them
+   set `position`, so THIS rule won the cascade for the properties that matter
+   and each of those elements became `position: fixed; inset: 0` wearing a
+   93%-opaque backdrop. Measured on a 1707x735 viewport: the basket button
+   computed to 1707x1776 at (0,0). The operator saw the whole screen go dark
+   behind one enormous chip (2026-08-03).
+   The `.deep-*` children below were never part of it — they are distinct names.
+   `styles.collision.test.ts` now fails the build if any compound modifier ever
+   picks up a bare rule that positions it. */
+.deep-screen {
   position: fixed; inset: 0; z-index: 60;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 20px; text-align: center;
@@ -3055,10 +3088,10 @@ h1, h2, h3, p { margin: 0; }
 }
 .deep-bed.through { opacity: .25; }
 
-/* WIDTH, not max-width: `.deep` centres a flex child, so a max-width alone let
-   the column collapse to the widest line — measured at 232px on a 1707px
-   viewport, which made the healthbar look like a progress dash. */
-/* `100%`, NOT `92vw`: `.deep` carries 20px padding, so at a 390px viewport the
+/* WIDTH, not max-width: `.deep-screen` centres a flex child, so a max-width
+   alone let the column collapse to the widest line — measured at 232px on a
+   1707px viewport, which made the healthbar look like a progress dash. */
+/* `100%`, NOT `92vw`: `.deep-screen` carries 20px padding, so at a 390px viewport the
    content box is 350px while 92vw resolves to 358.8 — a 9px overflow on a phone,
    which vw units cannot see because they do not know about the padding. */
 .deep-words { position: relative; z-index: 1; width: min(520px, 100%); }
