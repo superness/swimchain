@@ -181,6 +181,37 @@ function withBuy(q: QueuedMove[], key: string, author = ME, table = TABLE): Queu
     app.includes("m.outcome.startsWith('rejected')"));
 }
 
+// ---------------------------------------------------------------------------
+// 8) A CHAIN RUNG WHOSE PREFIX IS MISSING IS NOT BUYABLE, AND MUST NOT COST A
+//    CHIP TO FIND OUT.
+//
+//    `applyBuy` answers `rejected-order` when a lower rung is unowned. The
+//    vendor path takes the chip BEFORE the buy is queued, so that refusal is
+//    paid for and returns nothing.
+//
+//    Read off the operator's table on 2026-08-04: `season3` has no buy on chain
+//    in the current run, and `season4`..`season7` were attempted five times —
+//    17:23, 17:44, 18:11, 20:44 — every one `rejected-order`, every one paid
+//    for with a chip. "I have bought them like 3 times this keeps happening."
+{
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
+  const jar = app.slice(app.indexOf('function onJar('), app.indexOf('function onFeed('));
+  const feed = app.slice(app.indexOf('function onFeed('), app.indexOf('function launchFeed('));
+
+  check('the prefix rule exists', app.includes('function prefixMissing('));
+  check('onJar refuses to arm a rung with a missing prefix', jar.includes('prefixMissing('));
+  check('onFeed refuses to pay for one', feed.includes('prefixMissing('));
+
+  const gateAt = feed.indexOf('prefixMissing(');
+  const takeAt = feed.indexOf('const taken = take(index)');
+  check('...and it decides BEFORE the chip is eaten', gateAt >= 0 && takeAt >= 0 && gateAt < takeAt,
+    { gateAt, takeAt });
+
+  // It must name the rung you actually need, not just refuse.
+  check('the refusal names the rung that has to come first',
+    app.includes('has to come first'));
+}
+
 console.log('');
 if (failures > 0) { console.error(`${failures} checks failed`); process.exit(1); }
 console.log('queued buys: all checks passed');
