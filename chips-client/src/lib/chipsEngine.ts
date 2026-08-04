@@ -115,6 +115,23 @@ export interface ChipsState {
    *  the table". Belongs to the BOWL: a tip resets it, so tipping mid-fight
    *  costs you the fight. Meaningless for band 0, which settles in one blow. */
   bossDamage: number;
+  /** THE BAND'S HP, FROZEN AT THE FIRST BLOW YOU LAND ON IT. 0 when no fight
+   *  is under way.
+   *
+   *  It used to be recomputed as `bossHp(band, lifetimeChips)` every time a
+   *  blow was folded, and `lifetimeChips` only ever grows — so the target grew
+   *  while you swung at it ("I noticed that happening with the chip from 1974
+   *  it kept getting more hp"), and, far worse, a KILLING BLOW could stop
+   *  killing. The fold is a full replay; a dip that arrives late and sorts
+   *  before the blow raises the boss's health at replay time, and the band
+   *  un-breaks. Caught on 2026-08-04: `broken 2 -> 1` across one added move
+   *  (883 -> 884), which took the table back and the char with it —
+   *  `lifetimeChips` 26,772,165 x 1000 x BOSS_HP_MULT[1] = 80.3B against
+   *  23.9B of damage, the 30% the banner was showing.
+   *
+   *  Frozen, the number a fight is measured against cannot be changed by
+   *  anything that happens after it starts. */
+  bossHpFrozen: number;
 
   /** Char abilities bought from scoop. PRESTIGE — rides across a tip, like
    *  char itself: you paid the descent for these, not the run. */
@@ -451,7 +468,7 @@ function initialState(): ChipsState {
     crumbs: 0, lifetimeChips: 0, oldSalt: 0, tips: 0, crispest: 0,
     owned: new Set(), bowlCap: START_BOWL_CAP,
     seasoningNum: 1, seasoningDen: 1, fryers: 1,
-    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, bossDamage: 0, charOwned: new Set(), declined: new Set(),
+    broken: 0, deepest: 0, char: 0, bowls: 0, paidToBosses: 0, bossDamage: 0, bossHpFrozen: 0, charOwned: new Set(), declined: new Set(),
     goldenBits: GOLDEN_BITS, airtight: false,
     sogBonus: 0, doubleDipMod: 0,
     dipIndex: 0, lastConfirmedAt: 0, lastBankAt: 0,
@@ -643,6 +660,7 @@ export function foldChips(
       // a new one. `deepest` and `char` are prestige and stay (see `broke`).
       state.broken = 0;
       state.bossDamage = 0;   // the fight belongs to the bowl
+      state.bossHpFrozen = 0;
       state.declined = new Set();
       state.crumbs = 0;
       state.lifetimeChips = 0;
@@ -785,16 +803,21 @@ export function foldChips(
          A blow that does not finish the boss is not a failure and not a
          rejection: it is progress, and it says so. */
       if (band >= FIRST_HP_BAND) {
+        // THE FIRST BLOW SETS THE BAR. After that the bar does not move, no
+        // matter how much lifetime the run piles on — see `bossHpFrozen`.
+        if (state.bossHpFrozen <= 0) state.bossHpFrozen = bossHp(band, state.lifetimeChips);
         state.bossDamage += parsed.paid;
-        const hp = bossHp(band, state.lifetimeChips);
+        const hp = state.bossHpFrozen;
         if (state.bossDamage < hp) {
           state.moves.push({
             content_id: reply.content_id, ms: parsed.ms, outcome: 'chipped',
           });
           continue;
         }
-        // It gives. Damage resets for whatever is under it.
+        // It gives. Damage resets for whatever is under it, and so does the
+        // bar — the next band freezes its own on its own first blow.
         state.bossDamage = 0;
+        state.bossHpFrozen = 0;
       }
 
       state.broken = band + 1;

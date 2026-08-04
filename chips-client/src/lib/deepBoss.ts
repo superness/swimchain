@@ -53,12 +53,19 @@ export function fightAt(
   broken: number,
   lifetimeChips: number,
   bossDamage: number,
+  /** The band's frozen HP from the fold (`ChipsState.bossHpFrozen`), or 0 when
+   *  no blow has landed yet. THE BAR MUST BE THE ONE THE FOLD IS SCORING
+   *  AGAINST — computing it here from `lifetimeChips` is what made the health
+   *  bar creep backwards while you were hitting it, since lifetime only grows.
+   *  Before the first blow there is nothing frozen yet, so the preview is what
+   *  it WOULD be if you swung now, which is the honest thing to show. */
+  bossHpFrozen = 0,
 ): DeepFight | null {
   const band = broken;
   if (band < FIRST_HP_BAND || band >= DEEP_BAND_COUNT) return null;
   if (lifetimeChips < deepBandFloor(band)) return null;
 
-  const hp = bossHp(band, lifetimeChips);
+  const hp = bossHpFrozen > 0 ? bossHpFrozen : bossHp(band, lifetimeChips);
   const done = Math.max(0, Math.min(hp, bossDamage));
   return {
     band,
