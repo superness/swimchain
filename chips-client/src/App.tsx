@@ -57,6 +57,7 @@ import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFlo
 import { Boards, useBoards } from './Boards';
 import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
+import { measureDock, DOCKED_SELECTORS } from './lib/dock';
 import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
@@ -1822,6 +1823,59 @@ export function App() {
     prevStateRef.current = null;
   }, [tableId]);
 
+  /* THE COUNTER COLUMN STOPS SHORT OF WHATEVER IS ACTUALLY DOCKED.
+     It used to stop short of the number 240, which is not a description of
+     anything: the phone's bottom stack is a boards pill, a bench sized by a
+     viewport clamp, a chat strip as tall as the line somebody wrote, and a
+     tutorial banner that comes and goes. 240 was right by luck at some line
+     lengths and wrong at others — which is how the crumbs readout and the
+     bottom-of-the-bowl ticket, both CARDS IN THAT COLUMN rather than overlays,
+     ended up underneath the chatter with no way to get out from under it.
+     Measured here, published as `--dock-h`, consumed by `.counter`; the CSS
+     keeps 240px purely as the before-first-measurement fallback.
+     `lib/dock.ts` holds the rules and the trap they exist for. */
+  useEffect(() => {
+    let raf = 0;
+    const publish = () => {
+      raf = 0;
+      const h = measureDock(document, window.innerHeight);
+      const root = document.documentElement;
+      // Clearing rather than writing 0: an unset var lets the CSS fallback
+      // take over, which is the correct behaviour when nothing is docked.
+      if (h === null) root.style.removeProperty('--dock-h');
+      else root.style.setProperty('--dock-h', `${h}px`);
+    };
+    const schedule = () => { if (raf === 0) raf = requestAnimationFrame(publish); };
+
+    publish();
+    window.addEventListener('resize', schedule);
+    window.visualViewport?.addEventListener('resize', schedule);
+    // The dock's contents mount and unmount with the game's own state (a line
+    // of chatter, a banner) and RESIZE without remounting (a longer line
+    // wrapping to a third row), so both kinds of change have to be watched.
+    const ro = new ResizeObserver(schedule);
+    const mo = new MutationObserver(() => {
+      ro.disconnect();
+      for (const sel of DOCKED_SELECTORS) {
+        for (const el of Array.from(document.querySelectorAll(sel))) ro.observe(el);
+      }
+      schedule();
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+    for (const sel of DOCKED_SELECTORS) {
+      for (const el of Array.from(document.querySelectorAll(sel))) ro.observe(el);
+    }
+
+    return () => {
+      if (raf !== 0) cancelAnimationFrame(raf);
+      window.removeEventListener('resize', schedule);
+      window.visualViewport?.removeEventListener('resize', schedule);
+      ro.disconnect();
+      mo.disconnect();
+      document.documentElement.style.removeProperty('--dock-h');
+    };
+  }, []);
+
   useEffect(() => {
     if (!state) return;
     if (announcedRef.current === null) {
@@ -2172,12 +2226,20 @@ export function App() {
           onWingCall={state?.owned.has('wingcall') ? onWingCall : null}
           wingCoolS={Math.max(0, Math.ceil((wingNow.readyAt - nowMs) / 1000))}
           wingNope={wingNope}
+          /* THE CRUMB READOUT MOVED UNDER THE RACK. It was the first card in
+             the counter column, which on a phone stacks into the bottom of the
+             screen alongside the crew bench and their chatter — so the one
+             number the whole game is about kept getting sat on by a toast.
+             Under the fryers it is both out of that stack entirely and in the
+             room THE PLATE vacated (Kitchen.tsx). The dip-flight animations
+             find it by `document.querySelector('.tunnel-crumbs')`, so the
+             crumbs still fly to wherever the counter actually is. */
+          readout={state && (
+            <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
+          )}
         />
 
         <aside className="counter">
-          {state && (
-            <TunnelRead state={state} nowMs={nowMs} counting={stillCounting} countProgress={counting} />
-          )}
           {/* The standing offer sits ON THE COUNTER, in the column's flow,
               directly under the readout — not floated over it. It was a
               `position: fixed` overlay with hand-tuned offsets, which put it
