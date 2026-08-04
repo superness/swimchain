@@ -103,5 +103,74 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
     { atLife: bossHp(1, LIFE), atDouble: bossHp(1, LIFE * 2) });
 }
 
+/* ── THE BAR IS FROZEN AT THE FIRST BLOW ──────────────────────────────────
+   `bossHp(band, lifetimeChips)` grows with lifetime, and lifetime only ever
+   grows. Recomputed on every fold, that meant:
+
+     - the health bar crept BACKWARDS while you were hitting the thing
+       (operator: "I noticed that happening with the chip from 1974 it kept
+       getting more hp"), and
+     - a KILLING BLOW could stop killing. The fold is a full replay of history,
+       so a dip that confirms late and sorts BEFORE the blow raises the boss's
+       health at replay time and the band un-breaks.
+
+   Caught live on 2026-08-04: `broken 2 -> 1` across a single added move
+   (883 -> 884), taking the table back and the char with it. lifetimeChips
+   26,772,165 x 1000 x BOSS_HP_MULT[1] = 80.3B against 23.9B of damage — the
+   30% the banner was showing where 100% had been.
+
+   Operator's ruling: "it should be a snapshot of when I get here" / "sure the
+   first hit". */
+{
+  // A blow that does not finish it, then enough lifetime to move the old bar,
+  // then a blow sized to the ORIGINAL bar. Under the old rule the second blow
+  // would fall short of a target that had grown underneath it.
+  const hp0 = bossHp(1, LIFE);
+  const half = Math.ceil(hp0 / 2);
+
+  const history = [
+    ...past0(),
+    reply(`broke ${half}`),                    // first hit — freezes the bar at hp0
+    reply(`dip ${LIFE * 40 * CRUMBS_PER_CHIP}`), // lifetime balloons mid-fight
+    reply(`broke ${hp0 - half}`),              // exactly finishes the ORIGINAL bar
+  ];
+  const st = fold(history);
+
+  check('the band gives to the bar it had at the first blow', st.broken === 2, {
+    broken: st.broken, frozen: st.bossHpFrozen, hp0,
+  });
+  check('...and the char is paid', st.char > 0, st.char);
+  // The bar it was scored against must be the frozen one, not the ballooned one.
+  check('the frozen bar was the one in force, not the grown one',
+    bossHp(1, st.lifetimeChips) > hp0, { grown: bossHp(1, st.lifetimeChips), hp0 });
+
+  // The freeze clears on the break, so the NEXT band sets its own bar.
+  check('breaking clears the freeze for the band below', st.bossHpFrozen === 0, st.bossHpFrozen);
+}
+{
+  // MID-FIGHT THE BAR MUST HOLD. Two partial blows with a lifetime explosion
+  // between them: the damage done cannot shrink as a fraction of the target.
+  const hp0 = bossHp(1, LIFE);
+  const chip = Math.ceil(hp0 / 4);
+  const st = fold([
+    ...past0(),
+    reply(`broke ${chip}`),
+    reply(`dip ${LIFE * 40 * CRUMBS_PER_CHIP}`),
+    reply(`broke ${chip}`),
+  ]);
+  check('the bar is still the one the fight started with', st.bossHpFrozen === hp0,
+    { frozen: st.bossHpFrozen, hp0 });
+  check('two quarter-blows read as half the bar, not less',
+    st.bossDamage === chip * 2 && st.bossDamage / st.bossHpFrozen >= 0.49,
+    { damage: st.bossDamage, frozen: st.bossHpFrozen });
+}
+{
+  // A TIP TAKES THE FIGHT WITH IT — including the bar, so the next bowl's
+  // fight is sized by the next bowl's first blow.
+  const st = fold([...past0(), reply(`broke ${Math.ceil(bossHp(1, LIFE) / 3)}`), reply('tip')]);
+  check('a tip clears the frozen bar', st.bossHpFrozen === 0, st.bossHpFrozen);
+  check('...and the damage with it', st.bossDamage === 0, st.bossDamage);
+}
+
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
 console.log('\nall good');

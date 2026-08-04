@@ -937,7 +937,7 @@ export function App() {
   /* ── THE PORCELAIN ──────────────────────────────────────────────────── */
   const porcReach = state ? porcelainInReach(state.lifetimeChips, state.broken) : false;
   /** The deep boss in front of you, if any — bands 1-5, health-based. */
-  const deepFight = state ? fightAt(state.broken, state.lifetimeChips, state.bossDamage) : null;
+  const deepFight = state ? fightAt(state.broken, state.lifetimeChips, state.bossDamage, state.bossHpFrozen) : null;
   const porcReady = readiness(chips, state?.lifetimeChips ?? 0);
 
   /** The Long Fry: one more crackle past golden. Ownership only — the fold
@@ -1476,7 +1476,7 @@ export function App() {
    */
   function onDeepHit(index: number): void {
     if (!host || !me || !tableId || !state) return;
-    const fight = fightAt(state.broken, state.lifetimeChips, state.bossDamage);
+    const fight = fightAt(state.broken, state.lifetimeChips, state.bossDamage, state.bossHpFrozen);
     if (!fight) return;
     const chip = chips[index];
     if (!chip || chip.pot <= 0) return;
