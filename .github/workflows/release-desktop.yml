@@ -42,6 +42,62 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The bundle version comes from tauri.conf.json, NOT from the dispatch
+      # input. Before this, `version=0.1.17` produced Swimchain_0.1.16 artifacts
+      # and would have published them under a desktop-v0.1.17-alpha tag — a
+      # release whose name disagrees with its contents, which makes "which build
+      # is this?" unanswerable after the fact.
+      - name: Resolve release version
+        id: ver
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            v="${GITHUB_REF_NAME#desktop-v}"   # desktop-v0.1.17-alpha -> 0.1.17-alpha
+            v="${v%%-*}"                       # drop any pre-release suffix -> 0.1.17
+          else
+            v="${{ inputs.version }}"
+          fi
+          if ! printf '%s' "$v" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Could not resolve a semver version (got '$v'). Tags must look like desktop-v1.2.3-alpha."
+            exit 1
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+
+      # Stamp all three sources together. They are separate files that must
+      # agree — the installer filename comes from tauri.conf.json, the exe
+      # metadata from Cargo.toml, and npm tooling reads package.json. #272 was
+      # a manual cleanup of exactly that drift; stamping them from one value
+      # makes the drift impossible in a CI build.
+      - name: Stamp the version
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+
+          $tauriPath = 'desktop-app/src-tauri/tauri.conf.json'
+          $tauri = Get-Content $tauriPath -Raw | ConvertFrom-Json
+          $tauri.version = $v
+          $tauri | ConvertTo-Json -Depth 20 | Set-Content $tauriPath -Encoding utf8
+
+          $pkgPath = 'desktop-app/package.json'
+          $pkg = Get-Content $pkgPath -Raw | ConvertFrom-Json
+          $pkg.version = $v
+          $pkg | ConvertTo-Json -Depth 20 | Set-Content $pkgPath -Encoding utf8
+
+          # Only the [package] version — a blunt replace would rewrite
+          # dependency versions further down the file.
+          $cargoPath = 'desktop-app/src-tauri/Cargo.toml'
+          $cargo = Get-Content $cargoPath -Raw
+          $patched = [regex]::Replace(
+            $cargo,
+            '(?ms)(^\[package\].*?^version\s*=\s*")[^"]*(")',
+            "`${1}$v`${2}",
+            1)
+          if ($patched -eq $cargo) { throw "Cargo.toml [package] version was not rewritten" }
+          Set-Content $cargoPath -Value $patched -Encoding utf8 -NoNewline
+
+          Write-Host "stamped $v into tauri.conf.json, package.json, Cargo.toml"
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
@@ -223,6 +279,21 @@ jobs:
             Write-Host "all $($targets.Count) bundled executables signed"
           }
 
+      # Close the loop: the artifacts must actually carry the version we were
+      # asked to build. Stamping without checking would just move the mismatch.
+      - name: Verify artifacts carry the requested version
+        shell: pwsh
+        run: |
+          $v = "${{ steps.ver.outputs.version }}"
+          $files = Get-ChildItem desktop-app/src-tauri/target/release/bundle -Recurse -Include *.exe,*.msi
+          if (-not $files) { throw "no installer artifacts were produced" }
+          $bad = $files | Where-Object { $_.Name -notlike "*$v*" }
+          $files | ForEach-Object { "  $($_.Name)" }
+          if ($bad) {
+            throw "artifact name does not contain version ${v}: $($bad.Name -join ', ')"
+          }
+          Write-Host "all $($files.Count) artifacts carry version $v"
+
       - uses: actions/upload-artifact@v4
         with:
           name: swimchain-desktop-windows
@@ -235,7 +306,7 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.publish }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('desktop-v{0}-alpha', inputs.version) }}
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('desktop-v{0}-alpha', steps.ver.outputs.version) }}
           prerelease: true
           files: |
             desktop-app/src-tauri/target/release/bundle/nsis/*.exe
