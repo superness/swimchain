@@ -2252,7 +2252,15 @@ h1, h2, h3, p { margin: 0; }
     display: block; position: fixed; left: 8px; right: 8px;
     /* Rides the ledge, whose height follows the critter size above. */
     bottom: calc(46px + clamp(84px, 22vw, 110px));
-    z-index: 15;
+    /* 16, NOT 15. The strip and the ledge (`.crew-row`) both sat on 15, and
+       equal z-index is decided by DOM order — which USED to favour the strip
+       because it was the ledge's first child, and stopped the moment it became
+       the ledge's preceding sibling (the fix for the bench sliding 53px on
+       every line). The critters then painted over their own dialogue
+       (operator: "the critter dialog elements are rendering behind the
+       critters"). A strip that says what somebody is saying must outrank the
+       thing saying it. */
+    z-index: 16;
     font-family: var(--chalk); font-size: 13px; line-height: 1.45;
     color: #f0e2c6; text-align: center;
     background: rgba(14, 10, 7, .94);
@@ -2929,7 +2937,16 @@ h1, h2, h3, p { margin: 0; }
 
 .scoop-shop {
   position: relative; z-index: 1;
-  width: min(560px, 94vw); max-height: 88vh; overflow-y: auto;
+  /* `dvh`, NOT `vh` — every other sheet in this file already uses it
+     (`.stall-sheet` is 84dvh). On a phone `vh` is the LARGE viewport, the one
+     you only get with the browser chrome retracted, so `88vh` can be taller
+     than the screen actually showing. The shop then overflows the backdrop it
+     is centred in, and because the backdrop is `place-items: center` the
+     overflow goes off BOTH ends: `leave him to it` disappears below the fold,
+     and the only backdrop left to tap is the ~13px sliver beside a 94vw box.
+     That is a dialog with no way out at all (operator, 2026-08-04: "impossible
+     to close the shop UI - even tapping outside of it didnt work"). */
+  width: min(560px, 94vw); max-height: 84dvh; overflow-y: auto;
   background: linear-gradient(#1b110c, #120a07);
   border: 1px solid rgba(255, 150, 90, .4);
   border-radius: 16px; padding: 18px 20px 16px;
