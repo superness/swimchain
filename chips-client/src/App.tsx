@@ -2513,15 +2513,6 @@ export function App() {
           </button>
         </div>
       )}
-      {scoopOpen && state && (
-        <ScoopShop
-          char={state.char}
-          owned={state.charOwned}
-          broken={state.deepest}
-          onBuy={(a) => { onSpendChar(a); setScoopOpen(false); }}
-          onClose={() => setScoopOpen(false)}
-        />
-      )}
       {/* A DEEP BOSS IS IN FRONT OF YOU. Unlike the porcelain this one keeps
           what you have already done to it, so the call says so — a player who
           left mid-fight needs to know the damage is still there. */}
@@ -2537,6 +2528,48 @@ export function App() {
             {deepFight.done > 0 ? 'back to it' : 'have a go'}
           </button>
         </div>
+      )}
+      {hermitNow.phase === 'holding' && (
+        <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
+      )}
+      {feeding && (
+        <FeedBanner
+          vendor={feeding.vendor}
+          jarLabel={UPGRADES[feeding.jarKey]?.label ?? 'jar'}
+          onCancel={() => { setFeeding(null); setBubble(null); }}
+          refuse={refusableNow(feeding.jarKey)}
+        />
+      )}
+      </div>
+
+      {/* ── TAKEOVERS LIVE OUTSIDE THE CRIER ─────────────────────────────────
+          These three were children of `.crier`, and `.crier` carries
+          `translate: -50% 0`. The individual `translate` property makes an
+          element a CONTAINING BLOCK for `position: fixed` descendants, exactly
+          as `transform` does — so `inset: 0` on a takeover stopped meaning "the
+          viewport" and started meaning "the crier's column". Measured at
+          448x899: `.deep-screen` inside the crier computed to 412x40 at
+          (18,744) — a forty-pixel sliver — against 448x899 at (0,0) outside it.
+
+          Which is why the deep fight looked like it had no background at all
+          (operator, 2026-08-04: "the background is just transparent? very hard
+          to read"), and why scoop's shop was clipped AND could not be dismissed
+          by tapping outside it: `.sheet-backdrop` was confined the same way, so
+          outside the shop there was no backdrop left to take the tap. The
+          `88vh -> 84dvh` change in #290 treated a symptom of this; this is the
+          cause.
+
+          The crier keeps what it is for — the CALL banners (`.deep-call`,
+          `.scoop-call`, `.porc-call`, the feed banner). A thing that covers the
+          screen is not a banner. */}
+      {scoopOpen && state && (
+        <ScoopShop
+          char={state.char}
+          owned={state.charOwned}
+          broken={state.deepest}
+          onBuy={(a) => { onSpendChar(a); setScoopOpen(false); }}
+          onClose={() => setScoopOpen(false)}
+        />
       )}
       {/* THE BOTTOM OF THE BOWL. No call-to-action anywhere: this cannot be
           opened, only arrived at. */}
@@ -2560,18 +2593,6 @@ export function App() {
           broke={deepBroke}
         />
       )}
-      {hermitNow.phase === 'holding' && (
-        <div className="hermit-holding" role="status">the hermit has your chip. he has gone under the celery.</div>
-      )}
-      {feeding && (
-        <FeedBanner
-          vendor={feeding.vendor}
-          jarLabel={UPGRADES[feeding.jarKey]?.label ?? 'jar'}
-          onCancel={() => { setFeeding(null); setBubble(null); }}
-          refuse={refusableNow(feeding.jarKey)}
-        />
-      )}
-      </div>
 
       {/*
         The shop-chatter corner. Both of these are asides, so they share one
