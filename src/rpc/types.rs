@@ -132,6 +132,11 @@ pub struct GetInfoResult {
     pub rpc_port: u16,
     /// P2P server port
     pub p2p_port: u16,
+    /// Background search-reindex state. `rebuilding: true` means search results
+    /// are incomplete and a client should say so. Absent on a node with no
+    /// search index. Optional so older clients keep deserialising this struct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_index: Option<crate::node::search_bootstrap::IndexProgressSnapshot>,
 }
 
 /// get_peers result - single peer

@@ -596,6 +596,9 @@ pub struct NodeRef {
     pub router: Option<Arc<MessageRouter>>,
     /// Sync state accessor
     pub sync_state: Arc<RwLock<SyncState>>,
+    /// Background search-reindex progress, so clients can explain incomplete
+    /// search results instead of silently returning short ones.
+    pub search_progress: Option<Arc<crate::node::search_bootstrap::IndexProgress>>,
     /// Data directory (contains config.toml, chain, content, etc.)
     pub data_dir: std::path::PathBuf,
     /// Content store path
@@ -1385,6 +1388,10 @@ impl RpcMethods {
             node_id: self.node.node_id.clone(),
             rpc_port: self.node.rpc_port,
             p2p_port: self.node.p2p_port,
+            // Present so a client can say "search is still catching up" rather
+            // than silently serving short results while the background reindex
+            // runs. None on a node that never opened an index.
+            search_index: self.node.search_progress.as_ref().map(|p| p.snapshot()),
         };
 
         RpcResponse::success(serde_json::to_value(result).unwrap(), id)

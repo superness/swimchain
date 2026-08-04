@@ -552,12 +552,17 @@ export function useNetworkStatus(): { status: SyncStatus | null; loading: boolea
 
     const fetchStatus = async () => {
       try {
-        const [syncStatus, peers] = await Promise.all([
+        // get_info carries the background reindex state. It is best-effort:
+        // an older node omits the field and a failure here must not blank out
+        // the rest of the status bar.
+        const [syncStatus, peers, info] = await Promise.all([
           rpc.getSyncStatus(),
           rpc.getPeers(),
+          rpc.getInfo().catch(() => null),
         ]);
 
         setStatus({
+          searchIndex: info?.search_index,
           chainPercent: syncStatus.chain_percent,
           peerCount: syncStatus.peer_count,
           peersReceiving: peers.filter(p => p.direction === 'Inbound').length,

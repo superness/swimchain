@@ -40,6 +40,7 @@ pub mod metrics;
 pub mod origin_privacy;
 pub mod peer_connections;
 pub mod router;
+pub mod search_bootstrap;
 pub mod state;
 pub mod tasks;
 
