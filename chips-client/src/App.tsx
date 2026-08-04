@@ -1139,6 +1139,30 @@ export function App() {
   /** Clicking a jar ARMS the vendor rather than buying: the critter steps up
    *  and waits to be fed a chip off the fryer. The crumb price is unchanged
    *  fold business (`onBuy`); the chip is the ritual on top. */
+  /** THE FOLD WILL REJECT THIS, SO DO NOT EAT A CHIP FOR IT.
+   *
+   *  A chained jar needs every rung below it OWNED — `applyBuy` answers
+   *  `rejected-order` otherwise, and because the vendor path takes the chip
+   *  BEFORE the buy is queued, that refusal costs a chip and returns nothing.
+   *
+   *  Read off the operator's own table on 2026-08-04: `season3` has no buy on
+   *  chain in the current run, and `season4` through `season7` were attempted
+   *  five times over — 17:23, 17:44, 18:11, 20:44 — every one `rejected-order`,
+   *  every one paid for with a chip. "I have bought them like 3 times this
+   *  keeps happening."
+   *
+   *  `openJarsOf` already applies this rule to the SHELF, against the same
+   *  `owned` set. This applies it at the moment of paying, against the folded
+   *  state, so a shelf that has drifted out of step with the chain cannot
+   *  charge you for a move the chain will not take. */
+  function prefixMissing(key: string): string | null {
+    const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
+    if (!chain || !state) return null;
+    const idx = chain.indexOf(key);
+    for (let i = 0; i < idx; i++) if (!state.owned.has(chain[i])) return chain[i];
+    return null;
+  }
+
   function onJar(key: string): void {
     if (!host || !me || !tableId) return;
     if (state?.owned.has(key)) return;
@@ -1147,6 +1171,11 @@ export function App() {
     // player try again in the first place.
     if (queuedBuyKeys.has(key) || boughtPendingRef.current.has(key)) {
       setNotice('that one is already bought — it is still going through');
+      return;
+    }
+    const need = prefixMissing(key);
+    if (need !== null) {
+      setNotice(`${UPGRADES[need]?.label ?? need} has to come first`);
       return;
     }
     const vendor = vendorOf(key);
@@ -1206,6 +1235,12 @@ export function App() {
     if (queuedBuyKeys.has(f.jarKey) || boughtPendingRef.current.has(f.jarKey)) {
       setFeeding(null);
       setNotice('that one is already bought — it is still going through');
+      return;
+    }
+    const missing = prefixMissing(f.jarKey);
+    if (missing !== null) {
+      setFeeding(null);
+      setNotice(`${UPGRADES[missing]?.label ?? missing} has to come first`);
       return;
     }
     const taken = take(index);
