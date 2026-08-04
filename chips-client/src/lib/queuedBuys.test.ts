@@ -151,6 +151,36 @@ function withBuy(q: QueuedMove[], key: string, author = ME, table = TABLE): Queu
   check('no hand-rolled duplicate check survives', !app.includes('activeBuys.some((m) => m.key === key)'));
 }
 
+// ---------------------------------------------------------------------------
+// 7) THE REST OF THE WINDOW. The queue is not the whole pipeline. Report
+//    23b527be-30565 caught `detector3` bought as move 201 AND again as move
+//    206, both confirmed — 201 had already left the queue, so a queue-only
+//    gate lets the second one through and the fold answers `rejected-owned`:
+//    the chip that paid for it bought nothing.
+//
+//    So both chip-eating gates must also consult the in-flight set, which is
+//    only emptied when the fold has actually granted or refused the jar.
+{
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
+  const jar = app.slice(app.indexOf('function onJar('), app.indexOf('function onFeed('));
+  const feed = app.slice(app.indexOf('function onFeed('), app.indexOf('function launchFeed('));
+
+  check('onJar consults the in-flight set', jar.includes('boughtPendingRef.current.has('));
+  check('onFeed consults the in-flight set', feed.includes('boughtPendingRef.current.has('));
+
+  const inflightAt = feed.indexOf('boughtPendingRef.current.has(');
+  const takeAt = feed.indexOf('const taken = take(index)');
+  check('...before the chip is eaten', inflightAt >= 0 && takeAt >= 0 && inflightAt < takeAt,
+    { inflightAt, takeAt });
+
+  // A key enters the set exactly where a buy is born, and leaves it only on a
+  // settled fold — never on a timer, never on the queue draining.
+  check('the set is filled where the buy is enqueued', app.includes('boughtPendingRef.current.add(key);'));
+  check('...and drained on owned', app.includes('if (state.owned.has(key)) { pend.delete(key); continue; }'));
+  check('...and drained on a rejection, so a refused buy can be retried',
+    app.includes("m.outcome.startsWith('rejected')"));
+}
+
 console.log('');
 if (failures > 0) { console.error(`${failures} checks failed`); process.exit(1); }
 console.log('queued buys: all checks passed');

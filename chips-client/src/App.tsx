@@ -449,6 +449,21 @@ export function App() {
    */
   const foldedIdsRef = useRef<ReadonlySet<number>>(new Set());
 
+  /** Jars this client has ASKED FOR and not yet seen granted.
+   *
+   *  The queue alone is not the window. Report 23b527be-30565 caught the rest
+   *  of it live: `detector3` was bought as move 201 AND again as move 206, both
+   *  confirmed — the second one folds `rejected-owned`, so the chip that paid
+   *  for it bought nothing. Move 201 had already left the queue by then, so a
+   *  queue-only guard waves the second purchase straight through.
+   *
+   *  The true window is the whole pipeline — queued, sent, confirmed, and not
+   *  yet reflected in `owned` — because `owned` is what the shop reads. A key
+   *  goes in when the buy is enqueued and comes out only when the fold has
+   *  actually granted the jar, or has rejected the attempt (which frees the
+   *  player to try again). */
+  const boughtPendingRef = useRef<Set<string>>(new Set());
+
   const foldNow = useCallback((): void => {
     if (!tableId || !me) return;
     const { replies: confirmed, verified } = confirmedRef.current;
@@ -462,6 +477,21 @@ export function App() {
   // against) changes — this is what makes a dip or a buy credit immediately,
   // with zero network round trip, per the task's whole point.
   useEffect(() => { foldNow(); }, [foldNow]);
+
+  // A jar leaves the pending set the moment the fold has SETTLED it, either
+  // way: granted (it is in `owned`, so the ordinary guard covers it from here)
+  // or refused (the player must be free to try again). Anything still in the
+  // set is a purchase in flight, and arming it again would cost a chip for a
+  // buy the fold is going to reject.
+  useEffect(() => {
+    if (!state) return;
+    const pend = boughtPendingRef.current;
+    if (pend.size === 0) return;
+    for (const key of [...pend]) {
+      if (state.owned.has(key)) { pend.delete(key); continue; }
+      if (state.moves.some((m) => m.upgradeKey === key && m.outcome.startsWith('rejected'))) pend.delete(key);
+    }
+  }, [state]);
 
   // Always the latest `foldNow`, updated unconditionally every render (same
   // pattern as `chipsRef` further down) — `refresh` below reads THROUGH this
@@ -1096,6 +1126,10 @@ export function App() {
       if (cost === undefined) return q;
       const committed = pendingBuyCost(activeBuys, foldedIdsRef.current, (k) => UPGRADES[k]?.cost);
       if (!canAffordBuy(crumbsNow, committed, cost)) return q; // not affordable once unfolded queued buys are accounted for
+      // In flight from here until the fold grants or refuses it — see
+      // boughtPendingRef. This is the only place a buy is born, so it is the
+      // only place the set can be kept honest.
+      boughtPendingRef.current.add(key);
       return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
     });
   }
@@ -1110,7 +1144,7 @@ export function App() {
     // Paid for, just not confirmed yet. Arming again is how a chip got eaten
     // for nothing — say so instead, because "nothing happens" is what made the
     // player try again in the first place.
-    if (queuedBuyKeys.has(key)) {
+    if (queuedBuyKeys.has(key) || boughtPendingRef.current.has(key)) {
       setNotice('that one is already bought — it is still going through');
       return;
     }
@@ -1168,7 +1202,7 @@ export function App() {
     // a jar it already has queued — and it does so with a bare `return q`,
     // which is invisible. That combination is what turned a mistimed second
     // feed into a chip that simply vanished.
-    if (queuedBuyKeys.has(f.jarKey)) {
+    if (queuedBuyKeys.has(f.jarKey) || boughtPendingRef.current.has(f.jarKey)) {
       setFeeding(null);
       setNotice('that one is already bought — it is still going through');
       return;
@@ -1312,10 +1346,13 @@ export function App() {
       const cid = await host.reportBug(me, text);
       if (cid) setNotice(copied ? 'report copied — and filed' : 'report filed');
     } catch (e) {
-      // Deliberately quiet in the UI: the clipboard copy already succeeded and
-      // that is the copy that matters. The ring keeps the reason for the NEXT
-      // report, which is exactly the sort of thing the ring is for.
+      // NO LONGER QUIET. It was, on the reasoning that the clipboard copy is
+      // the one that matters — but the on-chain copy is the one anyone
+      // debugging actually reads, and a partial file is indistinguishable from
+      // a whole one until somebody goes looking and finds the tail missing.
+      // The player is the only one who can retry, so the player has to be told.
       ringNote('note', `report post failed: ${String(e)}`);
+      setNotice(copied ? 'report copied — but filing it failed' : 'filing the report failed');
     }
   }
 
