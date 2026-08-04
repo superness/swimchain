@@ -52,6 +52,7 @@ import { visualFor } from './Kitchen';
 import { projectedCrumbs } from './lib/sogProjection';
 import { newBankedMoves, actualGains } from './lib/chipsPayoutDisplay';
 import { DIP_TIERS, UPGRADES, UPGRADE_CHAINS, BURN_REFUND_NUM, BURN_REFUND_DEN, forfeitsOnRefuse, CHAR_ABILITIES } from './lib/chipsConst';
+import { tunnelDepth, bandAt } from './lib/tunnelDepth';
 import { Kitchen, DipFlight, type DipFlightState } from './Kitchen';
 import { TunnelBed, TunnelRead, DigFront, StallSheet, DipBed, DipChange, GainFloats, type GainFloat } from './Tunnel';
 import { Boards, useBoards } from './Boards';
@@ -2179,6 +2180,28 @@ export function App() {
 
   const dipIndex = state?.dipIndex ?? 0;
   const tier = DIP_TIERS[Math.min(DIP_TIERS.length - 1, dipIndex)];
+
+  /** WHERE YOU ARE STANDING, named the way the shaft behind you names it.
+   *
+   *  The header read `tier.label`, i.e. `DIP_TIERS[dipIndex]` — and `dipIndex`
+   *  stops at the last tier. So the moment you reach The Abyssal Dip that
+   *  readout freezes forever, while `tunnelDepth` keeps walking you down the
+   *  same shaft: past the dip tiers the ordinals continue into The Porcelain,
+   *  The Table, The Floor, The Dirt, The Lava, and `broken` pins you to the
+   *  face of the band you are about to fight. The background has been drawing
+   *  that correctly the whole time.
+   *
+   *  So the strata said one thing and the header said another, which is a
+   *  confusing thing to do to somebody who has just beaten a boss (operator:
+   *  "it does show me tableloor\dirt in the background so like I SEE that
+   *  but then I also see 'abyssal dip' and I'm like huh confused").
+   *
+   *  `bandAt` is the same function the bed uses, and it covers the whole
+   *  ladder — dip tiers early, descent bands later — so there is now one
+   *  answer to "which layer am I in" instead of two. */
+  const standing = state
+    ? bandAt(tunnelDepth(state.dipIndex, state.lifetimeChips, state.broken).layer)
+    : null;
   const crumbsNow = state ? projectedCrumbs(state, nowMs) : 0;
   const unverified = (state?.unverifiedBanks ?? 0) > 0;
   const stillCounting = counting !== null || unverified || !state;
@@ -2255,7 +2278,7 @@ export function App() {
         </div>
         <div className="hood-dip">
           <span className="in-the-bowl">the layer you&apos;re in</span>
-          <strong>{tier.label}</strong>
+          <strong>{standing?.label ?? tier.label}</strong>
         </div>
         <div className="hood-crunch">
           <span className="in-the-bowl">lifetime dipped</span>

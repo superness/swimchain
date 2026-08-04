@@ -534,11 +534,14 @@ function Basket({ chip, onDip, index, crackledAt, tickFx, capRoom, rat, onShoo, 
           basket itself, and the ladder moved INTO the fryer as a readout
           rather than a strip of furniture underneath it. What is left of the
           plate is the two exception states, hanging free under the slot. */}
-      {rat
-        ? <em className="pot-worth ratted">the rat is eating this — shoo him</em>
-        : overcooking
-          ? <em className="pot-worth burning">burning for speed</em>
-          : null}
+      {/* NO RAT CAPTION. There was an `.pot-worth.ratted` line here reading
+          "the rat is eating this — shoo him", and it was pure duplication: the
+          rat is drawn ON the basket, gnawing, wearing a badge that already says
+          what he took and what a shoo pays, over a pulsing SHOO HIM! pill.
+          Operator: "remove the 'the rat is eating this' element - we see the
+          rat." The burner keeps its line — a lit knob is a smaller signal than
+          a rodent, and "burning for speed" says what the flame is FOR. */}
+      {overcooking ? <em className="pot-worth burning">burning for speed</em> : null}
     </div>
   );
 }
