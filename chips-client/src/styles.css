@@ -1383,7 +1383,23 @@ h1, h2, h3, p { margin: 0; }
      net for landscape phones, where one screen genuinely cannot hold a
      fryer, a counter and a board. */
   .counter { padding-top: 0; gap: 6px; }
-  .stage { gap: 6px; padding-top: 8px; padding-bottom: 4px; }
+  /* THE STAGE SCROLLS, so limiting the counter column's HEIGHT never stopped
+     its contents coming to REST underneath the crew ledge. `.crew-row` is
+     z-index 15 against the stage's 2, and on a phone the ledge carries a
+     translucent black gradient — `rgba(12, 8, 5, .55)` at its top edge — so
+     anything from the stage that ends up beneath it is painted over rather
+     than hidden, which reads as a card that has gone faint.
+     That is what happened to the bowl ticket (operator: "the ticket seems
+     behind the background transparent black gradiant layer behind the
+     critters"). Measured on the device: its `em` rendered at 84 against a
+     declared 185, and its pill at 8 against 14 — 45%, which is exactly what
+     a .55 black veil does to both.
+     Reserving the dock as PADDING is what actually keeps scrolled content
+     above the ledge; `--dock-h` on `.counter` only ever bounded the column. */
+  .stage {
+    gap: 6px; padding-top: 8px;
+    padding-bottom: calc(var(--dock-h, calc(240px + var(--safe))) + 8px);
+  }
   .tunnel-read { padding: 2px 14px 4px; }
   .worth { font-size: 10px; }
   .jar { width: 82px; padding: 25px 4px 5px; }
