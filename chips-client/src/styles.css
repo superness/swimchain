@@ -2850,7 +2850,14 @@ h1, h2, h3, p { margin: 0; }
   .crew-row { top: auto; bottom: calc(var(--floor-stack) + var(--boards-h)); }
   .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + 6px); }
   .crier { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 14px); }
-  .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 18px); }
+  /* NO `.bowl-ticket` OFFSET. The ticket stopped being an overlay a while ago
+     — it is a static card in the counter column (see its rule above, and the
+     note in App.tsx) — so `bottom` on it has done nothing since. It sat here
+     looking load-bearing, and I dutifully updated it TWICE while chasing this
+     stack before noticing it was inert. A rule that cannot have an effect is
+     worse than no rule: it answers the question "what positions this?" with a
+     lie. What actually keeps the ticket clear of the crier is `--dock-h`,
+     which now reserves for the crier's banners (lib/dock.ts). */
   .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 14px); }
   /* And the scrolling column stops short of the whole stack — of the stack
      that is ACTUALLY there, not of the number 240. `--dock-h` is measured

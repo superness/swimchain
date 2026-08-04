@@ -74,7 +74,19 @@ export function dockHeight(boxes: DockBox[], viewportH: number, pad = 8): number
  *  assuming what the bottom of the screen contained. Anything added to the
  *  dock later must be added here too; `.counter` will otherwise reserve for a
  *  stack it cannot see. */
-export const DOCKED_SELECTORS = ['.crew-toast', '.crew-row', '.tut-banner', '.working'] as const;
+export const DOCKED_SELECTORS = [
+  '.crew-toast', '.crew-row', '.tut-banner', '.working',
+  /* THE CRIER'S CHILDREN, NEVER THE CRIER. The crier pins `top` AND `bottom`
+     on a phone, so its own box stretches most of the screen and `dockHeight`
+     rightly throws it out as a pinned-both-ends box (see STRETCHED). But its
+     BANNERS are real static boxes sitting above the chat strip, and nothing
+     was reserving for them: measured at 448x899, `--dock-h` came out 199px
+     against the 281px the visible stack actually occupies — 82px the counter
+     column was free to run into, which is where the bowl ticket meets the
+     deep-fight call. Reserving for the crier's contents rather than its
+     silhouette is the distinction. */
+  '.crier > *',
+] as const;
 
 /**
  * THE HEIGHT OF EACH RUNG OF THE BOTTOM STACK, as it actually rendered.

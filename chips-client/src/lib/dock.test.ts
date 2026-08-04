@@ -12,7 +12,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { dockHeight, type DockBox } from './dock';
+import { dockHeight, DOCKED_SELECTORS, type DockBox } from './dock';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -139,11 +139,13 @@ const at = (bottom: number, height: number): DockBox => ({ top: VH - bottom - he
 
   // The strip must clear the bench, and the crier must clear BOTH. If any of
   // these goes back to reading `--bench-h` directly, the overlap returns.
-  for (const sel of ['crew-toast', 'crier', 'tut-banner', 'bowl-ticket']) {
+  // NOT `bowl-ticket`: it is a static column card, so it has no `bottom` at
+  // all — see the check further down that it must not grow one back.
+  for (const sel of ['crew-toast', 'crier', 'tut-banner']) {
     const calc = bottomCalcOf(sel);
     check(`.${sel} positions off the measured bench`, calc !== null && calc.includes('--rung-bench'), calc);
   }
-  for (const sel of ['crier', 'tut-banner', 'bowl-ticket']) {
+  for (const sel of ['crier', 'tut-banner']) {
     const calc = bottomCalcOf(sel);
     check(`.${sel} also clears the chat strip`, calc !== null && calc.includes('--rung-toast'), calc);
   }
@@ -153,6 +155,23 @@ const at = (bottom: number, height: number): DockBox => ({ top: VH - bottom - he
   // The constants stay as the before-measurement fallback — removing them
   // would leave the stack at 0 for the first frame.
   check('the constant survives as a fallback', /--bench-real,\s*var\(--bench-h\)\)/.test(css));
+
+  // THE CRIER'S BANNERS ARE PART OF THE STACK. The crier pins top AND bottom on
+  // a phone, so its own box is thrown out by the STRETCHED rule above — but its
+  // children are real boxes above the chat strip, and nothing reserved for
+  // them. Measured at 448x899: `--dock-h` came out 199px against the 281px the
+  // visible stack occupies, leaving 82px the counter column could run into,
+  // which is where the bowl ticket meets the deep-fight call.
+  const docked: readonly string[] = DOCKED_SELECTORS;
+  check('the dock reserves for the crier CONTENTS', docked.includes('.crier > *'),
+    [...DOCKED_SELECTORS]);
+  check('...and never for the crier itself, which is pinned at both ends',
+    !docked.includes('.crier'), [...DOCKED_SELECTORS]);
+
+  // The ticket is a static column card. A `bottom` on it does nothing, and one
+  // sat here for two rounds of edits looking like it did.
+  check('no dead `bottom` offset on the bowl ticket',
+    bottomCalcOf('bowl-ticket') === null, bottomCalcOf('bowl-ticket'));
 }
 
 console.log('');
