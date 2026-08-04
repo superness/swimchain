@@ -21,11 +21,29 @@ export function NodeStatusBar(): JSX.Element {
 
   const info = getStatusInfo();
 
+  // A node still catching its index up serves incomplete results. Left unsaid,
+  // a short result list reads as "nothing matched" — so say it plainly. The
+  // scan counts as catching up: it can run for minutes and the index may be
+  // behind for all of it.
+  const phase = status?.searchIndex?.phase ?? 'idle';
+  const catchingUp = phase !== 'idle';
+  const reindexTarget = status?.searchIndex?.target ?? 0;
+
   return (
     <div className="node-status-bar" role="status" aria-live="polite">
       <div className="node-status-bar__left">
         <span className="node-status-bar__dot" style={{ backgroundColor: info.color }} />
         <span className="node-status-bar__label">{info.label}</span>
+        {catchingUp && (
+          <span
+            className="node-status-bar__reindex"
+            title="The node's search index is still catching up with the chain. Results are incomplete until it finishes."
+          >
+            {phase === 'scanning' ? 'Checking search index' : 'Building search index'}
+            {reindexTarget > 0 ? ` (${reindexTarget.toLocaleString()} items)` : ''}
+            {' — results may be incomplete'}
+          </span>
+        )}
       </div>
       {status && (
         <div className="node-status-bar__right">

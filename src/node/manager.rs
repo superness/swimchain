@@ -23,6 +23,7 @@ use crate::discovery::peer_branches::PeerBranchTracker;
 use crate::discovery::PeerStore;
 use crate::engagement_graph::EngagementGraphStore;
 use crate::identity::KeyPair;
+use crate::node::search_bootstrap::{prepare_reindex, IndexProgress, ReindexPlan};
 use crate::reputation::ReputationStore;
 use crate::rpc::{NodeRef, RpcMethods, RpcServer, RpcServerConfig};
 use crate::spam_attestation::SpamAttestationStore;
@@ -115,6 +116,8 @@ pub struct NodeManager {
     branch_subscription_manager: Option<Arc<RwLock<BranchSubscriptionManager>>>,
     peer_branch_tracker: Option<Arc<RwLock<PeerBranchTracker>>>,
     search_index: Option<Arc<RwLock<SearchIndex>>>,
+    /// Live state of the background reindex, surfaced via `get_info`.
+    search_progress: Option<Arc<IndexProgress>>,
 
     /// Shared event manager for real-time WebSocket events (H-RPC-2).
     /// Shared between the message router (gossip ingestion) and the RPC server.
@@ -281,6 +284,7 @@ impl NodeManager {
             branch_subscription_manager: None,
             peer_branch_tracker: None,
             search_index: None,
+            search_progress: None,
             event_manager: Arc::new(crate::rpc::EventManager::new()),
             state: Arc::new(RwLock::new(NodeState::Stopped)),
             sync_state: Arc::new(tokio::sync::RwLock::new(SyncState::Idle)),
@@ -557,60 +561,60 @@ impl NodeManager {
             }
         }
 
-        // 3.1b. Initialize search index for full-text search.
-        // Reindex existing content when the index is behind the content store — content
-        // created on an older build (before indexing), synced from peers via the block
-        // path, or a wiped/empty index would otherwise be INVISIBLE to search. (Proven:
-        // a node can hold N content items with an empty index → search returns nothing.)
+        // 3.1b. Open the full-text search index.
+        //
+        // The index is published to the node IMMEDIATELY and any catch-up
+        // reindex runs on a blocking background task. This used to run inline:
+        // it walked every content block and resolved every body BEFORE the
+        // transport bound — 189 s on mainnet 2026-08-03 (14,913 docs, 12.7 ms
+        // each, then discarded because no reindex was needed) — which pushed
+        // `start_rpc_server` (step 10) past the desktop shell's 120 s cookie
+        // wait and made a healthy node report "node may not be running".
+        // Startup must never wait on indexing.
         match SearchIndex::open_or_create(&self.config.data_dir) {
-            Ok(mut index) => {
-                let docs = index.doc_count();
+            Ok(index) => {
+                info!(
+                    "[SEARCH] Opened search index with {} documents",
+                    index.doc_count()
+                );
+                let index = Arc::new(RwLock::new(index));
+                self.search_index = Some(index.clone());
+
+                let progress = Arc::new(IndexProgress::new());
+                progress.set_docs(index.read().map(|guard| guard.doc_count()).unwrap_or(0));
+                self.search_progress = Some(progress.clone());
+
                 // Reindex from the CHAIN (block) store — content synced from peers lives in
                 // content blocks + the blob store, NOT content_store (which is empty for it),
-                // so the old content_store scan left all synced content unsearchable. Resolve
+                // so a content_store-only scan leaves synced content unsearchable. Resolve
                 // each body the way list_space_content does (content_store → BlobStore).
-                if let Some(ref chain_store) = self.chain_store {
-                    let blob_store = BlobStore::new(&sync_blob_path).ok();
+                if let Some(chain_store) = self.chain_store.clone() {
                     let content_store = self.content_store.clone();
-                    let mut indexables: Vec<crate::cli::search_index::IndexableContent> =
-                        Vec::new();
-                    for block in chain_store.iter_content_blocks().filter_map(|r| r.ok()) {
-                        let space_id = {
-                            use bech32::{Bech32m, Hrp};
-                            let mut d = Vec::with_capacity(17);
-                            d.push(0);
-                            d.extend_from_slice(&block.space_id[..16]);
-                            bech32::encode::<Bech32m>(Hrp::parse("sp").expect("valid HRP"), &d)
-                                .unwrap_or_else(|_| hex::encode(&block.space_id[..16]))
+                    let blob_path = sync_blob_path.clone();
+                    // spawn_blocking, not spawn: the gather is long, synchronous
+                    // sled/blob I/O and would otherwise hold a runtime worker for
+                    // minutes.
+                    tokio::task::spawn_blocking(move || {
+                        let docs = match index.read() {
+                            Ok(guard) => guard.doc_count(),
+                            Err(e) => {
+                                warn!("[SEARCH] Index lock poisoned, skipping reindex: {e}");
+                                return;
+                            }
                         };
-                        for action in &block.actions {
-                            // Only posts/replies carry searchable text; skip engagements.
-                            if !matches!(
-                                action.action_type,
-                                crate::blocks::ActionType::Post | crate::blocks::ActionType::Reply
-                            ) {
-                                continue;
-                            }
-                            // Private content bodies are encrypted — useless to index.
-                            if action.private {
-                                continue;
-                            }
-                            let content_hash = match action.content_hash {
-                                Some(h) => h,
-                                None => continue,
-                            };
-                            let text = content_store
+                        let blob_store = BlobStore::new(&blob_path).ok();
+                        let resolve_body = |hash: &[u8; 32]| -> Option<String> {
+                            content_store
                                 .as_ref()
                                 .and_then(|cs| {
-                                    let cid =
-                                        crate::types::content::ContentId::from_bytes(content_hash);
+                                    let cid = crate::types::content::ContentId::from_bytes(*hash);
                                     cs.get(&cid)
                                         .ok()
                                         .flatten()
                                         .and_then(|it| it.body_inline)
                                         .filter(|b| !b.is_empty())
                                         .or_else(|| {
-                                            cs.get_body_by_hash(&content_hash)
+                                            cs.get_body_by_hash(hash)
                                                 .ok()
                                                 .flatten()
                                                 .filter(|b| !b.is_empty())
@@ -619,51 +623,60 @@ impl NodeManager {
                                 .or_else(|| {
                                     blob_store.as_ref().and_then(|bs| {
                                         bs.get(&crate::storage::blob::ContentBlobHash::from_bytes(
-                                            content_hash,
+                                            *hash,
                                         ))
                                         .ok()
                                         .and_then(|bytes| String::from_utf8(bytes).ok())
                                         .filter(|t| !t.is_empty())
                                     })
-                                });
-                            let text = match text {
-                                Some(t) => t,
-                                None => continue,
-                            };
-                            let (title, body) = match text.find("\n\n") {
-                                Some(i) => (text[..i].to_string(), text[i + 2..].to_string()),
-                                None => (String::new(), text.clone()),
-                            };
-                            indexables.push(crate::cli::search_index::IndexableContent {
-                                content_id: format!("sha256:{}", hex::encode(content_hash)),
-                                space_id: space_id.clone(),
-                                author: crate::crypto::address::encode_address(
-                                    &crate::types::identity::IdentityId(action.actor),
-                                ),
-                                title,
-                                body,
-                                heat: 100.0,
-                                timestamp: action.timestamp,
-                            });
+                                })
+                        };
+
+                        // The scan itself walks the whole chain and can run for
+                        // minutes; say so, because the index may be behind for
+                        // all of it.
+                        progress.begin_scan();
+
+                        match prepare_reindex(
+                            || chain_store.iter_content_blocks().filter_map(|r| r.ok()),
+                            docs,
+                            resolve_body,
+                        ) {
+                            ReindexPlan::UpToDate { candidates, docs } => {
+                                info!("[SEARCH] Index already covers all {candidates} indexable actions ({docs} docs); no bodies resolved");
+                                progress.settle(docs);
+                            }
+                            ReindexPlan::NoRebuild { gathered, docs } => {
+                                info!("[SEARCH] Resolved {gathered} bodies against {docs} indexed docs; nothing to rebuild");
+                                progress.settle(docs);
+                            }
+                            ReindexPlan::Rebuild(items) => {
+                                info!(
+                                    "[SEARCH] Reindexing {} content items from chain (index had {})",
+                                    items.len(),
+                                    docs
+                                );
+                                progress.begin_rebuild(items.len() as u64);
+                                match index.write() {
+                                    Ok(mut guard) => match guard.rebuild(items.into_iter()) {
+                                        Ok(n) => {
+                                            info!("[SEARCH] Reindexed {n} content items");
+                                            progress.settle(n as u64);
+                                        }
+                                        Err(e) => {
+                                            warn!("[SEARCH] Reindex failed: {e}");
+                                            progress.settle(docs);
+                                        }
+                                    },
+                                    Err(e) => {
+                                        warn!("[SEARCH] Index lock poisoned: {e}");
+                                        progress.settle(docs);
+                                    }
+                                }
+                            }
                         }
-                    }
-                    if indexables.len() as u64 > docs {
-                        info!(
-                            "[SEARCH] Reindexing {} content items from chain (index had {})",
-                            indexables.len(),
-                            docs
-                        );
-                        match index.rebuild(indexables.into_iter()) {
-                            Ok(n) => info!("[SEARCH] Reindexed {} content items", n),
-                            Err(e) => warn!("[SEARCH] Reindex failed: {}", e),
-                        }
-                    }
+                    });
                 }
-                info!(
-                    "[SEARCH] Opened search index with {} documents",
-                    index.doc_count()
-                );
-                self.search_index = Some(Arc::new(RwLock::new(index)));
             }
             Err(e) => {
                 warn!("[SEARCH] Failed to open search index: {}. Search functionality will be limited.", e);
@@ -2127,6 +2140,7 @@ impl NodeManager {
             connection_pool: self.connection_pool.clone(),
             router: self.router.clone(),
             sync_state: self.sync_state.clone(),
+            search_progress: self.search_progress.clone(),
             data_dir: self.config.data_dir.clone(),
             content_store_path: content_store_path,
             sync_blob_path: sync_blob_path,

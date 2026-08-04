@@ -1,0 +1,173 @@
+name: Release Desktop
+
+# Builds (and, once signing secrets exist, signs) the Windows desktop bundle.
+#
+# Until 2026-08-03 every desktop release was hand-built on a developer machine
+# and shipped UNSIGNED. Windows Defender's ML classifier then flagged the
+# bundled sidecar as Trojan:Win32/Bearfoos.B!ml and DELETED it post-install,
+# leaving an app that launched into a silent do-nothing state. Building here
+# makes releases reproducible and gives signing one place to live.
+#
+# Signing order matters: `sw.exe` is signed BEFORE build.sh stages it into the
+# bundle. Signing only the installer leaves the extracted sidecar unsigned,
+# which is the exact file Defender removed.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, e.g. 0.1.17 (no leading v)"
+        required: true
+        type: string
+      publish:
+        description: "Publish a GitHub Release (otherwise just upload artifacts)"
+        required: false
+        default: false
+        type: boolean
+  push:
+    tags: ["desktop-v*"]
+
+permissions:
+  contents: write
+  id-token: write # OIDC for Trusted Signing — keeps keys off the runner
+
+env:
+  CARGO_TERM_COLOR: always
+  PUPPETEER_SKIP_DOWNLOAD: "1"
+
+jobs:
+  build:
+    name: Build Windows bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-desktop-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-desktop-cargo-
+
+      # aws-lc-sys / ring need NASM on Windows; the local builder warns when
+      # it is missing and the sw.exe build fails without it.
+      - name: Install NASM
+        run: choco install nasm --no-progress -y
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Build the node binary
+        run: cargo build --release --bin sw
+
+      # A step's own `env:` block is not in scope for that step's `if:`, and the
+      # `secrets` context is not available there either — so resolve it once
+      # here and gate the signing steps on this output.
+      - name: Detect signing secrets
+        id: signing
+        shell: bash
+        env:
+          TENANT: ${{ secrets.AZURE_TENANT_ID }}
+        run: |
+          if [ -n "$TENANT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No signing secrets configured — this build will ship UNSIGNED binaries that Windows Defender may delete."
+          fi
+
+      # ---- Signing the sidecar, BEFORE it gets bundled ----
+      # Inert until the Trusted Signing secrets are configured; the bundle still
+      # builds without them so this workflow is useful from day one.
+      - name: Sign sw.exe
+        id: sign_sidecar
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/target/release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # build.sh re-runs `cargo build --release` (a no-op here) and then copies
+      # target/release/sw.exe into src-tauri/binaries — so it picks up the
+      # signed binary from the step above.
+      - name: Build desktop bundle
+        shell: bash
+        run: bash desktop-app/build.sh
+
+      - name: Sign the installer and shell
+        if: steps.signing.outputs.enabled == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_PROFILE }}
+          files-folder: ${{ github.workspace }}/desktop-app/src-tauri/target/release/bundle
+          files-folder-filter: exe,msi
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # Provenance the hand-built releases never had: publish the hashes so a
+      # user (or a future debugging session) can verify what actually shipped.
+      - name: Report artifact hashes and signature status
+        shell: bash
+        run: |
+          echo "### Desktop bundle artifacts" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find desktop-app/src-tauri/target/release/bundle -type f \( -name '*.exe' -o -name '*.msi' \) -print0 |
+            while IFS= read -r -d '' f; do
+              echo "$(sha256sum "$f")"
+            done >> "$GITHUB_STEP_SUMMARY"
+          sha256sum target/release/sw.exe >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the bundled sidecar is signed
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $sig = Get-AuthenticodeSignature desktop-app/src-tauri/binaries/sw.exe
+          Write-Host "bundled sw.exe signature: $($sig.Status)"
+          if ($sig.Status -ne 'Valid') {
+            Write-Warning "Sidecar is NOT signed. Defender may delete it on user machines."
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: swimchain-desktop-windows
+          path: |
+            desktop-app/src-tauri/target/release/bundle/nsis/*.exe
+            desktop-app/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ github.event_name == 'push' || inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'push' && github.ref_name || format('desktop-v{0}-alpha', inputs.version) }}
+          prerelease: true
+          files: |
+            desktop-app/src-tauri/target/release/bundle/nsis/*.exe
+            desktop-app/src-tauri/target/release/bundle/msi/*.msi

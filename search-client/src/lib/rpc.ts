@@ -35,6 +35,22 @@ interface NodeInfo {
   node_id: string;
   rpc_port: number;
   p2p_port: number;
+  /**
+   * Background search-reindex state. Absent on older nodes, so treat a missing
+   * value as "nothing to report" rather than as an error.
+   */
+  search_index?: {
+    /**
+     * `scanning` = deciding whether a rebuild is needed (can take minutes on a
+     * large chain); `rebuilding` = actively rebuilding. Anything other than
+     * `idle` means results may be incomplete.
+     */
+    phase: 'idle' | 'scanning' | 'rebuilding';
+    /** Documents currently in the index. */
+    docs: number;
+    /** Documents the running rebuild is working toward (0 unless rebuilding). */
+    target: number;
+  };
 }
 
 /**

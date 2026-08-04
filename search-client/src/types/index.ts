@@ -180,6 +180,16 @@ export interface SyncStatus {
   storageTargetMB: number;
   lastBlockTime: number;
   state: 'synced' | 'syncing' | 'behind' | 'offline';
+  /**
+   * Background search-reindex state. While `rebuilding` is true the index is
+   * still catching up and results are incomplete — say so rather than letting
+   * the user read a short result list as "nothing matched".
+   */
+  searchIndex?: {
+    phase: 'idle' | 'scanning' | 'rebuilding';
+    docs: number;
+    target: number;
+  };
 }
 
 /**
