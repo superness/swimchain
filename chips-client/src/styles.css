@@ -687,6 +687,14 @@ h1, h2, h3, p { margin: 0; }
    is reserved for it because nothing needs to be. */
 /* Hangs off `.basket-slot` now that `.worth` is retired — same job, one less
    box in the tree. */
+/* THE SLOT MAKES ROOM FOR ITS OWN CAPTION — but only while it has one.
+   `.pot-worth` hangs out of flow below the slot, which was free real estate
+   until the crumb readout moved under the rack (#285) and landed in exactly
+   that band: "the rat is eating this — shoo him" cut straight across "10
+   LAYERS DOWN / 1.9B crumbs" on the device. `:has()` reserves the space only
+   for the two states that render a caption, so a quiet rack keeps its tight
+   spacing and nothing has to guess a constant. */
+.basket-slot:has(.pot-worth) { padding-bottom: 2.4em; }
 .pot-worth {
   position: absolute; left: 0; right: 0; top: 100%;
   margin-top: 3px; padding: 0 6px;
@@ -2823,13 +2831,27 @@ h1, h2, h3, p { margin: 0; }
     --bench-h: clamp(38px, 11vw, 52px);
     /* everything below the bench measures from here */
     --floor-stack: calc(var(--safe) + 16px);
+    --rung-bench: var(--bench-real, var(--bench-h));
+    --rung-toast: var(--toast-real, 0px);
   }
+  /* EACH RUNG SITS ON THE ONE BELOW IT, AT ITS REAL HEIGHT.
+     `--bench-h` is a guess — `clamp(38px, 11vw, 52px)`, which is 49px at
+     448px wide against a bench that measures 91px, because a critter is
+     `clamp(60px, 16vw, 84px)` before its name pill and the ledge's padding.
+     The chat strip was therefore placed 42px too low, i.e. inside the bench:
+     measured toast bottom 793 against bench top 746, sitting on the critters
+     and on the `buy` tags at their top edge. The crier added a hand-picked
+     44px to the same wrong base and no allowance at all for the strip's own
+     height, so it landed on the strip.
+     `--bench-real` and `--toast-real` are measured from the live boxes and
+     published by App.tsx (lib/dock.ts `measureStack`). The constants survive
+     only as the value used before the first measurement lands. */
   .corner { padding-bottom: var(--floor-stack); }
   .crew-row { top: auto; bottom: calc(var(--floor-stack) + var(--boards-h)); }
-  .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h)); }
-  .crier { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 44px); }
-  .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 48px); }
-  .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--bench-h) + 8px); }
+  .crew-toast { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + 6px); }
+  .crier { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 14px); }
+  .bowl-ticket { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 18px); }
+  .tut-banner { bottom: calc(var(--floor-stack) + var(--boards-h) + var(--rung-bench) + var(--rung-toast) + 14px); }
   /* And the scrolling column stops short of the whole stack — of the stack
      that is ACTUALLY there, not of the number 240. `--dock-h` is measured
      from the live boxes and published by App.tsx (see lib/dock.ts); the
