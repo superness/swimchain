@@ -1688,7 +1688,7 @@ export function App() {
     // `.scoop-call` banner, which only appears when char can actually buy
     // something — see `scoopHasDeal`). The char shop is still one tap away
     // once he has no jars left for you.
-    if (id === 'scoop' && state && openJarsOf('scoop', state.owned, crewDip, state.declined).length === 0) {
+    if (id === 'scoop' && state && openJarsOf('scoop', state.owned, crewDip, state.declined, pendingBuyKeys).length === 0) {
       setScoopOpen(true); sfx.pop(); return;
     }
     // A committee with the floor open wants lobbying, not shopping.
@@ -2291,6 +2291,14 @@ export function App() {
     ? queuedBuyKeysOf(activeFor(queue, tableId, me.publicKeyHex))
     : new Set<string>();
 
+  /** EVERY JAR ALREADY ON ITS WAY — queued, or submitted and not yet folded.
+   *  The union `onBuy` and `onFeed` have always guarded with; the SHELF did not
+   *  know it, so the shop offered jars every one of those gates would refuse.
+   *  Operator: "ok so just dont show me the option to buy it?" */
+  const pendingBuyKeys = new Set<string>([
+    ...queuedBuyKeys, ...boughtPendingRef.current,
+  ]);
+
   /** Critters with at least one jar you can afford this instant. The shop
    *  has no other entrance now, so this badge is the ONLY thing telling a
    *  player their crumbs will buy something.
@@ -2320,7 +2328,7 @@ export function App() {
     const out = new Set<string>();
     if (!state) return out;
     for (const m of crewFor(crewDip)) {
-      if (openJarsOf(m.id, state.owned, crewDip, state.declined).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
+      if (openJarsOf(m.id, state.owned, crewDip, state.declined, pendingBuyKeys).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
         out.add(m.id);
       }
     }
@@ -2499,9 +2507,10 @@ export function App() {
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}
-          jars={openJarsOf(sheetVendor.id, state.owned, crewDip, state.declined)}
+          jars={openJarsOf(sheetVendor.id, state.owned, crewDip, state.declined, pendingBuyKeys)}
           owned={state.owned}
           declined={state.declined}
+          pending={pendingBuyKeys}
           dipIndex={crewDip}
           crumbsNow={crumbsNow}
           committed={pendingCommitted}
