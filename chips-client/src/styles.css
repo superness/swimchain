@@ -2685,9 +2685,38 @@ h1, h2, h3, p { margin: 0; }
 .bowl-tip.danger:hover { background: rgba(255, 122, 74, .12); color: #ffd0c0; }
 .bowl-tip.danger:disabled { opacity: .4; border-color: rgba(200, 190, 170, .25); color: #9a9284; }
 
+/* THE ARMED COMMIT — the receipt, in one line, with the numbers on it.
+   Twelve tips on one table on 2026-08-04, three inside ninety minutes,
+   surprised every time. One destructive tap inside an overlay that sits over
+   a game being tapped at speed is not a decision, it is a coin flip; this is
+   the second half of the decision. Boxed and ember-edged so the row visibly
+   BECOMES something else rather than merely relabelling — the eye has to
+   catch that the ground moved. */
+.bowl-commit {
+  margin: 4px auto 0; max-width: 460px;
+  padding: 11px 13px 12px; border-radius: 12px;
+  background: rgba(255, 122, 74, .07);
+  border: 1px solid rgba(255, 122, 74, .45);
+  animation: say-in .22s ease-out;
+}
+.bowl-commit-head {
+  display: block; font-family: var(--sign); font-size: 15px;
+  letter-spacing: .04em; color: #ffd0c0; margin-bottom: 5px;
+}
+.bowl-commit-line {
+  font-family: var(--chalk); font-size: 11.5px; line-height: 1.5;
+  color: #e0d6c6; margin-bottom: 10px;
+}
+.bowl-commit-line strong { color: #fff8ea; }
+/* The dead beat has to LOOK inert, or it reads as the button being broken —
+   which is its own bug report. `not-allowed` plus the dimming says "not yet"
+   rather than "nothing here". */
+.bowl-commit .bowl-tip.danger:disabled { cursor: not-allowed; }
+
 @media (max-width: 940px), (max-height: 620px) {
   .bowl-ledger { grid-template-columns: 1fr; gap: 8px; }
 }
+@media (prefers-reduced-motion: reduce) { .bowl-commit { animation: none; } }
 
 /* ── one silhouette per kind of thing ────────────────────────────────────
    Every product used the same lidded-tin glyph, so the art said nothing

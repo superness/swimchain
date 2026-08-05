@@ -2512,9 +2512,16 @@ export function App() {
       )}
       {state && bowlOpen && (
         <BowlReveal
-          salt={tipSalt}
+          /* THE WHOLE STATE, not three numbers. The reveal derives its own
+             receipt (lib/tipLedger.ts) because the losses it has to name are
+             the fields the fold's tip verb clears, and because `jarCount`
+             computed out here could not see the keep-picker in there — which
+             is how "all 5 jars" stayed on screen while one was being saved,
+             on all twelve of 2026-08-04's tips. */
+          state={state}
+          /* Sog-projected, i.e. the crumb number actually on screen. */
+          crumbs={crumbsNow}
           layerLabel={tier.label}
-          jarCount={state.owned.size}
           depth={DIP_TIERS[Math.min(DIP_TIERS.length - 1, state.dipIndex)].label}
           keepable={
             // THE CRACK: what this bowl could carry through. Empty without the
