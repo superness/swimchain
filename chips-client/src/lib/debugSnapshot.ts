@@ -106,7 +106,7 @@ function rejectsOf(s: ChipsState | null): Record<string, unknown>[] {
  * Computed here rather than left for the reader: the queue is the one place
  * this is cheap to see, and nobody spots it by eye in a fifteen-row dump.
  */
-function dupesOf(q: QueuedMove[]): Record<string, unknown>[] {
+function dupesOf(q: readonly QueuedMove[]): Record<string, unknown>[] {
   const seen = new Map<string, number[]>();
   for (const m of q) {
     const k = m.kind === 'buy' ? `buy:${m.key}`
