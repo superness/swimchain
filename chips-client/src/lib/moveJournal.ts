@@ -43,7 +43,15 @@ export type MovePhase =
   /** Seen in the confirmed base. The happy ending. */
   | 'confirmed'
   /** Sent, never seen, TTL ran out, deleted. THE ONE THAT COSTS UPGRADES. */
-  | 'expired';
+  | 'expired'
+  /**
+   * Found on chain while still carrying no `sentAt` — it landed, but the
+   * acknowledgement that stamps it never ran, so nothing ever retired it.
+   * Distinct from `confirmed` on purpose: there is no send-to-land duration to
+   * report, and a run of these is the signature of the head-of-line stall
+   * (chipsSettling.ts), not of healthy traffic.
+   */
+  | 'reconciled';
 
 export interface MoveEvent {
   at: number;

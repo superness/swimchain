@@ -145,8 +145,43 @@ export function retireSettled(
 ): QueuedMove[] {
   let changed = false;
   const out = q.filter((m) => {
-    if (m.sentAt === undefined) return true; // still queued for submission
+    /* THE CHAIN IS CHECKED FIRST, STAMP OR NO STAMP.
+       This used to read `if (m.sentAt === undefined) return true;` — an
+       unstamped entry was never compared against the confirmed twins at all.
+       But `markSent` only stamps on the SUCCESS path, so a submission that
+       reaches the chain and then loses its acknowledgement (a dropped
+       response, a backgrounded WebView, a throw after the write) leaves a move
+       that is simultaneously ON CHAIN and forever `sentAt: undefined`.
+
+       `unsent()` keeps returning it, `takeBatch` only ever looks at `q[0]`, and
+       so it is resubmitted every cycle — folding `rejected-duplicate` each
+       time — while every move behind it waits for a turn that never comes.
+
+       Observed on mainnet 2026-08-04, operator's table `Counter Fryer 303`:
+       queue entry 181 `{kind:'dip', ms:1785897749124, amount:207960,
+       sentAt:null}` against `dip 207960#1785897749124~` confirmed in block
+       2351. Eight moves stranded behind it — 5.8M crumbs of dips and four
+       jars — while the player watched dips credit nothing. Earlier the same
+       evening, five `broke` moves in the same shape stranded eighteen.
+
+       Retiring on the twin alone is also the SAFE direction: `confirmedMoveKeys`
+       only admits replies authored by the player on this table, so the chain
+       saying "I have this move" is the strongest evidence available, and it is
+       exactly the condition under which the local echo is redundant. */
     const done = confirmed.has(moveKey(m));
+    if (m.sentAt === undefined) {
+      if (!done) return true; // genuinely still queued for submission
+      changed = true;
+      noteMove({
+        at: now, id: m.id, kind: m.kind, key: moveKey(m),
+        // NOT 'confirmed': this one never got a `sentAt`, so there is no
+        // send-to-land duration to report and the distinction is the whole
+        // point of the record. It landed without ever being marked away.
+        phase: 'reconciled',
+        detail: detailOf(m),
+      });
+      return false;
+    }
     if (done || !settlingStillValid(m.sentAt, now, ttlMs)) {
       changed = true;
       // JOURNAL THE REASON. These two exits look identical from here and are
