@@ -176,5 +176,47 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
     retireSettled([sentDip], dipTwin, SENT + 1000).length === 0);
 }
 
+/* ── 8. A BUY ON CHAIN THAT THE FOLD REFUSED MUST NOT BE RETIRED ───────────
+   Observed live 2026-08-05, one jar per poll for six consecutive polls:
+
+     movesFrom 1466 -> 1465   bowl1 gone, bowlCap 3,000,000 -> 1,000,000
+     movesFrom 1464 -> 1463   fryer2 gone, fryers 2 -> 1
+     movesFrom 1462 -> 1461   doubledip1 gone
+
+   `movesFrom > movesTo` is history getting SHORTER — a move deleted, not
+   mis-shown. `confirmedMoveKeys` proves a reply EXISTS on chain; it does not
+   prove the fold ACCEPTED it. A buy can be on chain and still fold
+   `rejected-order` / `rejected-cost` / `rejected-owned`, most easily right
+   after a tip, which re-scores the entire run.
+
+   When that happens the CONFIRMED copy grants nothing and the PENDING copy is
+   the only thing holding the jar — so retiring on presence alone DELETES THE
+   GRANT and the purchase evaporates in front of the player. */
+{
+  const SENT = 1785909915000;
+  const key = `buy:${TABLE}:${ME}:bowl1`;
+  const twin = new Map([[key, SENT + 10]]);
+  const buy: QueuedMove = { ...P, kind: 'buy', id: 456, key: 'bowl1', sentAt: SENT } as QueuedMove;
+
+  // The fold did NOT honour it: `owned` lacks the jar.
+  const refused = retireSettled([buy], twin, SENT + 5_000, undefined, new Set<string>());
+  check('a buy the fold did not honour survives, even with its twin on chain',
+    refused.length === 1, refused.map((m) => m.id));
+
+  // The fold DID honour it: the local echo is now redundant.
+  const honoured = retireSettled([buy], twin, SENT + 5_000, undefined, new Set(['bowl1']));
+  check('...and once the jar is actually owned, it retires', honoured.length === 0);
+
+  // Every other kind carries its own ms and cannot be re-scored this way.
+  const dipTwin = new Map([[`dip:${TABLE}:${ME}:${SENT}`, SENT]]);
+  const dip: QueuedMove = { ...P, kind: 'dip', id: 457, ms: SENT, amount: 5, sentAt: SENT } as QueuedMove;
+  check('a dip is unaffected by the owned check',
+    retireSettled([dip], dipTwin, SENT + 5_000, undefined, new Set<string>()).length === 0);
+
+  // A caller with no fold yet must not be broken by the new argument.
+  check('omitting `owned` keeps the old behaviour',
+    retireSettled([buy], twin, SENT + 5_000).length === 0);
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

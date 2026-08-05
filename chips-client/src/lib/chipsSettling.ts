@@ -184,7 +184,11 @@ export function retireSettled(
   q: QueuedMove[],
   confirmed: ReadonlyMap<string, number>,
   now: number,
-  ttlMs: number = SETTLE_TTL_MS
+  ttlMs: number = SETTLE_TTL_MS,
+  /** The fold's `owned` set. PRESENCE ON CHAIN IS NOT EFFECT — see the note on
+   *  the buy branch below. Omitted means "cannot check", which keeps the old
+   *  behaviour for callers that have no fold yet. */
+  owned?: ReadonlySet<string>,
 ): QueuedMove[] {
   let changed = false;
   const out = q.filter((m) => {
@@ -222,8 +226,30 @@ export function retireSettled(
        `sentAt` is when we handed it to the node and the body's authoring ms is
        stamped at that same moment, so the move's own twin always satisfies
        this; only an older namesake fails it. */
+    /* A BUY IS SETTLED ONLY WHEN THE JAR IS ACTUALLY OWNED.
+       `confirmedMoveKeys` proves a reply EXISTS on chain; it does not prove the
+       fold ACCEPTED it. A buy can be on chain and still fold `rejected-order`,
+       `rejected-cost` or `rejected-owned` — most easily right after a tip, which
+       re-scores the whole run and can turn a purchase that succeeded into one
+       that never happened.
+
+       When that occurs the CONFIRMED copy grants nothing and the PENDING copy is
+       the only thing holding the jar. Retiring the pending copy on the twin's
+       mere presence therefore DELETES THE GRANT: the jar un-owns itself, the
+       move count drops, and the player watches a purchase evaporate.
+
+       Observed live on 2026-08-05, one jar per poll for six consecutive polls:
+         movesFrom 1466 -> 1465   bowl1 gone, bowlCap 3,000,000 -> 1,000,000
+         movesFrom 1464 -> 1463   fryer2 gone, fryers 2 -> 1
+       `movesFrom > movesTo` — history got SHORTER, which is the signature of a
+       move being deleted rather than mis-shown.
+
+       So: for a buy, the chain must not merely HAVE it, the fold must have
+       HONOURED it. Every other kind carries its own ms and cannot be re-scored
+       this way. */
     const twinAt = confirmed.get(moveKey(m));
-    const done = twinAt !== undefined && (
+    const granted = m.kind !== 'buy' || owned === undefined || owned.has(m.key);
+    const done = granted && twinAt !== undefined && (
       // A key that names one move for all time needs no date: its presence IS
       // the proof. And its ms is NOT comparable to `sentAt` anyway — a bank's
       // is the chip's mining time, legitimately hours older than the submit.

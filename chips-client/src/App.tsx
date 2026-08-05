@@ -178,6 +178,13 @@ export function App() {
 
   const [tableId, setTableId] = useState<string | null>(null);
   const [state, setState] = useState<ChipsState | null>(null);
+  /* Always the latest fold, read THROUGH a ref by callbacks whose identity must
+     stay stable (see `foldNowRef` below for the same pattern and the reason:
+     depending on `state` would make the polling effect fire a full network round
+     trip on every dip). `retireSettled` needs it to tell "the chain has this
+     buy" from "the fold honoured this buy". */
+  const stateRef = useRef<ChipsState | null>(null);
+  stateRef.current = state;
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -695,7 +702,12 @@ export function App() {
     // change or the polling effect fires an extra network round trip per dip.
     // Nothing is assigned inside the updater and read outside it; the updater
     // is pure and its result is used only by React.
-    setQueue((q) => retireSettled(q, confirmedMoveKeys(confirmed, tableId, me.publicKeyHex), Date.now()));
+    // `stateRef.current?.owned` — a buy is settled only once the fold has
+    // HONOURED it, not merely once the chain HAS it. See retireSettled.
+    setQueue((q) => retireSettled(
+      q, confirmedMoveKeys(confirmed, tableId, me.publicKeyHex), Date.now(),
+      undefined, stateRef.current?.owned,
+    ));
     foldNowRef.current();
     setCounting(null);
   }, [host, tableId, me]);
