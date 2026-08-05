@@ -66,7 +66,58 @@ function moveOf(m: QueuedMove): Record<string, unknown> {
   if (m.kind === 'dip') return { ...base, ms: m.ms, amount: m.amount };
   if (m.kind === 'buy') return { ...base, key: m.key };
   if (m.kind === 'tip') return { ...base, ms: m.ms };
+  if (m.kind === 'burn') return { ...base, ms: m.ms, key: m.key };
+  if (m.kind === 'broke') return { ...base, ms: m.ms, paid: m.paid };
+  if (m.kind === 'spend') return { ...base, ability: m.ability };
   return { ...base, ms: (m as { chip?: { ms?: number } }).chip?.ms ?? null };
+}
+
+/**
+ * EVERY MOVE THE FOLD REFUSED, WITH ITS REASON.
+ *
+ * Added 2026-08-04 after an evening in which the answer was present in the fold
+ * and absent from the report. The operator: "it currently offering from avo the
+ * unripe an upgrade that I can't actually buy — just does nothing when I click
+ * it". The fold knew exactly why (`rejected-order season2`: its prefix was not
+ * owned at that point in the replay) and the report only carried the last
+ * twelve moves, which that rejection had already fallen out of.
+ *
+ * A rejected buy has no UI path — the jar simply never sticks and the vendor
+ * offers it again — so this list is the ONLY place the reason is written down.
+ * Kept to the tail because a long-lived table can hold thousands.
+ */
+function rejectsOf(s: ChipsState | null): Record<string, unknown>[] {
+  if (!s) return [];
+  return s.moves
+    .filter((m) => typeof m.outcome === 'string' && m.outcome.startsWith('rejected-'))
+    .slice(-30)
+    .map((m) => ({ ms: m.ms, outcome: m.outcome, key: m.upgradeKey ?? null }));
+}
+
+/**
+ * QUEUE ENTRIES THAT NAME THE SAME MOVE TWICE.
+ *
+ * Observed the same evening: `id 263 buy fryer2` alongside `id 264 buy fryer2`,
+ * and `id 260 buy season1` alongside `id 268 buy season1`. A jar can only be
+ * bought once a run, so the second is guaranteed to fold `rejected-unowned` or
+ * `rejected-duplicate` — it spends a real action PoW and a chain write to be
+ * thrown away, and to the player it looks like the purchase "didn't take".
+ *
+ * Computed here rather than left for the reader: the queue is the one place
+ * this is cheap to see, and nobody spots it by eye in a fifteen-row dump.
+ */
+function dupesOf(q: QueuedMove[]): Record<string, unknown>[] {
+  const seen = new Map<string, number[]>();
+  for (const m of q) {
+    const k = m.kind === 'buy' ? `buy:${m.key}`
+      : m.kind === 'dip' ? `dip:${m.ms}`
+        : m.kind === 'spend' ? `spend:${m.ability}`
+          : `${m.kind}:${(m as { ms?: number }).ms ?? m.id}`;
+    seen.set(k, [...(seen.get(k) ?? []), m.id]);
+  }
+  return [...seen.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .map(([key, ids]) => ({ key, ids }));
 }
 
 /**
@@ -89,6 +140,12 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // never saw land, and then deleted — taking with it credit the player had
     // already been shown. That is a lost upgrade, in writing.
     lostMoves: i.journal.filter((e) => e.phase === 'expired').length,
+    // WHY A MOVE DID NOT STICK. See `rejectsOf` — a refused buy is silent in
+    // the UI, so without this the player's "I clicked it and nothing happened"
+    // and the fold's `rejected-order` are two facts that never meet.
+    rejects: rejectsOf(s),
+    // The same move queued twice. See `dupesOf`.
+    queueDupes: dupesOf(i.queue),
     // Non-zero means the endpoint really does omit replies it already served,
     // and the monotonic base is the only reason it did not show. Zero over a
     // long session means that theory is wrong and the cause is elsewhere.
