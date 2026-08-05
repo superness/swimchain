@@ -106,5 +106,35 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
   check('a stamped move past its TTL is still expired', after.length === 0, after);
 }
 
+/* ── 6. A REBOUGHT JAR MUST NOT BE RETIRED BY AN OLD TWIN ──────────────────
+   SHIPPED BROKEN 2026-08-04 23:10; the operator caught it in three minutes:
+   "now it is undoing upgrade buys nonstop".
+
+   `confirmedMoveKeys` keys a buy as `buy:<table>:<me>:<key>` with NO ms. A tip
+   clears `owned`, so the same jar is rebought every bowl and this table holds a
+   dozen `buy overcook` replies across a single day. Reconciling an unsent buy
+   against that twin retires it BEFORE it is ever submitted: deducted
+   optimistically, dropped from the queue, never sent, unowned again on the next
+   fold — forever. */
+{
+  const oldBuy: ChipsReply[] = [{
+    content_id: 'c9', author_id: ME, body: 'buy overcook#1785888000000~',
+    created_at: 1785888000, block_height: 2334,
+  } as ChipsReply];
+  const withOld = confirmedMoveKeys(oldBuy, TABLE, ME);
+  check('the old buy IS in the confirmed set (the trap is live)',
+    withOld.has(`buy:${TABLE}:${ME}:overcook`), [...withOld]);
+
+  const rebuy: QueuedMove = { ...P, kind: 'buy', id: 200, key: 'overcook' } as QueuedMove;
+  const after = retireSettled([rebuy], withOld, NOW);
+  check('a FRESH unsent buy survives its own key from a previous bowl',
+    after.length === 1, after.map((m) => m.id));
+
+  // ...while an ms-scoped kind is still reconciled, so the real fix survives.
+  const landedDip = retireSettled([STUCK], keys, NOW);
+  check('an unsent DIP with a real twin is still retired',
+    landedDip.length === 0, landedDip.map((m) => m.id));
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

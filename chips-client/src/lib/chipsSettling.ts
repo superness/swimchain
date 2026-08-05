@@ -137,6 +137,24 @@ export function settlingStillValid(sentAt: number, now: number, ttlMs: number = 
  * drive expiry, and a fresh array every second would re-fold, re-render and
  * rewrite `localStorage` sixty times a minute for nothing.
  */
+/**
+ * Can this move's `moveKey` name exactly ONE move in the table's whole history?
+ *
+ * Only then may an UNSENT entry be retired on a twin match (see the note in
+ * `retireSettled`). `dip`/`tip` fold the authoring ms into the key and `bank`
+ * folds ms+nonce, so each names one move for all time. A `buy` is keyed on the
+ * jar alone and a tip lets the same jar be bought again every bowl, so its key
+ * names a whole family — matching it proves nothing about a fresh entry.
+ *
+ * `broke`/`burn`/`spend` are ms- or ability-scoped but `confirmedMoveKeys` does
+ * not emit keys for them at all, so they can never match here regardless; they
+ * are listed as unique for honesty about the key shape, not to enable anything.
+ */
+function uniquelyKeyed(m: QueuedMove): boolean {
+  return m.kind === 'dip' || m.kind === 'tip' || m.kind === 'bank'
+    || m.kind === 'broke' || m.kind === 'burn';
+}
+
 export function retireSettled(
   q: QueuedMove[],
   confirmed: ReadonlySet<string>,
@@ -170,7 +188,24 @@ export function retireSettled(
        exactly the condition under which the local echo is redundant. */
     const done = confirmed.has(moveKey(m));
     if (m.sentAt === undefined) {
-      if (!done) return true; // genuinely still queued for submission
+      /* ── ONLY MOVES WHOSE KEY IS UNIQUE FOR ALL TIME ──────────────────────
+         SHIPPED BROKEN 2026-08-04 23:10 and caught by the operator inside
+         three minutes: "now it is undoing upgrade buys nonstop".
+
+         `confirmedMoveKeys` keys a buy as `buy:<table>:<me>:<key>` — there is
+         NO `ms` in it. A tip clears `owned`, so a player rebuys the same jars
+         every bowl, and this table holds a dozen `buy overcook` replies across
+         the day. So a FRESH, NEVER-SENT buy matches a twin from hours ago the
+         instant it is queued, and reconciling on that retires it before it is
+         ever submitted. The jar is deducted optimistically, dropped from the
+         queue, never sent, and the next fold puts it back unowned — forever.
+
+         Reconciling an unsent move is only sound when its key can name exactly
+         one move in history. That is true of the ms-scoped kinds (`dip`, `tip`,
+         and `bank`'s proof key of ms+nonce) and false of `buy`. A stamped move
+         is unaffected: it really was submitted, so matching a twin is evidence
+         about THAT submission and the original path below still handles it. */
+      if (!done || !uniquelyKeyed(m)) return true;
       changed = true;
       noteMove({
         at: now, id: m.id, kind: m.kind, key: moveKey(m),
