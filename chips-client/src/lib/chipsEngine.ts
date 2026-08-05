@@ -805,7 +805,7 @@ export function foldChips(
       if (band >= FIRST_HP_BAND) {
         // THE FIRST BLOW SETS THE BAR. After that the bar does not move, no
         // matter how much lifetime the run piles on — see `bossHpFrozen`.
-        if (state.bossHpFrozen <= 0) state.bossHpFrozen = bossHp(band, state.lifetimeChips);
+        if (state.bossHpFrozen <= 0) state.bossHpFrozen = bossHp(band);
         state.bossDamage += parsed.paid;
         const hp = state.bossHpFrozen;
         if (state.bossDamage < hp) {

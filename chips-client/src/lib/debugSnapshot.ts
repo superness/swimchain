@@ -114,6 +114,19 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       // complaint the report exists to answer.
       broken: s.broken,
       bossDamage: s.bossDamage,
+      // THE BAR THE FOLD IS ACTUALLY SCORING AGAINST, and `deepest`, the
+      // watermark. Omitted until 2026-08-04, which is why a report could not
+      // settle "I beat the chip from 1974 and it went back to 0": the HP is
+      // frozen from `lifetimeChips` AT THE FIGHT'S FIRST BLOW, so an optimistic
+      // fold and a confirmed one can freeze DIFFERENT bars for the same fight
+      // (pending replies sort by now, confirmed ones by their real time — so an
+      // in-flight dip lands on the far side of that first blow, then the near
+      // side). A client that froze the lower bar kills the band early and shows
+      // you the NEXT boss; when the chain's own kill lands, it snaps back. Both
+      // numbers are needed to tell that apart from a simple lost move, and
+      // neither is derivable from anything else in this report.
+      bossHpFrozen: s.bossHpFrozen,
+      deepest: s.deepest,
       paidToBosses: s.paidToBosses,
       charOwned: [...(s.charOwned ?? [])].sort(),
       moves: s.moves.length,

@@ -414,11 +414,32 @@ export const BOSS_HP_MULT = [0, 3, 6, 10, 16, 24];
 export const FIRST_HP_BAND = 1;
 
 /**
- * A band's HP, in crumbs. `lifetimeChips` is this run's banked total.
+ * A band's HP, in crumbs. A PURE FUNCTION OF THE BAND — no run state.
+ *
+ * It used to scale with `lifetimeChips`, and that is what let a beaten boss
+ * un-beat itself (operator, 2026-08-04: "if it changed its mind about 'first
+ * hit lifetime chips' then it could 'reset'... a bug around *beat the boss* ->
+ * *reset lifetime check*"). The bar was frozen at the fight's first blow from
+ * lifetime AS OF THAT POINT IN THE FOLD — but a reply's position in the fold is
+ * not stable: `orderReplies` sorts pending replies last (no block_height), so a
+ * dip in flight during the first blow sits AFTER it, then jumps BEFORE it on
+ * confirmation. Same moves, bigger lifetime at the freeze, bigger bar — and the
+ * damage that had felled the band no longer reached it. The band came back,
+ * damage zeroed, bar larger than the one the player had just emptied. Pinned by
+ * bossHpReorder.test.ts.
+ *
+ * Anchoring on `deepBandFloor(band)` instead of the run keeps the ladder the
+ * design asks for — each band's bar is its own entry price times its
+ * multiplier, and both double per band — while making the number IMMUNE to fold
+ * order by construction. The bar you are shown is the bar you fight, on every
+ * client, at every refresh, forever.
+ *
+ * The trade the operator took: difficulty no longer scales with how rich the
+ * run is, so a deep run and a shallow one meet the same table.
  *
  * Meaningless for band 0 — see above; callers must not ask.
  */
-export function bossHp(band: number, lifetimeChips: number): number {
-  const mult = BOSS_HP_MULT[Math.max(0, Math.min(BOSS_HP_MULT.length - 1, band))];
-  return Math.max(1, lifetimeChips * CRUMBS_PER_CHIP * mult);
+export function bossHp(band: number): number {
+  const b = Math.max(0, Math.min(BOSS_HP_MULT.length - 1, band));
+  return Math.max(1, deepBandFloor(b) * CRUMBS_PER_CHIP * BOSS_HP_MULT[b]);
 }

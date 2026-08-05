@@ -44,7 +44,7 @@ import { ScoopShop } from './Scoop';
 import { DeepFightScreen } from './DeepFight';
 import { TheBottom } from './TheBottom';
 import { parseMark, wall, markBody, hasBeenThere, type Mark } from './lib/theBottom';
-import { fightAt, ready as deepReady, bestBlow } from './lib/deepBoss';
+import { fightAt, ready as deepReady, bestBlow, type DeepFight } from './lib/deepBoss';
 import { freshPolish, polishMult, advance as advancePolish, polishLook, type Polish } from './lib/polish';
 import { porcelainInReach, readiness, cracks } from './lib/porcelain';
 import { bowlReady, bowlOfferVisible } from './lib/bowlGate';
@@ -246,6 +246,17 @@ export function App() {
   /** Set for the beat after a band gives, so the screen can say so before it
    *  closes — the same courtesy the porcelain's breakthrough gets. */
   const [deepBroke, setDeepBroke] = useState(false);
+  /* THE BAND THAT JUST FELL, FROZEN AT THE WINNING BLOW.
+     The victory card cannot be drawn from live state: the blow enqueues a
+     `broke`, the optimistic fold advances `broken`, and `fightAt` then
+     describes the NEXT band — so the card announced the boss you were about
+     to meet as the one that just died ("THE CHIP FROM 1974 GIVES" when it was
+     the table), and the fresh 0/131B bar underneath read as the kill being
+     taken back. Worse, when you are not deep enough for the next band
+     `fightAt` returns null and the whole screen unmounts mid-celebration.
+     Freezing the fallen fight fixes both: the card outlives the state that
+     produced it. */
+  const [deepBrokeFight, setDeepBrokeFight] = useState<DeepFight | null>(null);
   /** THE GRAIN's streak. State so the basket's shine re-renders; a ref too
    *  because onDip reads it synchronously in the same tick it updates it. */
   const [polish, setPolish] = useState<Polish>(freshPolish);
@@ -1524,9 +1535,13 @@ export function App() {
     noteTapAway('boss', Date.now(), index, chip);
     take(index);
     if (willFinish) {
+      // Freeze THIS band as the one that gave, before the fold moves on.
+      setDeepBrokeFight({ ...fight, done: fight.hp, left: 0, frac: 1 });
       setDeepBroke(true);
       sfx.breakthrough();
-      window.setTimeout(() => { setDeepOpen(false); setDeepBroke(false); }, 5200);
+      window.setTimeout(() => {
+        setDeepOpen(false); setDeepBroke(false); setDeepBrokeFight(null);
+      }, 5200);
     } else {
       sfx.pop();
       setNotice(`${compact(paid)} off ${fight.label}. it remembers.`);
@@ -2678,9 +2693,9 @@ export function App() {
           onClose={() => setBottomOpen(false)}
         />
       )}
-      {deepOpen && deepFight && (
+      {deepOpen && (deepBrokeFight ?? deepFight) && (
         <DeepFightScreen
-          fight={deepFight}
+          fight={(deepBrokeFight ?? deepFight)!}
           best={bestBlow(chips)}
           ready={deepReady(chips)}
           onHit={onDeepHit}
