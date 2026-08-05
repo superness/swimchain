@@ -120,6 +120,116 @@ function dupesOf(q: readonly QueuedMove[]): Record<string, unknown>[] {
     .map(([key, ids]) => ({ key, ids }));
 }
 
+/**
+ * DIPS THE CLIENT PAID YOU FOR AND THE FOLD DID NOT.
+ *
+ * The operator's idea, 2026-08-05: "if I ever dip a chip from the client side
+ * and don't increase my crumb count we report it? or at least... cache it until
+ * I press the button to report it."
+ *
+ * CACHED, NEVER AUTO-POSTED. A report costs a real action PoW and a chain
+ * write; a client that files one by itself on every hiccup spams the space it
+ * is trying to debug. So this accumulates silently and rides along when the
+ * player presses the button, which is also when it is worth reading.
+ *
+ * WHAT IT DOES NOT DO IS WATCH THE CRUMB COUNTER. That number moves for buys,
+ * for sogginess, for other dips landing in the same tick, and for the bowl cap
+ * clamping — so "the counter did not go up" is noisy enough to be useless, and
+ * a check that cries wolf gets ignored exactly when it is right. Instead this
+ * joins the two records that already exist and must agree:
+ *
+ *     the DIP RING   — what the client showed you at the moment of the tap
+ *     the FOLD       — what the chain's own replay says that same move did
+ *
+ * They are joined on `wireMs`, the ms the dip body carries (`dip <amount>#<ms>~`),
+ * NOT on `ms`, which is the chip's birth — confusing the two sent a diagnosis
+ * somewhere wrong on 2026-07-29 and the ring's own comment says so.
+ *
+ * Three verdicts, and each is a real failure from 2026-08-04:
+ *   `rejected-*`  the fold refused a dip the client had already credited
+ *   `vanished`    settled out of the queue, absent from the fold — the shape of
+ *                 a move that was submitted, lost, and expired, taking credit
+ *                 the player had already been shown
+ *   `stuck`       still queued long after the tap; not yet a loss, but it is
+ *                 what a head-of-line stall looks like from inside
+ *
+ * A dip still in flight is NOT an anomaly, which is why `stuck` is aged rather
+ * than reported the instant it is queued.
+ */
+const STUCK_AFTER_MS = 120_000;
+
+export function dipsUnpaid(
+  dips: readonly DipNote[],
+  s: ChipsState | null,
+  queue: readonly QueuedMove[],
+  now: number,
+): Record<string, unknown>[] {
+  if (!s) return [];
+  const folded = new Map<number, string>();
+  for (const m of s.moves) if (!folded.has(m.ms)) folded.set(m.ms, m.outcome);
+  const queued = new Set<number>();
+  for (const q of queue) if (q.kind === 'dip') queued.add(q.ms);
+
+  const out: Record<string, unknown>[] = [];
+  for (const d of dips) {
+    // A tap-away (`jar`, `hermit`, `boss`, `porcelain`) pays no crumbs BY
+    // DESIGN and posts no dip — there is nothing to join to and nothing wrong.
+    if (d.route !== 'dip' || d.wireMs === null) continue;
+    // The client already told the player this one paid nothing (a full spill on
+    // a brim-full bowl). Honest, and not a discrepancy.
+    if (d.credited <= 0) continue;
+
+    const outcome = folded.get(d.wireMs);
+    if (outcome === 'dipped') continue;                       // they agree
+    if (outcome !== undefined && outcome.startsWith('rejected')) {
+      out.push({ wireMs: d.wireMs, credited: d.credited, verdict: outcome });
+    } else if (outcome === undefined) {
+      if (queued.has(d.wireMs)) {
+        if (now - d.at > STUCK_AFTER_MS) {
+          out.push({ wireMs: d.wireMs, credited: d.credited, verdict: 'stuck', queuedForMs: now - d.at });
+        }
+      } else {
+        out.push({ wireMs: d.wireMs, credited: d.credited, verdict: 'vanished' });
+      }
+    }
+  }
+  return out.slice(-8);
+}
+
+/**
+ * THE DISAGREEMENT, IN A SENTENCE, IN THE PLAYER'S OWN UNITS.
+ *
+ * Operator, 2026-08-05: "and if I press the button and it disagrees then say
+ * why (lifetime change \\ crumb score change etc)".
+ *
+ * `unpaidDips` is the evidence; this is the finding. It exists because a JSON
+ * blob is something a player pastes and an engineer reads hours later — and the
+ * whole point of pressing the button at the moment it happens is that the player
+ * is standing right there and can say "no, that's not what I saw".
+ *
+ * So it names the two numbers that told the story every time on 2026-08-04: how
+ * much the client said it paid you, and what the fold did with it instead.
+ * Returns null when there is nothing to disagree about, so the UI can stay quiet
+ * in the normal case.
+ */
+export function disagreementLine(
+  unpaid: readonly Record<string, unknown>[],
+  s: ChipsState | null,
+): string | null {
+  if (unpaid.length === 0) return null;
+  const total = unpaid.reduce((n, u) => n + (typeof u.credited === 'number' ? u.credited : 0), 0);
+  const byVerdict = new Map<string, number>();
+  for (const u of unpaid) {
+    const v = String(u.verdict ?? 'unknown');
+    byVerdict.set(v, (byVerdict.get(v) ?? 0) + 1);
+  }
+  const shape = [...byVerdict.entries()].map(([v, n]) => `${n} ${v}`).join(', ');
+  const where = s ? ` crumbs now ${s.crumbs.toLocaleString()} of ${s.bowlCap.toLocaleString()}, lifetime ${s.lifetimeChips.toLocaleString()}` : '';
+  return `${unpaid.length} dip${unpaid.length === 1 ? '' : 's'} the client paid you `
+    + `${total.toLocaleString()} crumbs for, that the chain does not agree with (${shape}).`
+    + where;
+}
+
 /* ── KEEP WHAT IS RARE, TRUNCATE WHAT IS ROUTINE ───────────────────────────
    A report is split across as many 12,000-byte posts as it needs, and
    `reportBug` posts them in a loop with no resume — so a report that needs four
@@ -150,7 +260,7 @@ function dupesOf(q: readonly QueuedMove[]): Record<string, unknown>[] {
    A report that fits one post cannot lose its tail. */
 
 /** How many routine entries to keep once the rare ones are safe. */
-const KEEP_ROUTINE = 8;
+const KEEP_ROUTINE = 7;
 
 /**
  * The journal, minus the noise.
@@ -216,6 +326,11 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // never saw land, and then deleted — taking with it credit the player had
     // already been shown. That is a lost upgrade, in writing.
     lostMoves: i.journal.filter((e) => e.phase === 'expired').length,
+    // DIPS THE CLIENT PAID FOR AND THE FOLD DID NOT. See `dipsUnpaid` — the
+    // operator's own check, cached rather than auto-posted. Second in the file
+    // because "I dipped and got no crumbs" was the single most common report of
+    // 2026-08-04 and it took a chain re-fold to answer every time.
+    unpaidDips: dipsUnpaid(i.dips, s, i.queue, i.at),
     // WHY A MOVE DID NOT STICK. See `rejectsOf` — a refused buy is silent in
     // the UI, so without this the player's "I clicked it and nothing happened"
     // and the fold's `rejected-order` are two facts that never meet.

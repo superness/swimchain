@@ -62,7 +62,7 @@ import { measureDock, measureStack, DOCKED_SELECTORS } from './lib/dock';
 import { queuedBuyKeys as queuedBuyKeysOf } from './lib/chipsAfford';
 import { prunePending } from './lib/buyGuard';
 import { sfx } from './lib/sound';
-import { snapshotText } from './lib/debugSnapshot';
+import { snapshotText, dipsUnpaid, disagreementLine } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
 import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
 import { noteDip, noteTapAway, dipEntries } from './lib/dipRing';
@@ -1352,6 +1352,14 @@ export function App() {
    * text to a space as well when one is configured, for the durable version.
    */
   async function onReport(): Promise<void> {
+    /* SAY WHY, AT THE MOMENT THEY PRESS IT. Operator, 2026-08-05: "if I press
+       the button and it disagrees then say why (lifetime change \ crumb score
+       change etc)". The report is what an engineer reads hours later; the
+       player is standing here NOW and is the only one who can say "no, that is
+       not what I saw". Silent when the client and the chain agree. */
+    const unpaid = dipsUnpaid(dipEntries(), state ?? null, queue, Date.now());
+    const why = disagreementLine(unpaid, state ?? null);
+
     let text: string;
     try {
       text = snapshotText({
@@ -1403,7 +1411,10 @@ export function App() {
     if (!host || !me || !CAN_FILE_REPORTS) return;
     try {
       const cid = await host.reportBug(me, text);
-      if (cid) setNotice(copied ? 'report copied — and filed' : 'report filed');
+      // The disagreement outranks the filing confirmation: "it filed" is
+      // housekeeping, "three dips paid you 4.2M the chain never saw" is the
+      // thing they pressed the button about.
+      if (cid) setNotice(why ?? (copied ? 'report copied — and filed' : 'report filed'));
     } catch (e) {
       // NO LONGER QUIET. It was, on the reasoning that the clipboard copy is
       // the one that matters — but the on-chain copy is the one anyone
