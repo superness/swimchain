@@ -113,9 +113,11 @@ const fold = (rs: ChipsReply[]) => foldChips(header, TABLE, rs, new Map());
  */
 const LIFE_ALL = deepBandFloor(DEEP_BAND_COUNT - 1);
 const richFor = (life: number) => lifetimeOf(life);
-const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
+// `life` is gone from the signature: a band's HP is now a pure function of the
+// band (see chipsConst's bossHp), so how rich the run is no longer sizes the bar.
+const killAll = (bands = DEEP_BAND_COUNT) => [
   reply('broke'),
-  ...Array.from({ length: bands - 1 }, (_, i) => reply(`broke ${bossHp(i + 1, life)}`)),
+  ...Array.from({ length: bands - 1 }, (_, i) => reply(`broke ${bossHp(i + 1)}`)),
 ];
 
 /* ── sequential, and once per band ────────────────────────────────────── */
@@ -127,14 +129,14 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
   // blow big enough to finish it — a bare `broke` carries no amount and would
   // only chip. Band 0 is exempt and still settles in one blow, which is why the
   // first reply here is bare and the rest are paid.
-  const six = fold([...richFor(LIFE_ALL), ...killAll(LIFE_ALL)]);
+  const six = fold([...richFor(LIFE_ALL), ...killAll()]);
   check('six breaks walk six bands in order', six.deepest === DEEP_BAND_COUNT, six.deepest);
   check('and pay every grain of char exactly once', six.char === CHAR_TOTAL, six.char);
   check('char rises with depth', CHAR_PER_BAND[5] > CHAR_PER_BAND[0]);
 
   // The seventh has nowhere to go: the last band is a tip, so the run reset
   // and there is not enough lifetime to start again.
-  const seventh = fold([...richFor(LIFE_ALL), ...killAll(LIFE_ALL), reply(`broke ${bossHp(0, LIFE_ALL)}`)]);
+  const seventh = fold([...richFor(LIFE_ALL), ...killAll(), reply(`broke ${bossHp(0)}`)]);
   const last = seventh.moves[seventh.moves.length - 1].outcome;
   check('a break past the descent is refused', last !== 'broke', last);
   check('and cannot mint a grain beyond the fixed supply', seventh.char === CHAR_TOTAL, seventh.char);
@@ -143,7 +145,7 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
 /* ── the last band is a tip ───────────────────────────────────────────── */
 {
   const through = fold([...richFor(LIFE_ALL), reply('buy season1'),
-    ...killAll(LIFE_ALL)]);
+    ...killAll()]);
   check('coming up through a bowl counts it', through.bowls === 1, through.bowls);
   check('the run resets — lifetime is zero again', through.lifetimeChips === 0, through.lifetimeChips);
   check('...and the jars are gone', through.owned.size === 0, [...through.owned]);
@@ -155,10 +157,10 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
 
 /* ── ONCE PER BAND, EVER — the property that fixes the supply ─────────── */
 {
-  const firstDescent = [...richFor(LIFE_ALL), ...killAll(LIFE_ALL)];
+  const firstDescent = [...richFor(LIFE_ALL), ...killAll()];
   // Second descent: earn the lifetime again and re-walk every band.
   const second = fold([...firstDescent, ...lifetimeOf(deepBandFloor(DEEP_BAND_COUNT - 1)),
-    ...killAll(LIFE_ALL)]);
+    ...killAll()]);
   check('a second descent walks the bands again', second.bowls === 2, second.bowls);
   check('AND MINTS NO NEW CHAR — once per band, ever', second.char === CHAR_TOTAL, second.char);
   check('the supply is fixed at CHAR_TOTAL forever', CHAR_TOTAL === 32, CHAR_TOTAL);
@@ -171,7 +173,7 @@ const killAll = (life: number, bands = DEEP_BAND_COUNT) => [
   const tipped = fold([
     ...richFor(LIFE_ALL),
     reply('broke'),
-    reply(`broke ${bossHp(1, LIFE_ALL)}`),
+    reply(`broke ${bossHp(1)}`),
     reply('tip'),
   ]);
   check('a tip clears this bowl\'s descent progress', tipped.broken === 0, tipped.broken);

@@ -65,7 +65,7 @@ export function fightAt(
   if (band < FIRST_HP_BAND || band >= DEEP_BAND_COUNT) return null;
   if (lifetimeChips < deepBandFloor(band)) return null;
 
-  const hp = bossHpFrozen > 0 ? bossHpFrozen : bossHp(band, lifetimeChips);
+  const hp = bossHpFrozen > 0 ? bossHpFrozen : bossHp(band);
   const done = Math.max(0, Math.min(hp, bossDamage));
   return {
     band,

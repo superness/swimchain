@@ -50,7 +50,7 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
 
 /* ── 2. BANDS 1+ TAKE MORE THAN ONE BLOW ───────────────────────────────── */
 {
-  const hp = bossHp(1, LIFE);
+  const hp = bossHp(1);
   check('band 1 has real health', hp > 0, hp);
 
   const oneTap = fold([...past0(), reply('broke 1')]);
@@ -81,7 +81,7 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
 
 /* ── 4. DAMAGE BELONGS TO THE BOWL ─────────────────────────────────────── */
 {
-  const hp = bossHp(1, LIFE);
+  const hp = bossHp(1);
   const tipped = fold([
     ...past0(),
     reply(`broke ${Math.floor(hp / 2)}`),   // wound it
@@ -94,17 +94,22 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
 
 /* ── 5. HEALTH RISES WITH DEPTH ────────────────────────────────────────── */
 {
-  const hps = Array.from({ length: DEEP_BAND_COUNT }, (_, b) => bossHp(b, LIFE));
+  const hps = Array.from({ length: DEEP_BAND_COUNT }, (_, b) => bossHp(b));
   const deep = hps.slice(FIRST_HP_BAND);
   check('each band is tougher than the last',
     deep.every((v, i) => i === 0 || v > deep[i - 1]), deep);
-  check('and HP scales with what you have banked',
-    bossHp(1, LIFE * 2) > bossHp(1, LIFE),
-    { atLife: bossHp(1, LIFE), atDouble: bossHp(1, LIFE * 2) });
+  // HP USED TO SCALE WITH WHAT YOU HAD BANKED. It no longer does, and that is
+  // the point: the bar is a pure function of the band, so it cannot be moved by
+  // anything the run does or by where a reply lands in the fold. The cost the
+  // operator accepted is that a deep run and a shallow one meet the same table.
+  // See bossHpReorder.test.ts for the defect this closes.
+  check('the bar is a pure function of the band', bossHp(1) === bossHp(1));
+  check('...and depends on nothing else', typeof bossHp === 'function' && bossHp.length === 1,
+    { arity: bossHp.length });
 }
 
 /* ── THE BAR IS FROZEN AT THE FIRST BLOW ──────────────────────────────────
-   `bossHp(band, lifetimeChips)` grows with lifetime, and lifetime only ever
+   `bossHp(band)` grows with lifetime, and lifetime only ever
    grows. Recomputed on every fold, that meant:
 
      - the health bar crept BACKWARDS while you were hitting the thing
@@ -125,7 +130,7 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
   // A blow that does not finish it, then enough lifetime to move the old bar,
   // then a blow sized to the ORIGINAL bar. Under the old rule the second blow
   // would fall short of a target that had grown underneath it.
-  const hp0 = bossHp(1, LIFE);
+  const hp0 = bossHp(1);
   const half = Math.ceil(hp0 / 2);
 
   const history = [
@@ -141,8 +146,11 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
   });
   check('...and the char is paid', st.char > 0, st.char);
   // The bar it was scored against must be the frozen one, not the ballooned one.
-  check('the frozen bar was the one in force, not the grown one',
-    bossHp(1, st.lifetimeChips) > hp0, { grown: bossHp(1, st.lifetimeChips), hp0 });
+  // Under the OLD rule this replay ballooned the bar to 40x and the blow fell
+  // short. The bar is now constant, so the same history settles identically no
+  // matter how much lifetime the run piles on.
+  check('the bar did not move under the lifetime explosion',
+    st.bossHpFrozen === 0 && bossHp(1) === hp0, { hp0, now: bossHp(1) });
 
   // The freeze clears on the break, so the NEXT band sets its own bar.
   check('breaking clears the freeze for the band below', st.bossHpFrozen === 0, st.bossHpFrozen);
@@ -150,7 +158,7 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
 {
   // MID-FIGHT THE BAR MUST HOLD. Two partial blows with a lifetime explosion
   // between them: the damage done cannot shrink as a fraction of the target.
-  const hp0 = bossHp(1, LIFE);
+  const hp0 = bossHp(1);
   const chip = Math.ceil(hp0 / 4);
   const st = fold([
     ...past0(),
@@ -167,7 +175,7 @@ const past0 = () => [reply(`dip ${LIFE * CRUMBS_PER_CHIP}`), reply('broke')];
 {
   // A TIP TAKES THE FIGHT WITH IT — including the bar, so the next bowl's
   // fight is sized by the next bowl's first blow.
-  const st = fold([...past0(), reply(`broke ${Math.ceil(bossHp(1, LIFE) / 3)}`), reply('tip')]);
+  const st = fold([...past0(), reply(`broke ${Math.ceil(bossHp(1) / 3)}`), reply('tip')]);
   check('a tip clears the frozen bar', st.bossHpFrozen === 0, st.bossHpFrozen);
   check('...and the damage with it', st.bossDamage === 0, st.bossDamage);
 }
