@@ -79,7 +79,7 @@ const SOUS_KEY = 'chips.souschef.v1';
  *  owner — automation is bought, never default (operator decision). */
 /** Module-scope so the expiry tick below passes a referentially stable empty
  *  set rather than allocating one every second. */
-const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
+const NO_CONFIRMED: ReadonlyMap<string, number> = new Map();
 const POLL_MS = 15_000;
 /** The hermit's trade rides the vendor feed flow but buys NOTHING — this
  *  sentinel marks a feed whose payoff is his return, not a jar. */

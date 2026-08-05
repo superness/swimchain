@@ -136,5 +136,45 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
     landedDip.length === 0, landedDip.map((m) => m.id));
 }
 
+/* ── 7. A SENT BUY IS NOT RETIRED BY A JAR FROM A PREVIOUS BOWL ────────────
+   The latent half of the same defect, found by grepping for the family rather
+   than by another outage. `retireSettled` also consults the twin for STAMPED
+   moves, and a buy key carries no ms — so a freshly-sent `buy season1` matched
+   a season1 bought hours and several bowls earlier and was retired on evidence
+   about a different purchase. If that send were dropped in flight, the jar is
+   gone silently: retired means no TTL, so `expired` never fires and the player
+   is never told. Only a twin from THIS attempt may settle it. */
+{
+  const OLD = 1785888000000;   // a season1 bought in an earlier bowl
+  const SENT = 1785901880411;  // tonight's send
+
+  const stale = new Map([[`buy:${TABLE}:${ME}:season1`, OLD]]);
+  const sentBuy: QueuedMove = {
+    ...P, kind: 'buy', id: 300, key: 'season1', sentAt: SENT,
+  } as QueuedMove;
+  check('an old namesake does NOT retire a freshly sent buy',
+    retireSettled([sentBuy], stale, SENT + 1000).length === 1);
+
+  const mine = new Map([[`buy:${TABLE}:${ME}:season1`, SENT + 40]]);
+  check('...while this attempt\'s own twin does',
+    retireSettled([sentBuy], mine, SENT + 1000).length === 0);
+
+  // The skew window exists because the body's ms and `sentAt` are stamped from
+  // two separate clock reads in the same tick.
+  const slightlyEarly = new Map([[`buy:${TABLE}:${ME}:season1`, SENT - 500]]);
+  check('...and a twin a few hundred ms "before" the send still counts',
+    retireSettled([sentBuy], slightlyEarly, SENT + 1000).length === 0);
+
+  // A dip's key already names one move for all time, so it must NOT be subject
+  // to the recency test — a bank's twin ms is the chip's mining time and can
+  // legitimately predate the submit by hours.
+  const dipTwin = new Map([[`dip:${TABLE}:${ME}:1785897749124`, 1785897749124]]);
+  const sentDip: QueuedMove = {
+    ...P, kind: 'dip', id: 301, ms: 1785897749124, amount: 207960, sentAt: SENT,
+  } as QueuedMove;
+  check('a uniquely-keyed move is still retired regardless of dates',
+    retireSettled([sentDip], dipTwin, SENT + 1000).length === 0);
+}
+
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);
