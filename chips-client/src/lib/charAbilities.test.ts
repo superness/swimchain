@@ -127,5 +127,29 @@ function withCrack(): ChipsReply[] {
     app.includes('!state.charOwned.has(a.key) && state.char >= a.cost'));
 }
 
+// ---------------------------------------------------------------------------
+// A TAP ON SCOOP SHOPS. His char shop must never hijack his STALL.
+//
+// He sells season1 / bowl1 / airtight / fryer2 — the four jars you have to
+// re-buy after a tip. Opening the char shop unconditionally made those
+// unreachable: "i cant buy scoops upgrades after a tip becauase he only shows
+// the new shop." That is exactly the wall the hermit's gamble used to put in
+// front of his own stall, and it gets the same resolution — a tap on a critter
+// SHOPS, and the other thing keeps its own entrance (the `.scoop-call` banner,
+// which appears only when char can actually buy something).
+{
+  const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'App.tsx'), 'utf8');
+  const click = app.slice(app.indexOf('function onCritterClick('), app.indexOf('function onHermitTake('));
+
+  check('onCritterClick was found', click.length > 0);
+  check('scoop still has a char-shop path', click.includes("id === 'scoop'"));
+  check('...but only when his stall is empty',
+    click.includes("openJarsOf('scoop'") && click.includes('.length === 0'));
+  check('...so a tap with jars in stock falls through to the stall',
+    click.includes('setSheetId(id);'));
+  check('no unconditional scoop hijack survives',
+    !click.includes("if (id === 'scoop') { setScoopOpen(true)"));
+}
+
 if (failures > 0) { console.error(`\n${failures} failure(s)`); process.exit(1); }
 console.log('\nall good');
