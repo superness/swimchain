@@ -60,6 +60,7 @@ import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { measureDock, measureStack, DOCKED_SELECTORS } from './lib/dock';
 import { queuedBuyKeys as queuedBuyKeysOf } from './lib/chipsAfford';
+import { prunePending } from './lib/buyGuard';
 import { sfx } from './lib/sound';
 import { snapshotText } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
@@ -474,7 +475,23 @@ export function App() {
    *  goes in when the buy is enqueued and comes out only when the fold has
    *  actually granted the jar, or has rejected the attempt (which frees the
    *  player to try again). */
-  const boughtPendingRef = useRef<Set<string>>(new Set());
+  /* KEY -> THE ms AT WHICH THIS ATTEMPT WAS MADE, not a bare Set.
+     The timestamp is the whole fix. Pruning used to read
+       state.moves.some(m => m.upgradeKey === key && m.outcome.startsWith('rejected'))
+     over the WHOLE history, so a `rejected-order season4` from 1:44 PM freed
+     the guard for a season4 bought at 11:51 PM — nine hours and four bowls
+     later. The key went out of the set the instant it went in, the guard went
+     blind, and a second copy of the same buy queued: two chain writes and two
+     action PoWs for one jar, the second folding `rejected-owned`. That is the
+     `id 263/264 buy fryer2` and `id 260/268 buy season1` pairs in the
+     operator's report, and it is why a successful purchase can appear in the
+     new `rejects` list looking like a failure.
+
+     Only a rejection NEWER than the attempt says anything about the attempt.
+     Same family as the boss bar and the queue reconcile: a rule that searches
+     all of history for a key that is not unique in time will always find an
+     answer to a question nobody asked. */
+  const boughtPendingRef = useRef<Map<string, number>>(new Map());
 
   const foldNow = useCallback((): void => {
     if (!tableId || !me) return;
@@ -497,12 +514,7 @@ export function App() {
   // buy the fold is going to reject.
   useEffect(() => {
     if (!state) return;
-    const pend = boughtPendingRef.current;
-    if (pend.size === 0) return;
-    for (const key of [...pend]) {
-      if (state.owned.has(key)) { pend.delete(key); continue; }
-      if (state.moves.some((m) => m.upgradeKey === key && m.outcome.startsWith('rejected'))) pend.delete(key);
-    }
+    prunePending(boughtPendingRef.current, state.owned, state.moves);
   }, [state]);
 
   // Always the latest `foldNow`, updated unconditionally every render (same
@@ -1141,7 +1153,7 @@ export function App() {
       // In flight from here until the fold grants or refuses it — see
       // boughtPendingRef. This is the only place a buy is born, so it is the
       // only place the set can be kept honest.
-      boughtPendingRef.current.add(key);
+      boughtPendingRef.current.set(key, allocMs());
       return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
     });
   }
@@ -2296,7 +2308,7 @@ export function App() {
    *  know it, so the shop offered jars every one of those gates would refuse.
    *  Operator: "ok so just dont show me the option to buy it?" */
   const pendingBuyKeys = new Set<string>([
-    ...queuedBuyKeys, ...boughtPendingRef.current,
+    ...queuedBuyKeys, ...boughtPendingRef.current.keys(),
   ]);
 
   /** Critters with at least one jar you can afford this instant. The shop
