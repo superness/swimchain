@@ -126,6 +126,28 @@ impl PendingThread {
 }
 
 /// Block builder for accumulating actions and forming blocks
+/// Everything `build_root_block` takes out of the mempool, kept so a caller who
+/// then DISCARDS the block can put it all back.
+///
+/// `build_root_block` drains as it builds, and the block is validated after —
+/// so without this, a block rejected by the finalized-action backstop in
+/// src/node/tasks.rs destroys every action it carried. On mainnet that fired 81
+/// times in 24 hours; among the casualties were a player's boss blows worth
+/// 9.85 billion crumbs and a jar purchase that left their client and the
+/// network permanently disagreeing about what they owned.
+///
+/// Deliberately does NOT carry `seen_actions`: that is the gossip dedupe
+/// memory, and an action being pending again does not make it unseen.
+#[derive(Debug, Clone)]
+pub struct PendingSnapshot {
+    threads: HashMap<ThreadId, PendingThread>,
+    action_locations: HashMap<[u8; 32], (ThreadId, usize)>,
+    space_action_counts: HashMap<SpaceId, usize>,
+    total_action_count: usize,
+    waiting_since: Option<Instant>,
+    flush_since: Option<Instant>,
+}
+
 pub struct BlockBuilder {
     /// Pending actions per thread
     threads: HashMap<ThreadId, PendingThread>,
@@ -1223,6 +1245,38 @@ impl BlockBuilder {
         .ok()
     }
 
+    /// Capture the mempool as it stands, before building a block from it.
+    ///
+    /// Pair with `restore_pending` on any path that throws the block away. The
+    /// finalized-action backstop is a GUARD, and a guard that deletes the thing
+    /// it was guarding is not one.
+    #[must_use]
+    pub fn snapshot_pending(&self) -> PendingSnapshot {
+        PendingSnapshot {
+            threads: self.threads.clone(),
+            action_locations: self.action_locations.clone(),
+            space_action_counts: self.space_action_counts.clone(),
+            total_action_count: self.total_action_count,
+            waiting_since: self.waiting_since,
+            flush_since: self.flush_since,
+        }
+    }
+
+    /// Put a snapshot back after a block was built and then discarded.
+    ///
+    /// Restores the pending set wholesale rather than replaying `add_action`:
+    /// `build_root_block` leaves every drained hash in `seen_actions`, so a
+    /// replay would be rejected as a duplicate and silently restore nothing.
+    pub fn restore_pending(&mut self, snap: PendingSnapshot) {
+        self.threads = snap.threads;
+        self.action_locations = snap.action_locations;
+        self.space_action_counts = snap.space_action_counts;
+        self.total_action_count = snap.total_action_count;
+        self.waiting_since = snap.waiting_since;
+        self.flush_since = snap.flush_since;
+        self.persist();
+    }
+
     /// Clear all pending actions
     pub fn clear(&mut self) {
         self.threads.clear();
@@ -1837,6 +1891,78 @@ mod tests {
             b2.should_form_or_flush(3600),
             "threshold-met forms immediately regardless of flush timeout"
         );
+    }
+
+    #[test]
+    fn build_root_block_drains_the_mempool_whether_or_not_the_block_survives() {
+        // THE HAZARD, STATED. `build_root_block` takes the actions OUT of the
+        // mempool as it builds (`self.threads.drain()`), and it does that before
+        // anyone has decided the block is valid. src/node/tasks.rs validates
+        // AFTER — and on failure logs "Skipping invalid block storage" and
+        // `continue`s, with nothing putting the actions back.
+        //
+        // Observed on mainnet 2026-08-04: 81 such rejections in 24 hours, each
+        // naming a different action finalized in the immediately preceding
+        // block. Every innocent action riding along in those blocks was
+        // destroyed — a player's boss blows worth 9.85 BILLION crumbs among
+        // them, plus a jar purchase that left their client and the network
+        // permanently disagreeing.
+        let mut builder = BlockBuilder::new(30);
+        for _ in 0..3 {
+            builder.add_action(
+                [10u8; 32],
+                [11u8; 32],
+                make_test_action(5),
+                BranchPath::root(),
+            );
+        }
+        assert_eq!(
+            builder.pending_action_count(),
+            3,
+            "three actions are pending"
+        );
+
+        let _ = builder.build_root_block(2000, [1u8; 32], None, None);
+
+        // This is the bug, not a nicety: the caller may still reject the block,
+        // and by now there is nothing to give back.
+        assert_eq!(
+            builder.pending_action_count(),
+            0,
+            "build_root_block drains the mempool before the block is validated"
+        );
+    }
+
+    #[test]
+    fn a_rejected_block_returns_its_actions_to_the_mempool() {
+        // THE CONTRACT THE FIX MUST MEET. A block the caller discards must cost
+        // nothing: every action it carried is still pending and will be offered
+        // again. Without this the finalized-action backstop in tasks.rs is not a
+        // guard, it is a delete.
+        let mut builder = BlockBuilder::new(30);
+        for _ in 0..3 {
+            builder.add_action(
+                [10u8; 32],
+                [11u8; 32],
+                make_test_action(5),
+                BranchPath::root(),
+            );
+        }
+        let before = builder.pending_action_count();
+        assert_eq!(before, 3);
+
+        let salvage = builder.snapshot_pending();
+        let _ = builder.build_root_block(2000, [1u8; 32], None, None);
+        builder.restore_pending(salvage);
+
+        assert_eq!(
+            builder.pending_action_count(),
+            before,
+            "a discarded block must leave the mempool exactly as it found it"
+        );
+        // And they must be re-announceable, or the rebroadcast task will never
+        // offer them to a peer again.
+        assert_eq!(builder.pending_action_announcements().len(), before);
     }
 
     #[test]
