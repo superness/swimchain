@@ -183,6 +183,15 @@ const at = (bottom: number, height: number): DockBox => ({ top: VH - bottom - he
   const stagePad = /\.stage\s*\{[^}]*padding-bottom:\s*calc\(([^;]+)\)/.exec(css);
   check('the stage reserves the dock as padding', stagePad !== null && stagePad[1].includes('--dock-h'),
     stagePad?.[1]);
+
+  // AND NOTHING RESERVES SPACE PER-STATE INSIDE THE RACK. A slot that grows
+  // only when it has a caption is a slot that JUMPS: `.basket-slot:has(.pot-worth)`
+  // briefly carried `padding-bottom`, and lighting the burner then resized the
+  // slot and shoved the fryer ("the 'burning for speed' UI makes a huge gap and
+  // moves the fryers around"). `.pot-worth` is out of flow so the baskets never
+  // move; keep it that way.
+  check('no per-state padding reservation on the basket slot',
+    !/\.basket-slot:has\(\.pot-worth\)\s*\{[^}]*padding/.test(css));
 }
 
 console.log('');

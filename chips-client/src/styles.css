@@ -687,14 +687,15 @@ h1, h2, h3, p { margin: 0; }
    is reserved for it because nothing needs to be. */
 /* Hangs off `.basket-slot` now that `.worth` is retired — same job, one less
    box in the tree. */
-/* THE SLOT MAKES ROOM FOR ITS OWN CAPTION — but only while it has one.
-   `.pot-worth` hangs out of flow below the slot, which was free real estate
-   until the crumb readout moved under the rack (#285) and landed in exactly
-   that band: "the rat is eating this — shoo him" cut straight across "10
-   LAYERS DOWN / 1.9B crumbs" on the device. `:has()` reserves the space only
-   for the two states that render a caption, so a quiet rack keeps its tight
-   spacing and nothing has to guess a constant. */
-.basket-slot:has(.pot-worth) { padding-bottom: 2.4em; }
+/* NO PADDING RESERVATION HERE. `.basket-slot:has(.pot-worth)` briefly carried
+   `padding-bottom: 2.4em` so the rat's caption would not cut across the crumb
+   readout — but the rat's caption was then removed outright (it duplicated a
+   rodent you can plainly see), leaving only the burner's line to trigger it.
+   The effect was that lighting a flame RESIZED the slot and shoved the fryer:
+   "the 'burning for speed' UI makes a huge gap and moves the fryers around".
+   `.pot-worth` is deliberately out of flow — see its own note below — precisely
+   so the baskets never move, and a reservation that only some states pay for
+   is a layout that jumps. */
 .pot-worth {
   position: absolute; left: 0; right: 0; top: 100%;
   margin-top: 3px; padding: 0 6px;
