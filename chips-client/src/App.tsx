@@ -1664,7 +1664,18 @@ export function App() {
     // 2026-08-04: "scoop's shop offer never goes away even after I have spent
     // my one point on him"). With the dog himself as the entrance, the banner
     // is free to be what it looks like: a call you can answer and be done with.
-    if (id === 'scoop') { setScoopOpen(true); sfx.pop(); return; }
+    // SCOOP SHOPS FIRST. Opening the char shop unconditionally made his STALL
+    // unreachable — and he sells season1/bowl1/airtight/fryer2, i.e. exactly
+    // the four jars you must re-buy after a tip. Operator: "i cant buy scoops
+    // upgrades after a tip becauase he only shows the new shop." Same mistake
+    // the hermit's gamble made and the same fix as its note below: a tap on a
+    // critter shops, and the other thing gets its own entrance (the
+    // `.scoop-call` banner, which only appears when char can actually buy
+    // something — see `scoopHasDeal`). The char shop is still one tap away
+    // once he has no jars left for you.
+    if (id === 'scoop' && state && openJarsOf('scoop', state.owned, crewDip, state.declined).length === 0) {
+      setScoopOpen(true); sfx.pop(); return;
+    }
     // A committee with the floor open wants lobbying, not shopping.
     if (id === 'committee' && vote.phase === 'open' && !vote.lobbied) {
       setVote(lobby);
