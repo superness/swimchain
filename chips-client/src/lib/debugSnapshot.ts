@@ -90,7 +90,7 @@ function rejectsOf(s: ChipsState | null): Record<string, unknown>[] {
   if (!s) return [];
   return s.moves
     .filter((m) => typeof m.outcome === 'string' && m.outcome.startsWith('rejected-'))
-    .slice(-30)
+    .slice(-12)
     .map((m) => ({ ms: m.ms, outcome: m.outcome, key: m.upgradeKey ?? null }));
 }
 
@@ -118,6 +118,82 @@ function dupesOf(q: readonly QueuedMove[]): Record<string, unknown>[] {
   return [...seen.entries()]
     .filter(([, ids]) => ids.length > 1)
     .map(([key, ids]) => ({ key, ids }));
+}
+
+/* ── KEEP WHAT IS RARE, TRUNCATE WHAT IS ROUTINE ───────────────────────────
+   A report is split across as many 12,000-byte posts as it needs, and
+   `reportBug` posts them in a loop with no resume — so a report that needs four
+   posts is a report that usually arrives as one or two. On 2026-08-04 that cost
+   the answer TWICE in one night: the second time, `rack` and `tuning` were the
+   two fields that would have named the bug and they were both in the part that
+   never came.
+
+   The instinct is to make chunking reliable. The operator's correction is
+   better: "not by handling disaster scenarios — by changing how it works."
+
+   Measured on a real four-part report from that night, 42,031 bytes:
+
+       journal      42.9%   n=60
+       dips         20.8%   n=20
+       regressions  15.7%   n=30
+       errors       11.7%   n=30
+       ------------------------- 91% of the payload
+       fold + queue + rack + tuning + table = 3.3 KB, the part that diagnoses
+
+   So the bulk is four ring buffers, and they are mostly repetition — the 30
+   "regressions" were one tip's eight jars at a SINGLE timestamp, written out
+   eight times over. Nothing there needed to be sent in full.
+
+   Two structural changes, no retry logic:
+     - stop pretty-printing (42,031 -> 30,996 for free), and
+     - send every RARE event whole while truncating the routine ones.
+   A report that fits one post cannot lose its tail. */
+
+/** How many routine entries to keep once the rare ones are safe. */
+const KEEP_ROUTINE = 8;
+
+/**
+ * The journal, minus the noise.
+ *
+ * `queued`/`sent`/`confirmed` are the happy path and there are hundreds; the
+ * live queue already says what is outstanding. `expired` and `reconciled` are
+ * the ones that mean something went wrong — an `expired` is a move the client
+ * sent, never saw land, and deleted, taking credit the player had already been
+ * shown. Those are kept in FULL however many there are; the routine ones keep
+ * their tail so the recent sequence is still readable.
+ */
+function journalDigest(journal: readonly MoveEvent[]): MoveEvent[] {
+  const rare = journal.filter((e) => e.phase === 'expired' || e.phase === 'reconciled');
+  const routine = journal.filter((e) => e.phase !== 'expired' && e.phase !== 'reconciled');
+  return [...rare, ...routine.slice(-KEEP_ROUTINE)].sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Fold regressions, collapsed per instant.
+ *
+ * A tip clears every jar at once, so one legitimate tip emits one regression
+ * PER UPGRADE — eight lines saying the same thing at the same millisecond. The
+ * instant and the fields are what a reader needs; eight copies of the sentence
+ * are not.
+ */
+function foldRegressions(regs: readonly FoldRegression[]): Record<string, unknown>[] {
+  const byInstant = new Map<number, FoldRegression[]>();
+  for (const r of regs) byInstant.set(r.at, [...(byInstant.get(r.at) ?? []), r]);
+  return [...byInstant.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .slice(-KEEP_ROUTINE)
+    .map(([at, group]) => {
+      const first = group[0] as unknown as Record<string, unknown>;
+      return group.length === 1 ? first : {
+        at,
+        // `movesFrom > movesTo` is the signal that history got SHORTER — a move
+        // was deleted, not mis-shown. It named two of the five bugs on
+        // 2026-08-04, so it survives collapsing verbatim.
+        movesFrom: first.movesFrom, movesTo: first.movesTo,
+        fields: group.map((g) => `${g.field}: ${String(g.from)} -> ${String(g.to)}`),
+        what: first.what,
+      };
+    });
 }
 
 /**
@@ -150,8 +226,8 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // and the monotonic base is the only reason it did not show. Zero over a
     // long session means that theory is wrong and the cause is elsewhere.
     pollGaps: i.pollGaps,
-    regressions: i.regressions,
-    journal: i.journal,
+    regressions: foldRegressions(i.regressions),
+    journal: journalDigest(i.journal),
 
     table: { id: i.tableId, name: i.tableName, author: i.author },
 
@@ -209,7 +285,7 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // what the client thinks, and until now it could show every state around a
     // dip but not the dip. Ordered oldest-first; the last one is the one the
     // player is complaining about.
-    dips: i.dips.map((d) => ({
+    dips: i.dips.slice(-KEEP_ROUTINE).map((d) => ({
       // FIRST, because it is the answer. Anything but 'dip' means the tap was
       // routed away and paid nothing on purpose.
       route: d.route,
@@ -221,7 +297,6 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       // came apart when the dip stopped being stamped with its chip's birthday
       // (cooking.ts's dipFor).
       at: d.at, ms: d.ms, wireMs: d.wireMs, cookedForMs: d.at - d.ms, cookedMs: d.cookedMs,
-      index: d.index,
       pot: d.pot, crackles: d.crackles,
       raw: d.raw, amount: d.amount, doubled: d.doubled,
       // A huge `amount` with `credited: 0` is a full bowl, not a lost dip —
@@ -232,12 +307,19 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     })),
 
     tuning: { ceiling: i.ceiling, seasoning: i.seasoning, crackleHaste: i.crackleHaste },
-    errors: i.errors.map((e) => ({ at: e.at, kind: e.kind, text: e.text })),
+    errors: i.errors.slice(-KEEP_ROUTINE).map((e) => ({ at: e.at, kind: e.kind, text: e.text })),
     env: { ...i.build, ...i.viewport, ua: i.ua },
   };
 }
 
-/** Pretty, because it will be read by a human in a chat window. */
+/**
+ * COMPACT, NOT PRETTY. It is read by a human, but it is READ AT ALL only if it
+ * arrives: two-space indentation cost 11,035 bytes on a real report from
+ * 2026-08-04 — an entire extra post out of four, for whitespace. `reportBug`
+ * posts parts in a loop with no resume, so every part is a chance to lose the
+ * tail, and the tail is where `rack` and `tuning` live. Anyone reading one can
+ * pipe it through `jq .`; nobody can recover a part that was never posted.
+ */
 export function snapshotText(i: SnapshotInput): string {
-  return JSON.stringify(buildSnapshot(i), null, 2);
+  return JSON.stringify(buildSnapshot(i));
 }
