@@ -2394,7 +2394,16 @@ h1, h2, h3, p { margin: 0; }
   animation: porcelain-in 3s ease-out both;
 }
 @keyframes porcelain-in { from { opacity: 0; transform: translateY(24px); } to { opacity: .5; } }
-.bowl-copy { position: relative; max-width: min(560px, 92vw); text-align: center; }
+/* Capped and scrollable, like `.scoop-shop`: the reveal centres this column,
+   and a centred child taller than the screen overflows off BOTH ends with no
+   way to reach either — picking a jar for the crack to carry grew the ledger
+   and wrapped the button row until "tip the bowl" left the screen entirely
+   (operator, 2026-08-06). 40px is the reveal's own 20px padding, both ends.
+   `bowlOverflow.test.ts` holds this rule for every centring overlay. */
+.bowl-copy {
+  position: relative; max-width: min(560px, 92vw); text-align: center;
+  max-height: calc(100dvh - 40px); overflow-y: auto;
+}
 .bowl-beat {
   font-family: var(--chalk); font-size: clamp(13px, 1.7vw, 17px); line-height: 1.6;
   color: #e8e2d4; margin-bottom: 12px;
@@ -2951,6 +2960,8 @@ h1, h2, h3, p { margin: 0; }
 .porc-words {
   position: relative; z-index: 2; text-align: center;
   max-width: min(92vw, 560px);
+  /* same centred-column cap as `.bowl-copy` — see bowlOverflow.test.ts */
+  max-height: calc(100dvh - 40px); overflow-y: auto;
   display: flex; flex-direction: column; align-items: center; gap: 6px;
   font-family: var(--chalk); color: #e8eef2;
   text-shadow: 0 2px 10px rgba(0,0,0,.9);
@@ -3186,7 +3197,11 @@ h1, h2, h3, p { margin: 0; }
 /* `100%`, NOT `92vw`: `.deep-screen` carries 20px padding, so at a 390px viewport the
    content box is 350px while 92vw resolves to 358.8 — a 9px overflow on a phone,
    which vw units cannot see because they do not know about the padding. */
-.deep-words { position: relative; z-index: 1; width: min(520px, 100%); }
+.deep-words {
+  position: relative; z-index: 1; width: min(520px, 100%);
+  /* same centred-column cap as `.bowl-copy` — see bowlOverflow.test.ts */
+  max-height: calc(100dvh - 40px); overflow-y: auto;
+}
 .deep-small {
   display: block; font-family: var(--chalk); font-size: 11px;
   letter-spacing: .08em; color: #a8846a;
@@ -3274,7 +3289,11 @@ h1, h2, h3, p { margin: 0; }
   position: absolute; inset: 0; pointer-events: none;
   background: radial-gradient(120% 90% at 50% 0%, rgba(60, 78, 96, .35), transparent 65%);
 }
-.bottom-words { position: relative; z-index: 1; width: min(460px, 100%); }
+.bottom-words {
+  position: relative; z-index: 1; width: min(460px, 100%);
+  /* same centred-column cap as `.bowl-copy` — see bowlOverflow.test.ts */
+  max-height: calc(100dvh - 40px); overflow-y: auto;
+}
 .bottom-small {
   display: block; font-family: var(--chalk); font-size: 11px;
   letter-spacing: .1em; color: #6f7f8d;
