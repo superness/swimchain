@@ -66,7 +66,244 @@ function moveOf(m: QueuedMove): Record<string, unknown> {
   if (m.kind === 'dip') return { ...base, ms: m.ms, amount: m.amount };
   if (m.kind === 'buy') return { ...base, key: m.key };
   if (m.kind === 'tip') return { ...base, ms: m.ms };
+  if (m.kind === 'burn') return { ...base, ms: m.ms, key: m.key };
+  if (m.kind === 'broke') return { ...base, ms: m.ms, paid: m.paid };
+  if (m.kind === 'spend') return { ...base, ability: m.ability };
   return { ...base, ms: (m as { chip?: { ms?: number } }).chip?.ms ?? null };
+}
+
+/**
+ * EVERY MOVE THE FOLD REFUSED, WITH ITS REASON.
+ *
+ * Added 2026-08-04 after an evening in which the answer was present in the fold
+ * and absent from the report. The operator: "it currently offering from avo the
+ * unripe an upgrade that I can't actually buy — just does nothing when I click
+ * it". The fold knew exactly why (`rejected-order season2`: its prefix was not
+ * owned at that point in the replay) and the report only carried the last
+ * twelve moves, which that rejection had already fallen out of.
+ *
+ * A rejected buy has no UI path — the jar simply never sticks and the vendor
+ * offers it again — so this list is the ONLY place the reason is written down.
+ * Kept to the tail because a long-lived table can hold thousands.
+ */
+function rejectsOf(s: ChipsState | null): Record<string, unknown>[] {
+  if (!s) return [];
+  return s.moves
+    .filter((m) => typeof m.outcome === 'string' && m.outcome.startsWith('rejected-'))
+    .slice(-12)
+    .map((m) => ({ ms: m.ms, outcome: m.outcome, key: m.upgradeKey ?? null }));
+}
+
+/**
+ * QUEUE ENTRIES THAT NAME THE SAME MOVE TWICE.
+ *
+ * Observed the same evening: `id 263 buy fryer2` alongside `id 264 buy fryer2`,
+ * and `id 260 buy season1` alongside `id 268 buy season1`. A jar can only be
+ * bought once a run, so the second is guaranteed to fold `rejected-unowned` or
+ * `rejected-duplicate` — it spends a real action PoW and a chain write to be
+ * thrown away, and to the player it looks like the purchase "didn't take".
+ *
+ * Computed here rather than left for the reader: the queue is the one place
+ * this is cheap to see, and nobody spots it by eye in a fifteen-row dump.
+ */
+function dupesOf(q: readonly QueuedMove[]): Record<string, unknown>[] {
+  const seen = new Map<string, number[]>();
+  for (const m of q) {
+    const k = m.kind === 'buy' ? `buy:${m.key}`
+      : m.kind === 'dip' ? `dip:${m.ms}`
+        : m.kind === 'spend' ? `spend:${m.ability}`
+          : `${m.kind}:${(m as { ms?: number }).ms ?? m.id}`;
+    seen.set(k, [...(seen.get(k) ?? []), m.id]);
+  }
+  return [...seen.entries()]
+    .filter(([, ids]) => ids.length > 1)
+    .map(([key, ids]) => ({ key, ids }));
+}
+
+/**
+ * DIPS THE CLIENT PAID YOU FOR AND THE FOLD DID NOT.
+ *
+ * The operator's idea, 2026-08-05: "if I ever dip a chip from the client side
+ * and don't increase my crumb count we report it? or at least... cache it until
+ * I press the button to report it."
+ *
+ * CACHED, NEVER AUTO-POSTED. A report costs a real action PoW and a chain
+ * write; a client that files one by itself on every hiccup spams the space it
+ * is trying to debug. So this accumulates silently and rides along when the
+ * player presses the button, which is also when it is worth reading.
+ *
+ * WHAT IT DOES NOT DO IS WATCH THE CRUMB COUNTER. That number moves for buys,
+ * for sogginess, for other dips landing in the same tick, and for the bowl cap
+ * clamping — so "the counter did not go up" is noisy enough to be useless, and
+ * a check that cries wolf gets ignored exactly when it is right. Instead this
+ * joins the two records that already exist and must agree:
+ *
+ *     the DIP RING   — what the client showed you at the moment of the tap
+ *     the FOLD       — what the chain's own replay says that same move did
+ *
+ * They are joined on `wireMs`, the ms the dip body carries (`dip <amount>#<ms>~`),
+ * NOT on `ms`, which is the chip's birth — confusing the two sent a diagnosis
+ * somewhere wrong on 2026-07-29 and the ring's own comment says so.
+ *
+ * Three verdicts, and each is a real failure from 2026-08-04:
+ *   `rejected-*`  the fold refused a dip the client had already credited
+ *   `vanished`    settled out of the queue, absent from the fold — the shape of
+ *                 a move that was submitted, lost, and expired, taking credit
+ *                 the player had already been shown
+ *   `stuck`       still queued long after the tap; not yet a loss, but it is
+ *                 what a head-of-line stall looks like from inside
+ *
+ * A dip still in flight is NOT an anomaly, which is why `stuck` is aged rather
+ * than reported the instant it is queued.
+ */
+const STUCK_AFTER_MS = 120_000;
+
+export function dipsUnpaid(
+  dips: readonly DipNote[],
+  s: ChipsState | null,
+  queue: readonly QueuedMove[],
+  now: number,
+): Record<string, unknown>[] {
+  if (!s) return [];
+  const folded = new Map<number, string>();
+  for (const m of s.moves) if (!folded.has(m.ms)) folded.set(m.ms, m.outcome);
+  const queued = new Set<number>();
+  for (const q of queue) if (q.kind === 'dip') queued.add(q.ms);
+
+  const out: Record<string, unknown>[] = [];
+  for (const d of dips) {
+    // A tap-away (`jar`, `hermit`, `boss`, `porcelain`) pays no crumbs BY
+    // DESIGN and posts no dip — there is nothing to join to and nothing wrong.
+    if (d.route !== 'dip' || d.wireMs === null) continue;
+    // The client already told the player this one paid nothing (a full spill on
+    // a brim-full bowl). Honest, and not a discrepancy.
+    if (d.credited <= 0) continue;
+
+    const outcome = folded.get(d.wireMs);
+    if (outcome === 'dipped') continue;                       // they agree
+    if (outcome !== undefined && outcome.startsWith('rejected')) {
+      out.push({ wireMs: d.wireMs, credited: d.credited, verdict: outcome });
+    } else if (outcome === undefined) {
+      if (queued.has(d.wireMs)) {
+        if (now - d.at > STUCK_AFTER_MS) {
+          out.push({ wireMs: d.wireMs, credited: d.credited, verdict: 'stuck', queuedForMs: now - d.at });
+        }
+      } else {
+        out.push({ wireMs: d.wireMs, credited: d.credited, verdict: 'vanished' });
+      }
+    }
+  }
+  return out.slice(-8);
+}
+
+/**
+ * THE DISAGREEMENT, IN A SENTENCE, IN THE PLAYER'S OWN UNITS.
+ *
+ * Operator, 2026-08-05: "and if I press the button and it disagrees then say
+ * why (lifetime change \\ crumb score change etc)".
+ *
+ * `unpaidDips` is the evidence; this is the finding. It exists because a JSON
+ * blob is something a player pastes and an engineer reads hours later — and the
+ * whole point of pressing the button at the moment it happens is that the player
+ * is standing right there and can say "no, that's not what I saw".
+ *
+ * So it names the two numbers that told the story every time on 2026-08-04: how
+ * much the client said it paid you, and what the fold did with it instead.
+ * Returns null when there is nothing to disagree about, so the UI can stay quiet
+ * in the normal case.
+ */
+export function disagreementLine(
+  unpaid: readonly Record<string, unknown>[],
+  s: ChipsState | null,
+): string | null {
+  if (unpaid.length === 0) return null;
+  const total = unpaid.reduce((n, u) => n + (typeof u.credited === 'number' ? u.credited : 0), 0);
+  const byVerdict = new Map<string, number>();
+  for (const u of unpaid) {
+    const v = String(u.verdict ?? 'unknown');
+    byVerdict.set(v, (byVerdict.get(v) ?? 0) + 1);
+  }
+  const shape = [...byVerdict.entries()].map(([v, n]) => `${n} ${v}`).join(', ');
+  const where = s ? ` crumbs now ${s.crumbs.toLocaleString()} of ${s.bowlCap.toLocaleString()}, lifetime ${s.lifetimeChips.toLocaleString()}` : '';
+  return `${unpaid.length} dip${unpaid.length === 1 ? '' : 's'} the client paid you `
+    + `${total.toLocaleString()} crumbs for, that the chain does not agree with (${shape}).`
+    + where;
+}
+
+/* ── KEEP WHAT IS RARE, TRUNCATE WHAT IS ROUTINE ───────────────────────────
+   A report is split across as many 12,000-byte posts as it needs, and
+   `reportBug` posts them in a loop with no resume — so a report that needs four
+   posts is a report that usually arrives as one or two. On 2026-08-04 that cost
+   the answer TWICE in one night: the second time, `rack` and `tuning` were the
+   two fields that would have named the bug and they were both in the part that
+   never came.
+
+   The instinct is to make chunking reliable. The operator's correction is
+   better: "not by handling disaster scenarios — by changing how it works."
+
+   Measured on a real four-part report from that night, 42,031 bytes:
+
+       journal      42.9%   n=60
+       dips         20.8%   n=20
+       regressions  15.7%   n=30
+       errors       11.7%   n=30
+       ------------------------- 91% of the payload
+       fold + queue + rack + tuning + table = 3.3 KB, the part that diagnoses
+
+   So the bulk is four ring buffers, and they are mostly repetition — the 30
+   "regressions" were one tip's eight jars at a SINGLE timestamp, written out
+   eight times over. Nothing there needed to be sent in full.
+
+   Two structural changes, no retry logic:
+     - stop pretty-printing (42,031 -> 30,996 for free), and
+     - send every RARE event whole while truncating the routine ones.
+   A report that fits one post cannot lose its tail. */
+
+/** How many routine entries to keep once the rare ones are safe. */
+const KEEP_ROUTINE = 7;
+
+/**
+ * The journal, minus the noise.
+ *
+ * `queued`/`sent`/`confirmed` are the happy path and there are hundreds; the
+ * live queue already says what is outstanding. `expired` and `reconciled` are
+ * the ones that mean something went wrong — an `expired` is a move the client
+ * sent, never saw land, and deleted, taking credit the player had already been
+ * shown. Those are kept in FULL however many there are; the routine ones keep
+ * their tail so the recent sequence is still readable.
+ */
+function journalDigest(journal: readonly MoveEvent[]): MoveEvent[] {
+  const rare = journal.filter((e) => e.phase === 'expired' || e.phase === 'reconciled');
+  const routine = journal.filter((e) => e.phase !== 'expired' && e.phase !== 'reconciled');
+  return [...rare, ...routine.slice(-KEEP_ROUTINE)].sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Fold regressions, collapsed per instant.
+ *
+ * A tip clears every jar at once, so one legitimate tip emits one regression
+ * PER UPGRADE — eight lines saying the same thing at the same millisecond. The
+ * instant and the fields are what a reader needs; eight copies of the sentence
+ * are not.
+ */
+function foldRegressions(regs: readonly FoldRegression[]): Record<string, unknown>[] {
+  const byInstant = new Map<number, FoldRegression[]>();
+  for (const r of regs) byInstant.set(r.at, [...(byInstant.get(r.at) ?? []), r]);
+  return [...byInstant.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .slice(-KEEP_ROUTINE)
+    .map(([at, group]) => {
+      const first = group[0] as unknown as Record<string, unknown>;
+      return group.length === 1 ? first : {
+        at,
+        // `movesFrom > movesTo` is the signal that history got SHORTER — a move
+        // was deleted, not mis-shown. It named two of the five bugs on
+        // 2026-08-04, so it survives collapsing verbatim.
+        movesFrom: first.movesFrom, movesTo: first.movesTo,
+        fields: group.map((g) => `${g.field}: ${String(g.from)} -> ${String(g.to)}`),
+        what: first.what,
+      };
+    });
 }
 
 /**
@@ -89,12 +326,23 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // never saw land, and then deleted — taking with it credit the player had
     // already been shown. That is a lost upgrade, in writing.
     lostMoves: i.journal.filter((e) => e.phase === 'expired').length,
+    // DIPS THE CLIENT PAID FOR AND THE FOLD DID NOT. See `dipsUnpaid` — the
+    // operator's own check, cached rather than auto-posted. Second in the file
+    // because "I dipped and got no crumbs" was the single most common report of
+    // 2026-08-04 and it took a chain re-fold to answer every time.
+    unpaidDips: dipsUnpaid(i.dips, s, i.queue, i.at),
+    // WHY A MOVE DID NOT STICK. See `rejectsOf` — a refused buy is silent in
+    // the UI, so without this the player's "I clicked it and nothing happened"
+    // and the fold's `rejected-order` are two facts that never meet.
+    rejects: rejectsOf(s),
+    // The same move queued twice. See `dupesOf`.
+    queueDupes: dupesOf(i.queue),
     // Non-zero means the endpoint really does omit replies it already served,
     // and the monotonic base is the only reason it did not show. Zero over a
     // long session means that theory is wrong and the cause is elsewhere.
     pollGaps: i.pollGaps,
-    regressions: i.regressions,
-    journal: i.journal,
+    regressions: foldRegressions(i.regressions),
+    journal: journalDigest(i.journal),
 
     table: { id: i.tableId, name: i.tableName, author: i.author },
 
@@ -152,7 +400,7 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     // what the client thinks, and until now it could show every state around a
     // dip but not the dip. Ordered oldest-first; the last one is the one the
     // player is complaining about.
-    dips: i.dips.map((d) => ({
+    dips: i.dips.slice(-KEEP_ROUTINE).map((d) => ({
       // FIRST, because it is the answer. Anything but 'dip' means the tap was
       // routed away and paid nothing on purpose.
       route: d.route,
@@ -164,7 +412,6 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
       // came apart when the dip stopped being stamped with its chip's birthday
       // (cooking.ts's dipFor).
       at: d.at, ms: d.ms, wireMs: d.wireMs, cookedForMs: d.at - d.ms, cookedMs: d.cookedMs,
-      index: d.index,
       pot: d.pot, crackles: d.crackles,
       raw: d.raw, amount: d.amount, doubled: d.doubled,
       // A huge `amount` with `credited: 0` is a full bowl, not a lost dip —
@@ -175,12 +422,19 @@ export function buildSnapshot(i: SnapshotInput): Record<string, unknown> {
     })),
 
     tuning: { ceiling: i.ceiling, seasoning: i.seasoning, crackleHaste: i.crackleHaste },
-    errors: i.errors.map((e) => ({ at: e.at, kind: e.kind, text: e.text })),
+    errors: i.errors.slice(-KEEP_ROUTINE).map((e) => ({ at: e.at, kind: e.kind, text: e.text })),
     env: { ...i.build, ...i.viewport, ua: i.ua },
   };
 }
 
-/** Pretty, because it will be read by a human in a chat window. */
+/**
+ * COMPACT, NOT PRETTY. It is read by a human, but it is READ AT ALL only if it
+ * arrives: two-space indentation cost 11,035 bytes on a real report from
+ * 2026-08-04 — an entire extra post out of four, for whitespace. `reportBug`
+ * posts parts in a loop with no resume, so every part is a chance to lose the
+ * tail, and the tail is where `rack` and `tuning` live. Anyone reading one can
+ * pipe it through `jq .`; nobody can recover a part that was never posted.
+ */
 export function snapshotText(i: SnapshotInput): string {
-  return JSON.stringify(buildSnapshot(i), null, 2);
+  return JSON.stringify(buildSnapshot(i));
 }

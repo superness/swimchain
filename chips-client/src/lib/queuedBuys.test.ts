@@ -175,10 +175,17 @@ function withBuy(q: QueuedMove[], key: string, author = ME, table = TABLE): Queu
 
   // A key enters the set exactly where a buy is born, and leaves it only on a
   // settled fold — never on a timer, never on the queue draining.
-  check('the set is filled where the buy is enqueued', app.includes('boughtPendingRef.current.add(key);'));
-  check('...and drained on owned', app.includes('if (state.owned.has(key)) { pend.delete(key); continue; }'));
+  // The key is STAMPED with the moment of the attempt, not merely present. An
+  // unstamped set was freed by a `rejected-order` from a previous bowl nine
+  // hours earlier, which is how the same jar came to be queued twice (see
+  // lib/buyGuard.ts and buyGuard.test.ts).
+  check('the set is filled where the buy is enqueued, with the attempt ms',
+    app.includes('boughtPendingRef.current.set(key, allocMs());'));
+  const guard = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'buyGuard.ts'), 'utf8');
+  check('...and drained on owned', guard.includes('if (owned.has(key)) {'));
   check('...and drained on a rejection, so a refused buy can be retried',
-    app.includes("m.outcome.startsWith('rejected')"));
+    guard.includes("m.outcome.startsWith('rejected')"));
+  check('...but ONLY by a rejection at or after the attempt', guard.includes('m.ms >= since'));
 }
 
 // ---------------------------------------------------------------------------

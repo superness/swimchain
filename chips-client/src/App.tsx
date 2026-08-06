@@ -60,8 +60,9 @@ import { Tutorial } from './Tutorial';
 import { compact } from './lib/format';
 import { measureDock, measureStack, DOCKED_SELECTORS } from './lib/dock';
 import { queuedBuyKeys as queuedBuyKeysOf } from './lib/chipsAfford';
+import { prunePending } from './lib/buyGuard';
 import { sfx } from './lib/sound';
-import { snapshotText } from './lib/debugSnapshot';
+import { snapshotText, dipsUnpaid, disagreementLine } from './lib/debugSnapshot';
 import { clearRack } from './lib/rackStore';
 import { attachErrorRing, entries as ringEntries, note as ringNote } from './lib/errorRing';
 import { noteDip, noteTapAway, dipEntries } from './lib/dipRing';
@@ -78,7 +79,7 @@ const SOUS_KEY = 'chips.souschef.v1';
  *  owner — automation is bought, never default (operator decision). */
 /** Module-scope so the expiry tick below passes a referentially stable empty
  *  set rather than allocating one every second. */
-const NO_CONFIRMED: ReadonlySet<string> = new Set<string>();
+const NO_CONFIRMED: ReadonlyMap<string, number> = new Map();
 const POLL_MS = 15_000;
 /** The hermit's trade rides the vendor feed flow but buys NOTHING — this
  *  sentinel marks a feed whose payoff is his return, not a jar. */
@@ -177,6 +178,13 @@ export function App() {
 
   const [tableId, setTableId] = useState<string | null>(null);
   const [state, setState] = useState<ChipsState | null>(null);
+  /* Always the latest fold, read THROUGH a ref by callbacks whose identity must
+     stay stable (see `foldNowRef` below for the same pattern and the reason:
+     depending on `state` would make the polling effect fire a full network round
+     trip on every dip). `retireSettled` needs it to tell "the chain has this
+     buy" from "the fold honoured this buy". */
+  const stateRef = useRef<ChipsState | null>(null);
+  stateRef.current = state;
   const [fatal, setFatal] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -474,7 +482,23 @@ export function App() {
    *  goes in when the buy is enqueued and comes out only when the fold has
    *  actually granted the jar, or has rejected the attempt (which frees the
    *  player to try again). */
-  const boughtPendingRef = useRef<Set<string>>(new Set());
+  /* KEY -> THE ms AT WHICH THIS ATTEMPT WAS MADE, not a bare Set.
+     The timestamp is the whole fix. Pruning used to read
+       state.moves.some(m => m.upgradeKey === key && m.outcome.startsWith('rejected'))
+     over the WHOLE history, so a `rejected-order season4` from 1:44 PM freed
+     the guard for a season4 bought at 11:51 PM — nine hours and four bowls
+     later. The key went out of the set the instant it went in, the guard went
+     blind, and a second copy of the same buy queued: two chain writes and two
+     action PoWs for one jar, the second folding `rejected-owned`. That is the
+     `id 263/264 buy fryer2` and `id 260/268 buy season1` pairs in the
+     operator's report, and it is why a successful purchase can appear in the
+     new `rejects` list looking like a failure.
+
+     Only a rejection NEWER than the attempt says anything about the attempt.
+     Same family as the boss bar and the queue reconcile: a rule that searches
+     all of history for a key that is not unique in time will always find an
+     answer to a question nobody asked. */
+  const boughtPendingRef = useRef<Map<string, number>>(new Map());
 
   const foldNow = useCallback((): void => {
     if (!tableId || !me) return;
@@ -497,12 +521,7 @@ export function App() {
   // buy the fold is going to reject.
   useEffect(() => {
     if (!state) return;
-    const pend = boughtPendingRef.current;
-    if (pend.size === 0) return;
-    for (const key of [...pend]) {
-      if (state.owned.has(key)) { pend.delete(key); continue; }
-      if (state.moves.some((m) => m.upgradeKey === key && m.outcome.startsWith('rejected'))) pend.delete(key);
-    }
+    prunePending(boughtPendingRef.current, state.owned, state.moves);
   }, [state]);
 
   // Always the latest `foldNow`, updated unconditionally every render (same
@@ -683,7 +702,12 @@ export function App() {
     // change or the polling effect fires an extra network round trip per dip.
     // Nothing is assigned inside the updater and read outside it; the updater
     // is pure and its result is used only by React.
-    setQueue((q) => retireSettled(q, confirmedMoveKeys(confirmed, tableId, me.publicKeyHex), Date.now()));
+    // `stateRef.current?.owned` — a buy is settled only once the fold has
+    // HONOURED it, not merely once the chain HAS it. See retireSettled.
+    setQueue((q) => retireSettled(
+      q, confirmedMoveKeys(confirmed, tableId, me.publicKeyHex), Date.now(),
+      undefined, stateRef.current?.owned,
+    ));
     foldNowRef.current();
     setCounting(null);
   }, [host, tableId, me]);
@@ -1141,7 +1165,7 @@ export function App() {
       // In flight from here until the fold grants or refuses it — see
       // boughtPendingRef. This is the only place a buy is born, so it is the
       // only place the set can be kept honest.
-      boughtPendingRef.current.add(key);
+      boughtPendingRef.current.set(key, allocMs());
       return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
     });
   }
@@ -1340,6 +1364,14 @@ export function App() {
    * text to a space as well when one is configured, for the durable version.
    */
   async function onReport(): Promise<void> {
+    /* SAY WHY, AT THE MOMENT THEY PRESS IT. Operator, 2026-08-05: "if I press
+       the button and it disagrees then say why (lifetime change \ crumb score
+       change etc)". The report is what an engineer reads hours later; the
+       player is standing here NOW and is the only one who can say "no, that is
+       not what I saw". Silent when the client and the chain agree. */
+    const unpaid = dipsUnpaid(dipEntries(), state ?? null, queue, Date.now());
+    const why = disagreementLine(unpaid, state ?? null);
+
     let text: string;
     try {
       text = snapshotText({
@@ -1391,7 +1423,10 @@ export function App() {
     if (!host || !me || !CAN_FILE_REPORTS) return;
     try {
       const cid = await host.reportBug(me, text);
-      if (cid) setNotice(copied ? 'report copied — and filed' : 'report filed');
+      // The disagreement outranks the filing confirmation: "it filed" is
+      // housekeeping, "three dips paid you 4.2M the chain never saw" is the
+      // thing they pressed the button about.
+      if (cid) setNotice(why ?? (copied ? 'report copied — and filed' : 'report filed'));
     } catch (e) {
       // NO LONGER QUIET. It was, on the reasoning that the clipboard copy is
       // the one that matters — but the on-chain copy is the one anyone
@@ -1688,7 +1723,7 @@ export function App() {
     // `.scoop-call` banner, which only appears when char can actually buy
     // something — see `scoopHasDeal`). The char shop is still one tap away
     // once he has no jars left for you.
-    if (id === 'scoop' && state && openJarsOf('scoop', state.owned, crewDip, state.declined).length === 0) {
+    if (id === 'scoop' && state && openJarsOf('scoop', state.owned, crewDip, state.declined, pendingBuyKeys).length === 0) {
       setScoopOpen(true); sfx.pop(); return;
     }
     // A committee with the floor open wants lobbying, not shopping.
@@ -2291,6 +2326,14 @@ export function App() {
     ? queuedBuyKeysOf(activeFor(queue, tableId, me.publicKeyHex))
     : new Set<string>();
 
+  /** EVERY JAR ALREADY ON ITS WAY — queued, or submitted and not yet folded.
+   *  The union `onBuy` and `onFeed` have always guarded with; the SHELF did not
+   *  know it, so the shop offered jars every one of those gates would refuse.
+   *  Operator: "ok so just dont show me the option to buy it?" */
+  const pendingBuyKeys = new Set<string>([
+    ...queuedBuyKeys, ...boughtPendingRef.current.keys(),
+  ]);
+
   /** Critters with at least one jar you can afford this instant. The shop
    *  has no other entrance now, so this badge is the ONLY thing telling a
    *  player their crumbs will buy something.
@@ -2320,7 +2363,7 @@ export function App() {
     const out = new Set<string>();
     if (!state) return out;
     for (const m of crewFor(crewDip)) {
-      if (openJarsOf(m.id, state.owned, crewDip, state.declined).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
+      if (openJarsOf(m.id, state.owned, crewDip, state.declined, pendingBuyKeys).some((u) => canAffordBuy(crumbsNow, pendingCommitted, u.cost))) {
         out.add(m.id);
       }
     }
@@ -2469,9 +2512,16 @@ export function App() {
       )}
       {state && bowlOpen && (
         <BowlReveal
-          salt={tipSalt}
+          /* THE WHOLE STATE, not three numbers. The reveal derives its own
+             receipt (lib/tipLedger.ts) because the losses it has to name are
+             the fields the fold's tip verb clears, and because `jarCount`
+             computed out here could not see the keep-picker in there — which
+             is how "all 5 jars" stayed on screen while one was being saved,
+             on all twelve of 2026-08-04's tips. */
+          state={state}
+          /* Sog-projected, i.e. the crumb number actually on screen. */
+          crumbs={crumbsNow}
           layerLabel={tier.label}
-          jarCount={state.owned.size}
           depth={DIP_TIERS[Math.min(DIP_TIERS.length - 1, state.dipIndex)].label}
           keepable={
             // THE CRACK: what this bowl could carry through. Empty without the
@@ -2499,9 +2549,10 @@ export function App() {
       {sheetVendor && state && (
         <StallSheet
           vendor={sheetVendor}
-          jars={openJarsOf(sheetVendor.id, state.owned, crewDip, state.declined)}
+          jars={openJarsOf(sheetVendor.id, state.owned, crewDip, state.declined, pendingBuyKeys)}
           owned={state.owned}
           declined={state.declined}
+          pending={pendingBuyKeys}
           dipIndex={crewDip}
           crumbsNow={crumbsNow}
           committed={pendingCommitted}

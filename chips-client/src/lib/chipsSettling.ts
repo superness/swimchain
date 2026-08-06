@@ -94,26 +94,51 @@ export const SETTLE_TTL_MS = 600_000 + 2 * 15_000;
  * DoS control `verifyReplies` applies, and it also means a stranger cannot
  * retire the player's settling moves by posting look-alike bodies.
  */
-export function confirmedMoveKeys(replies: ChipsReply[], tableId: string, author: string): Set<string> {
-  const keys = new Set<string>();
+export function confirmedMoveKeys(
+  replies: ChipsReply[], tableId: string, author: string,
+): Map<string, number> {
+  /* A MAP, NOT A SET — the value is the NEWEST authoring ms seen for that key.
+     Most keys carry their own `ms` and so name exactly one move for all time.
+     `buy` does not: it is `buy:<table>:<me>:<jar>`, and a tip clears `owned`,
+     so the same jar is bought again every bowl. Without the timestamp a
+     freshly-sent `buy season1` matches a season1 bought hours ago and is
+     retired on evidence that has nothing to do with it — and if its own
+     submission were dropped, the player loses the jar with no expiry ever
+     firing to say so. `retireSettled` compares against the attempt. */
+  const keys = new Map<string, number>();
   const me = author.toLowerCase();
+  const note = (k: string, ms: number): void => {
+    const prev = keys.get(k);
+    if (prev === undefined || ms > prev) keys.set(k, ms);
+  };
   for (const r of replies) {
     if (r.author_id.toLowerCase() !== me) continue;
     const parsed = parseMove(r.body);
     if (!parsed) continue;
     if (parsed.kind === 'bank') {
-      for (const chip of parsed.chips) keys.add(proofKey(tableId, author, chip.ms, chip.nonce));
+      for (const chip of parsed.chips) note(proofKey(tableId, author, chip.ms, chip.nonce), chip.ms);
     } else if (parsed.kind === 'buy') {
-      keys.add(`buy:${tableId}:${me}:${parsed.key}`);
+      note(`buy:${tableId}:${me}:${parsed.key}`, parsed.ms);
     } else if (parsed.kind === 'dip') {
-      keys.add(`dip:${tableId}:${me}:${parsed.ms}`);
+      note(`dip:${tableId}:${me}:${parsed.ms}`, parsed.ms);
     } else if (parsed.kind === 'tip') {
-      keys.add(`tip:${tableId}:${me}:${parsed.ms}`);
+      note(`tip:${tableId}:${me}:${parsed.ms}`, parsed.ms);
     }
     // 'oversize' carries no move to retire.
   }
   return keys;
 }
+
+/**
+ * How far BEFORE `sentAt` a twin may be authored and still count as this
+ * attempt's own. The body's ms is stamped in `planSend` and `sentAt` in
+ * `markSent`, a few milliseconds apart in the same tick — but the two clocks
+ * are read separately, and `allocMs` hands out monotonic values that can sit
+ * marginally behind the wall clock. A couple of seconds absorbs that without
+ * coming close to a namesake from a previous bowl, which is minutes away at
+ * the very best and usually hours.
+ */
+export const TWIN_SKEW_MS = 2_000;
 
 /**
  * Whether a settling move may still be folded.
@@ -137,11 +162,33 @@ export function settlingStillValid(sentAt: number, now: number, ttlMs: number = 
  * drive expiry, and a fresh array every second would re-fold, re-render and
  * rewrite `localStorage` sixty times a minute for nothing.
  */
+/**
+ * Can this move's `moveKey` name exactly ONE move in the table's whole history?
+ *
+ * Only then may an UNSENT entry be retired on a twin match (see the note in
+ * `retireSettled`). `dip`/`tip` fold the authoring ms into the key and `bank`
+ * folds ms+nonce, so each names one move for all time. A `buy` is keyed on the
+ * jar alone and a tip lets the same jar be bought again every bowl, so its key
+ * names a whole family — matching it proves nothing about a fresh entry.
+ *
+ * `broke`/`burn`/`spend` are ms- or ability-scoped but `confirmedMoveKeys` does
+ * not emit keys for them at all, so they can never match here regardless; they
+ * are listed as unique for honesty about the key shape, not to enable anything.
+ */
+function uniquelyKeyed(m: QueuedMove): boolean {
+  return m.kind === 'dip' || m.kind === 'tip' || m.kind === 'bank'
+    || m.kind === 'broke' || m.kind === 'burn';
+}
+
 export function retireSettled(
   q: QueuedMove[],
-  confirmed: ReadonlySet<string>,
+  confirmed: ReadonlyMap<string, number>,
   now: number,
-  ttlMs: number = SETTLE_TTL_MS
+  ttlMs: number = SETTLE_TTL_MS,
+  /** The fold's `owned` set. PRESENCE ON CHAIN IS NOT EFFECT — see the note on
+   *  the buy branch below. Omitted means "cannot check", which keeps the old
+   *  behaviour for callers that have no fold yet. */
+  owned?: ReadonlySet<string>,
 ): QueuedMove[] {
   let changed = false;
   const out = q.filter((m) => {
@@ -168,9 +215,69 @@ export function retireSettled(
        only admits replies authored by the player on this table, so the chain
        saying "I have this move" is the strongest evidence available, and it is
        exactly the condition under which the local echo is redundant. */
-    const done = confirmed.has(moveKey(m));
+    /* THE TWIN MUST BE NEWER THAN THE ATTEMPT.
+       A `buy` key carries no ms (see `confirmedMoveKeys`), so a jar bought in
+       an earlier bowl sits in this map forever. Matching it would retire a
+       freshly-SENT buy on evidence about a different purchase — and if that
+       send were dropped, the jar is gone with no expiry ever firing to say so.
+       Every other key already names one move for all time, so for those the
+       comparison is a no-op: the twin's ms IS the move's ms.
+
+       `sentAt` is when we handed it to the node and the body's authoring ms is
+       stamped at that same moment, so the move's own twin always satisfies
+       this; only an older namesake fails it. */
+    /* A BUY IS SETTLED ONLY WHEN THE JAR IS ACTUALLY OWNED.
+       `confirmedMoveKeys` proves a reply EXISTS on chain; it does not prove the
+       fold ACCEPTED it. A buy can be on chain and still fold `rejected-order`,
+       `rejected-cost` or `rejected-owned` — most easily right after a tip, which
+       re-scores the whole run and can turn a purchase that succeeded into one
+       that never happened.
+
+       When that occurs the CONFIRMED copy grants nothing and the PENDING copy is
+       the only thing holding the jar. Retiring the pending copy on the twin's
+       mere presence therefore DELETES THE GRANT: the jar un-owns itself, the
+       move count drops, and the player watches a purchase evaporate.
+
+       Observed live on 2026-08-05, one jar per poll for six consecutive polls:
+         movesFrom 1466 -> 1465   bowl1 gone, bowlCap 3,000,000 -> 1,000,000
+         movesFrom 1464 -> 1463   fryer2 gone, fryers 2 -> 1
+       `movesFrom > movesTo` — history got SHORTER, which is the signature of a
+       move being deleted rather than mis-shown.
+
+       So: for a buy, the chain must not merely HAVE it, the fold must have
+       HONOURED it. Every other kind carries its own ms and cannot be re-scored
+       this way. */
+    const twinAt = confirmed.get(moveKey(m));
+    const granted = m.kind !== 'buy' || owned === undefined || owned.has(m.key);
+    const done = granted && twinAt !== undefined && (
+      // A key that names one move for all time needs no date: its presence IS
+      // the proof. And its ms is NOT comparable to `sentAt` anyway — a bank's
+      // is the chip's mining time, legitimately hours older than the submit.
+      uniquelyKeyed(m)
+      // A `buy` key names a whole family, so only a twin from this attempt
+      // counts. An unsent buy has nothing to compare against and is handled by
+      // the branch below, which refuses it outright.
+      || (m.sentAt !== undefined && twinAt >= m.sentAt - TWIN_SKEW_MS)
+    );
     if (m.sentAt === undefined) {
-      if (!done) return true; // genuinely still queued for submission
+      /* ── ONLY MOVES WHOSE KEY IS UNIQUE FOR ALL TIME ──────────────────────
+         SHIPPED BROKEN 2026-08-04 23:10 and caught by the operator inside
+         three minutes: "now it is undoing upgrade buys nonstop".
+
+         `confirmedMoveKeys` keys a buy as `buy:<table>:<me>:<key>` — there is
+         NO `ms` in it. A tip clears `owned`, so a player rebuys the same jars
+         every bowl, and this table holds a dozen `buy overcook` replies across
+         the day. So a FRESH, NEVER-SENT buy matches a twin from hours ago the
+         instant it is queued, and reconciling on that retires it before it is
+         ever submitted. The jar is deducted optimistically, dropped from the
+         queue, never sent, and the next fold puts it back unowned — forever.
+
+         Reconciling an unsent move is only sound when its key can name exactly
+         one move in history. That is true of the ms-scoped kinds (`dip`, `tip`,
+         and `bank`'s proof key of ms+nonce) and false of `buy`. A stamped move
+         is unaffected: it really was submitted, so matching a twin is evidence
+         about THAT submission and the original path below still handles it. */
+      if (!done || !uniquelyKeyed(m)) return true;
       changed = true;
       noteMove({
         at: now, id: m.id, kind: m.kind, key: moveKey(m),

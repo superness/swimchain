@@ -248,12 +248,24 @@ export function openJarsOf(
      about it. A default would have silently reintroduced this bug at each new
      call site, which is exactly how it got in. */
   declined: ReadonlySet<string>,
+  /* A JAR ALREADY ON ITS WAY IS NOT FOR SALE. Operator, 2026-08-04, after
+     tapping one and being told "this one is already bought — it is still going
+     through": "ok so just dont show me the option to buy it?"
+
+     He is right, and the shelf was the only place that did not already know.
+     `onBuy` and `onFeed` BOTH refuse a jar that is queued or pending — so the
+     shop was offering something every downstream gate would reject, which at
+     best costs a tap and at worst eats a chip on the way to a vendor.
+
+     Required, not optional-with-a-default, for the same reason `declined` is:
+     a default silently reintroduces the bug at each new call site. */
+  pending: ReadonlySet<string>,
 ): Upgrade[] {
   const v = CREW.find((m) => m.id === vendorId);
   if (!v) return [];
   const out: Upgrade[] = [];
   for (const key of v.sells) {
-    if (owned.has(key) || declined.has(key)) continue;
+    if (owned.has(key) || declined.has(key) || pending.has(key)) continue;
     if (!jarAvailable(key, dipIndex)) continue;
     const chain = UPGRADE_CHAINS.find((c) => c.includes(key));
     // Not the next rung. A REFUSED rung stays the "next" one forever — it is
@@ -285,10 +297,13 @@ export function stallStatus(
   owned: Set<string>,
   dipIndex: number,
   declined: ReadonlySet<string>,
+  /** Jars already on their way — see `openJarsOf`. A stall whose only
+   *  remaining jar is mid-flight is not 'open': tapping it offers nothing. */
+  pending: ReadonlySet<string>,
 ): StallStatus {
   const v = CREW.find((m) => m.id === vendorId);
   if (!v || v.sells.length === 0) return { kind: 'none' };
-  if (openJarsOf(vendorId, owned, dipIndex, declined).length > 0) return { kind: 'open' };
+  if (openJarsOf(vendorId, owned, dipIndex, declined, pending).length > 0) return { kind: 'open' };
   if (v.sells.every((k) => owned.has(k))) return { kind: 'sold-out' };
   // 'refused', NOT 'sold-out'. By this file's own rule a stall must not claim
   // you bought what you did not buy, and a refusal is the exact opposite of a

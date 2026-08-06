@@ -152,8 +152,8 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
   q = enqueue(q, { tableId: TABLE, author: ME, kind: 'bank', chip: chipOf(nextId) }, nextId); nextId++;
   const settling = markSent(q, q, T0);
 
-  const justBefore = retireSettled(settling, new Set(), T0 + SETTLE_TTL_MS - 1);
-  const justAfter = retireSettled(settling, new Set(), T0 + SETTLE_TTL_MS);
+  const justBefore = retireSettled(settling, new Map(), T0 + SETTLE_TTL_MS - 1);
+  const justAfter = retireSettled(settling, new Map(), T0 + SETTLE_TTL_MS);
 
   check('a settling move still credits one ms before the TTL',
     justBefore.length === 1 && foldWith([], new Map(), justBefore).crumbs > 0, justBefore.length);
@@ -171,7 +171,7 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
   check('a non-finite sentAt never validates',
     !settlingStillValid(NaN, T0) && !settlingStillValid(Infinity, T0));
   check('a settling move whose clock jumped backwards is retired',
-    retireSettled(settling, new Set(), T0 - SETTLE_TTL_MS - 1).length === 0);
+    retireSettled(settling, new Map(), T0 - SETTLE_TTL_MS - 1).length === 0);
 }
 
 /* ── 5) Provenance: a settling move is scoped exactly like a queued one ─── */
@@ -236,14 +236,14 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
   // queue exists to prevent. Expiry in particular must not reach it: an unsent
   // move has no `sentAt`, so there is no clock it could be measured against.
   const mixed = markSent(settled, [q[0]], T0);
-  const swept = retireSettled(mixed, new Set(), T0 + SETTLE_TTL_MS + 1);
+  const swept = retireSettled(mixed, new Map(), T0 + SETTLE_TTL_MS + 1);
   check('retiring sweeps the expired settling entry and NOTHING else',
     swept.map((m) => m.id).join() === [q[1].id, q[2].id].join(), swept.map((m) => ({ id: m.id, sentAt: m.sentAt })));
   check('the surviving unsent entries are still submittable afterwards',
     planSend(swept, TABLE, ME, T0)?.moves.some((m) => m.id === q[1].id) === true,
     planSend(swept, TABLE, ME, T0)?.moves.map((m) => m.id));
   check('an all-unsent queue is never touched at all, at any clock value',
-    retireSettled(q, new Set(), T0 + SETTLE_TTL_MS * 100) === q, q.length);
+    retireSettled(q, new Map(), T0 + SETTLE_TTL_MS * 100) === q, q.length);
 
   // Re-marking must not restart the expiry clock, or a move re-acked on every
   // sender pass would never expire.
@@ -252,7 +252,7 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
     reMarked.every((m) => m.sentAt === T0), reMarked.map((m) => m.sentAt));
   check('markSent returns the SAME array when there is nothing to mark', reMarked === allSettled);
   check('retireSettled returns the SAME array when nothing is retired',
-    retireSettled(allSettled, new Set(), T0 + 1) === allSettled);
+    retireSettled(allSettled, new Map(), T0 + 1) === allSettled);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURES`);

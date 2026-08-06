@@ -39,13 +39,13 @@ const has = (jars: { key: string }[], k: string) => jars.some((u) => u.key === k
 /* ── 1. THE REPORTED BUG, exactly. Sous Chef is UNCHAINED. ──────────────── */
 {
   const v = vendorOf('autodip')!;
-  const before = openJarsOf(v.id, new Set(), DEEP, none);
+  const before = openJarsOf(v.id, new Set(), DEEP, none, none);
   check('the Sous Chef is on sale to begin with', has(before, 'autodip'),
     before.map((u) => u.key));
 
   // MUTANT: with the old `owned`-only predicate this stays true and the check
   // fails — which is the bug the operator hit, reproduced.
-  const after = openJarsOf(v.id, new Set(), DEEP, new Set(['autodip']));
+  const after = openJarsOf(v.id, new Set(), DEEP, new Set(['autodip']), none);
   check('...and is GONE once refused', !has(after, 'autodip'), after.map((u) => u.key));
 
   // Refusing one jar must not clear the vendor's other stock.
@@ -69,7 +69,7 @@ const has = (jars: { key: string }[], k: string) => jars.some((u) => u.key === k
   const declined = new Set([r1]);
 
   const v1 = vendorOf(r1)!;
-  const open1 = openJarsOf(v1.id, owned, DEEP, declined);
+  const open1 = openJarsOf(v1.id, owned, DEEP, declined, none);
   check(`the refused rung (${r1}) is not offered`, !has(open1, r1), open1.map((u) => u.key));
 
   // GUARD, not proof. Nothing above a refusal may appear either — but the
@@ -79,13 +79,13 @@ const has = (jars: { key: string }[], k: string) => jars.some((u) => u.key === k
   // catch a FUTURE change that "helpfully" skips past refused rungs, which
   // would sell a jar the fold rejects for order.
   const v2 = vendorOf(r2)!;
-  const open2 = openJarsOf(v2.id, owned, DEEP, declined);
+  const open2 = openJarsOf(v2.id, owned, DEEP, declined, none);
   check(`GUARD: nor is anything above it (${r2})`, !has(open2, r2), open2.map((u) => u.key));
 
   // Control: without the refusal that same rung IS for sale. This is what
   // proves the two checks above are about `declined` and not about some
   // unrelated gate.
-  const control = openJarsOf(v1.id, owned, DEEP, none);
+  const control = openJarsOf(v1.id, owned, DEEP, none, none);
   check(`control — un-refused, ${r1} is on sale`, has(control, r1), control.map((u) => u.key));
 }
 
@@ -94,16 +94,16 @@ const has = (jars: { key: string }[], k: string) => jars.some((u) => u.key === k
   // A vendor whose entire stock is unchained, so "all settled" is reachable.
   const v = vendorOf('autodip')!;
   const settled = new Set(v.sells.filter((k) => k !== 'autodip'));
-  const st = stallStatus(v.id, settled, DEEP, new Set(['autodip']));
+  const st = stallStatus(v.id, settled, DEEP, new Set(['autodip']), none);
   check('a stall emptied BY REFUSAL reports refused, not sold-out', st.kind === 'refused', st);
 
   // And genuinely owning the lot still reports sold-out.
-  const allOwned = stallStatus(v.id, new Set(v.sells), DEEP, none);
+  const allOwned = stallStatus(v.id, new Set(v.sells), DEEP, none, none);
   check('genuinely owning the lot still reports sold-out', allOwned.kind === 'sold-out', allOwned);
 
   // `locked` must never name a jar you refused as the thing to "bring".
   for (const m of [v]) {
-    const s = stallStatus(m.id, new Set(), DEEP, new Set(m.sells.slice(0, 1)));
+    const s = stallStatus(m.id, new Set(), DEEP, new Set(m.sells.slice(0, 1)), none);
     check('locked never names a refused jar as what you need',
       s.kind !== 'locked' || !m.sells.slice(0, 1).includes(s.needs.key), s);
   }
@@ -112,7 +112,7 @@ const has = (jars: { key: string }[], k: string) => jars.some((u) => u.key === k
 /* ── 4. Refusal is per-run: nothing here may leak into the catalog ──────── */
 {
   const before = Object.keys(UPGRADES).length;
-  openJarsOf(vendorOf('autodip')!.id, new Set(), DEEP, new Set(['autodip']));
+  openJarsOf(vendorOf('autodip')!.id, new Set(), DEEP, new Set(['autodip']), none);
   check('asking the shop never mutates the catalog', Object.keys(UPGRADES).length === before);
 }
 

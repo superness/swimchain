@@ -116,9 +116,37 @@ export const LONG_FRY_CRACKLES = GOLDEN_CRACKLES + 1;
  * queso angel, who takes nothing else. A chip fed to a vendor forfeits its
  * whole pot anyway (App.tsx onFeed), so burning one you have already
  * committed to her costs nothing real. Do not "fix" the numbers below.
+ *
+ * RETUNED 2026-08-04 — MORE HASTE, IDENTICAL EV. Operator: "it doesn't feel
+ * like it 'does anything'... keep the ev the same but lean more towards the
+ * haste". He was not asking for it to pay better; he was asking for the thing
+ * you bought to be VISIBLE.
+ *
+ * The EV penalty is carried entirely by the drain, and the drain is charged
+ * PER TICK — so hastening the burn shortens it and would quietly make the jar
+ * cheaper. The invariant that holds EV fixed for a burn of ANY length is
+ *
+ *     (1 - drain) ^ haste  =  constant
+ *
+ * because a burn of wall-clock T costs `(1 - d) ^ (haste * T / TICK)`. Halving
+ * `haste` therefore squares the per-tick keep: 0.97 -> 0.97^2, i.e. a drain of
+ * 0.0591. Pinned by overcookTuning.test.ts, which checks the kept fraction at
+ * six burn lengths, not just at the ceiling.
+ *
+ * What it buys, at the operator's measured crackleHaste of 0.6 and a ceiling
+ * of 6 (The Long Fry): every crackle now arrives in half the time it used to
+ * while lit — the 4->5 wait falls 96s -> 48s and 5->6 falls 192s -> 96s, which
+ * are the two the burner is actually lit for. Time to the ceiling goes 378s ->
+ * 189s against 1134s unlit.
+ *
+ * Still EV-negative, still by exactly as much: a burn ridden to the ceiling
+ * keeps 1.00% of its pot, before and after. The header note above stands.
  */
-export const OVERCOOK_HASTE = 1 / 3;
-export const OVERCOOK_DRAIN = 0.03;
+export const OVERCOOK_HASTE = 1 / 6;
+/** `1 - 0.97^2`, the drain that holds EV fixed against the halved haste above.
+ *  Written as a literal because it crosses the wire as a pot, and a float
+ *  expression here invites the fractional-pot bug documented in `tickChip`. */
+export const OVERCOOK_DRAIN = 0.0591;
 
 export interface CookingChip {
   /** Identity for React keys and the on-chain authoring ms. */

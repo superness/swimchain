@@ -645,12 +645,15 @@ export function Shelf({ state, dipIndex, crumbsNow, committed, onJar, armedKey, 
  * shelf renders, so the two entry points can never drift; arming feed mode
  * closes the sheet so the fryers are visible for the feeding.
  */
-export function StallSheet({ vendor, jars, owned, declined, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
+export function StallSheet({ vendor, jars, owned, declined, pending, dipIndex, crumbsNow, committed, bowlCap, armedKey, onJar, onClose, switches }: {
   vendor: CrewMember;
   jars: Upgrade[];
   owned: Set<string>;
   /** Jars refused this run — settled, not for sale, back after a tip. */
   declined: ReadonlySet<string>;
+  /** Jars already queued or in flight — the shop must not offer one twice.
+   *  Operator: "ok so just dont show me the option to buy it?" */
+  pending: ReadonlySet<string>;
   dipIndex: number;
   crumbsNow: number;
   committed: number;
@@ -666,7 +669,7 @@ export function StallSheet({ vendor, jars, owned, declined, dipIndex, crumbsNow,
    *  renders nothing. */
   switches?: { key: string; label: string; hint: string; on: boolean; onToggle: () => void }[];
 }) {
-  const status = stallStatus(vendor.id, owned, dipIndex, declined);
+  const status = stallStatus(vendor.id, owned, dipIndex, declined, pending);
   return (
     <div className="sheet-backdrop" onClick={onClose}>
       <div
