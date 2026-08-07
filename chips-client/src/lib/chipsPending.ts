@@ -44,14 +44,11 @@ export function withPending(
   if (active.length === 0) return { replies: confirmed, verified };
   const v = new Map(verified);
   const extra: ChipsReply[] = [];
-  let seq = 0;
   // One timestamp for the whole pass: `created_at` is shared (pending
   // replies never advance the decay clock — see chipsEngine.ts — so its
-  // exact value doesn't matter beyond "now"), and hoisting it out of the
-  // loop keeps every synthetic entry's ordering keyed on `seq` alone rather
-  // than on `Date.now()` ticking mid-loop, which could otherwise invert two
-  // entries' relative order (e.g. a buy landing "before" the bank that funds
-  // it) purely from clock granularity.
+  // exact value doesn't matter beyond "now"). Fold ORDER never comes from
+  // it: every synthetic body carries its move's own authoring ms, so the
+  // overlay replays in tap order exactly as the chain will.
   const at = Date.now();
 
   for (const m of active) {
@@ -60,7 +57,9 @@ export function withPending(
     try {
       if (m.kind === 'bank') {
         v.set(proofKey(table, me, m.chip.ms, m.chip.nonce), m.chip.bits);
-        extra.push({ author_id: me, body: bankBatchBody([m.chip], at + seq++), block_height: null, content_id: cid, created_at: at });
+        // The chip's OWN ms — identity across the pending -> confirmed swap,
+        // and the same fold position the sender's batch will claim.
+        extra.push({ author_id: me, body: bankBatchBody([m.chip], m.chip.ms), block_height: null, content_id: cid, created_at: at });
       } else if (m.kind === 'dip') {
         // The dip's OWN ms is the body's authoring ms — identity across the
         // pending -> confirmed swap, exactly like a bank chip's ms.
@@ -74,7 +73,11 @@ export function withPending(
       } else if (m.kind === 'burn') {
         extra.push({ author_id: me, body: burnBody(m.key, m.ms), block_height: null, content_id: cid, created_at: at });
       } else {
-        extra.push({ author_id: me, body: buyBody(m.key, at + seq++), block_height: null, content_id: cid, created_at: at });
+        // The buy's authoring ms, like every other kind: a pending buy that
+        // folded at "now" sat AFTER every pending dip regardless of tap
+        // order, so the optimistic fold showed the same cap-clamped state
+        // the send-minted body went on to make permanent (2026-08-06).
+        extra.push({ author_id: me, body: buyBody(m.key, m.ms), block_height: null, content_id: cid, created_at: at });
       }
     } catch {
       // A malformed entry must never take the fold down with it (see the

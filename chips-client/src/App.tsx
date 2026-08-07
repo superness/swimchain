@@ -1165,8 +1165,13 @@ export function App() {
       // In flight from here until the fold grants or refuses it — see
       // boughtPendingRef. This is the only place a buy is born, so it is the
       // only place the set can be kept honest.
-      boughtPendingRef.current.set(key, allocMs());
-      return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId.current++);
+      //
+      // ONE ms for the ref AND the entry: this is the buy's authoring moment,
+      // and it rides in the body (chipsQueue's buy arm) so the fold replays
+      // the buy where it was tapped, not where the send queue got to it.
+      const ms = allocMs();
+      boughtPendingRef.current.set(key, ms);
+      return enqueue(q, { tableId: table, author, kind: 'buy', key, ms }, nextId.current++);
     });
   }
 

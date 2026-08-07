@@ -16,7 +16,8 @@ const ME = 'aaaa';
 
 const chip = (n: number) => ({ ms: 1_000_000 + n, bits: 10, nonce: BigInt(n) });
 const bankMove = (n: number, tableId = TABLE, author = ME) => ({ tableId, author, kind: 'bank' as const, chip: chip(n) });
-const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, author, kind: 'buy' as const, key });
+let buyMs = 1_500_000;
+const buyMove = (key: string, tableId = TABLE, author = ME) => ({ tableId, author, kind: 'buy' as const, key, ms: ++buyMs });
 
 /** Test-only scaffolding: drop moves BY ID, the way a real caller would once
  *  it no longer needs them staged (production never does this anymore —

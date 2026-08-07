@@ -69,7 +69,7 @@ try {
   //    including 0n and the u64-max edge value the chip grammar allows.
   const q: QueuedMove[] = [
     { id: 1, tableId: TABLE, author: ME, kind: 'bank', chip: { ms: 1_000_000, bits: 10, nonce: 0n } },
-    { id: 2, tableId: TABLE, author: ME, kind: 'buy', key: 'season1' },
+    { id: 2, tableId: TABLE, author: ME, kind: 'buy', key: 'season1', ms: 1_500_000 },
     { id: 3, tableId: TABLE, author: ME, kind: 'bank', chip: { ms: 2_000_000, bits: 22, nonce: 2n ** 64n - 1n } },
   ];
   saveQueue(q);
@@ -92,6 +92,8 @@ try {
 
   const e1 = loaded[1];
   check('buy key round trips', e1?.kind === 'buy' && e1.key === 'season1', e1);
+  check('buy authoring ms round trips — it is the body\'s embedded ms',
+    e1?.kind === 'buy' && e1.ms === 1_500_000, e1);
 
   const e2 = loaded[2];
   check('u64-max nonce round trips exactly',
@@ -138,6 +140,13 @@ try {
     rows.map((m) => m.id));
   check('no row in the loaded queue ever has a NaN id',
     rows.every((m) => Number.isSafeInteger(m.id)), rows.map((m) => m.id));
+  // Rows 131-133 above are written RAW, without an `ms` — the exact shape a
+  // queue persisted before buys carried an authoring ms. Such a row is
+  // REPAIRED (stamped at load), never dropped: it may be an unsent purchase.
+  const legacy = rows.find((m) => m.id === 5);
+  check('a legacy buy row without ms is repaired with a positive ms, not dropped',
+    legacy?.kind === 'buy' && Number.isSafeInteger(legacy.ms) && legacy.ms > 0,
+    legacy);
 
   /* ── 5) The settling mark survives the round trip, and cannot be faked ───
    *
@@ -157,7 +166,7 @@ try {
   clearQueue();
   saveQueue([
     { id: 10, tableId: TABLE, author: ME, kind: 'bank', chip: { ms: 3_000_000, bits: 11, nonce: 9n }, sentAt: 1_700_000_000_000 },
-    { id: 11, tableId: TABLE, author: ME, kind: 'buy', key: 'season1', sentAt: 1_700_000_000_001 },
+    { id: 11, tableId: TABLE, author: ME, kind: 'buy', key: 'season1', ms: 1_600_000, sentAt: 1_700_000_000_001 },
     { id: 12, tableId: TABLE, author: ME, kind: 'bank', chip: { ms: 4_000_000, bits: 13, nonce: 0x1fn } },
   ]);
   const marked = loadQueue();

@@ -121,7 +121,9 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
     opening.crumbs >= UPGRADES[KEY].cost && !opening.owned.has(KEY), opening.crumbs);
 
   let q: QueuedMove[] = [];
-  q = enqueue(q, { tableId: TABLE, author: ME, kind: 'buy', key: KEY }, nextId); nextId++;
+  // Authored a beat before the send — the entry's ms IS the body's ms, so the
+  // twin below carries the same one (that identity is the whole join).
+  q = enqueue(q, { tableId: TABLE, author: ME, kind: 'buy', key: KEY, ms: T0 - 7_000 }, nextId); nextId++;
 
   const settling = markSent(q, q, T0);
   const settlingState = foldWith(funding, fverified, settling);
@@ -131,7 +133,7 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
     { settling: settlingState.crumbs, opening: opening.crumbs, cost: UPGRADES[KEY].cost });
 
   const twin: ChipsReply = {
-    author_id: ME, body: buyBody(KEY, T0), block_height: 9, content_id: 'sha256:buy-twin', created_at: T0 / 1000,
+    author_id: ME, body: buyBody(KEY, T0 - 7_000), block_height: 9, content_id: 'sha256:buy-twin', created_at: T0 / 1000,
   };
   const overlapState = foldWith([...funding, twin], fverified, settling);
   const keys = confirmedMoveKeys([twin], TABLE, ME);
@@ -214,7 +216,7 @@ function foldWith(confirmed: ChipsReply[], verified: Map<string, number>, q: Que
   let q: QueuedMove[] = [];
   q = enqueue(q, { tableId: TABLE, author: ME, kind: 'bank', chip: chipOf(nextId) }, nextId); nextId++;
   q = enqueue(q, { tableId: TABLE, author: ME, kind: 'bank', chip: chipOf(nextId) }, nextId); nextId++;
-  q = enqueue(q, { tableId: TABLE, author: ME, kind: 'buy', key: 'season2' }, nextId); nextId++;
+  q = enqueue(q, { tableId: TABLE, author: ME, kind: 'buy', key: 'season2', ms: T0 - 1_000 }, nextId); nextId++;
 
   const settled = markSent(q, [q[0]], T0);
   check('unsent() drops the settling entry and keeps the rest in order',

@@ -30,5 +30,9 @@ export function moveKey(m: QueuedMove): string {
   if (m.kind === 'burn') return `burn:${m.tableId}:${m.author.toLowerCase()}:${m.ms}`;
   // Keyed on ability, not ms: an ability is bought at most once, ever.
   if (m.kind === 'spend') return `spend:${m.tableId}:${m.author.toLowerCase()}:${m.ability}`;
-  return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}`;
+  // ms IN THE KEY: a tip clears `owned`, so the same jar is bought again
+  // every bowl — the jar name alone names a whole family of moves, and every
+  // reconcile bug in that family came from matching the wrong member. The
+  // authoring ms pins this key to one attempt for all time, like a dip's.
+  return `buy:${m.tableId}:${m.author.toLowerCase()}:${m.key}:${m.ms}`;
 }
