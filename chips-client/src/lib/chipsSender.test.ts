@@ -26,7 +26,7 @@ const OTHER = 'b'.repeat(64);
 const chip = (n: number) => ({ ms: 1_000_000 + n, bits: 10, nonce: BigInt(n) });
 let nextId = 1;
 const bankMove = (tableId: string, author: string) => ({ tableId, author, kind: 'bank' as const, chip: chip(nextId) });
-const buyMove = (tableId: string, author: string, key: string) => ({ tableId, author, kind: 'buy' as const, key });
+const buyMove = (tableId: string, author: string, key: string) => ({ tableId, author, kind: 'buy' as const, key, ms: 1_500_000 + nextId });
 
 // 1) A stale entry (wrong table, wrong author, or both) is never submitted —
 //    `planSend` must filter through `activeFor` BEFORE `takeBatch`, or a

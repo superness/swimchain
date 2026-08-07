@@ -46,7 +46,7 @@ const NOW = 1785897827000;
 const P = { tableId: TABLE, author: ME };
 const STUCK: QueuedMove = { ...P, kind: 'dip', id: 181, ms: 1785897749124, amount: 207960 } as QueuedMove;
 const BEHIND: QueuedMove[] = [
-  { ...P, kind: 'buy', id: 182, key: 'overcook' } as QueuedMove,
+  { ...P, kind: 'buy', id: 182, key: 'overcook', ms: 1785897760000 } as QueuedMove,
   { ...P, kind: 'dip', id: 184, ms: 1785897775000, amount: 1039800 } as QueuedMove,
   { ...P, kind: 'dip', id: 186, ms: 1785897806000, amount: 2755470 } as QueuedMove,
 ];
@@ -110,22 +110,28 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
    SHIPPED BROKEN 2026-08-04 23:10; the operator caught it in three minutes:
    "now it is undoing upgrade buys nonstop".
 
-   `confirmedMoveKeys` keys a buy as `buy:<table>:<me>:<key>` with NO ms. A tip
-   clears `owned`, so the same jar is rebought every bowl and this table holds a
-   dozen `buy overcook` replies across a single day. Reconciling an unsent buy
-   against that twin retires it BEFORE it is ever submitted: deducted
-   optimistically, dropped from the queue, never sent, unowned again on the next
-   fold — forever. */
+   `confirmedMoveKeys` used to key a buy as `buy:<table>:<me>:<key>` with NO
+   ms. A tip clears `owned`, so the same jar is rebought every bowl and this
+   table holds a dozen `buy overcook` replies across a single day. Reconciling
+   an unsent buy against that twin retired it BEFORE it was ever submitted:
+   deducted optimistically, dropped from the queue, never sent, unowned again
+   on the next fold — forever.
+
+   Since 2026-08-06 the authoring ms is IN the key (moveKey.ts), so an old
+   namesake occupies a different key entirely and the trap is structural:
+   there is no date-window logic left to get wrong. */
 {
   const oldBuy: ChipsReply[] = [{
     content_id: 'c9', author_id: ME, body: 'buy overcook#1785888000000~',
     created_at: 1785888000, block_height: 2334,
   } as ChipsReply];
   const withOld = confirmedMoveKeys(oldBuy, TABLE, ME);
-  check('the old buy IS in the confirmed set (the trap is live)',
-    withOld.has(`buy:${TABLE}:${ME}:overcook`), [...withOld]);
+  check('the old buy sits under its OWN ms-scoped key',
+    withOld.has(`buy:${TABLE}:${ME}:overcook:1785888000000`), [...withOld]);
 
-  const rebuy: QueuedMove = { ...P, kind: 'buy', id: 200, key: 'overcook' } as QueuedMove;
+  const rebuy: QueuedMove = { ...P, kind: 'buy', id: 200, key: 'overcook', ms: NOW - 30_000 } as QueuedMove;
+  check('a fresh rebuy occupies a DIFFERENT key — the namesake cannot match it',
+    !withOld.has(`buy:${TABLE}:${ME}:overcook:${NOW - 30_000}`));
   const after = retireSettled([rebuy], withOld, NOW);
   check('a FRESH unsent buy survives its own key from a previous bowl',
     after.length === 1, after.map((m) => m.id));
@@ -137,33 +143,35 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
 }
 
 /* ── 7. A SENT BUY IS NOT RETIRED BY A JAR FROM A PREVIOUS BOWL ────────────
-   The latent half of the same defect, found by grepping for the family rather
-   than by another outage. `retireSettled` also consults the twin for STAMPED
-   moves, and a buy key carries no ms — so a freshly-sent `buy season1` matched
-   a season1 bought hours and several bowls earlier and was retired on evidence
-   about a different purchase. If that send were dropped in flight, the jar is
-   gone silently: retired means no TTL, so `expired` never fires and the player
-   is never told. Only a twin from THIS attempt may settle it. */
+   The latent half of the same defect. A buy key used to carry no ms, so a
+   freshly-sent `buy season1` matched a season1 bought hours and several bowls
+   earlier and was retired on evidence about a different purchase. The first
+   mitigation was a recency window (`twinAt >= sentAt - TWIN_SKEW_MS`), which
+   assumed body-ms and sentAt are stamped in the same tick — false on a phone,
+   where a submit takes 5-25s, so every slow buy failed the window and sat as
+   settling noise for the full TTL (observed 2026-08-06: six buys pinned).
+   ms-scoped keys replace the window: only the twin with THIS attempt's
+   authoring ms can match, however long the submit took. */
 {
-  const OLD = 1785888000000;   // a season1 bought in an earlier bowl
-  const SENT = 1785901880411;  // tonight's send
+  const OLD = 1785888000000;      // a season1 bought in an earlier bowl
+  const AUTHORED = 1785901860411; // tonight's tap
+  const SENT = AUTHORED + 20_000; // ...submitted 20s later on a slow phone
 
-  const stale = new Map([[`buy:${TABLE}:${ME}:season1`, OLD]]);
+  const stale = new Map([[`buy:${TABLE}:${ME}:season1:${OLD}`, OLD]]);
   const sentBuy: QueuedMove = {
-    ...P, kind: 'buy', id: 300, key: 'season1', sentAt: SENT,
+    ...P, kind: 'buy', id: 300, key: 'season1', ms: AUTHORED, sentAt: SENT,
   } as QueuedMove;
   check('an old namesake does NOT retire a freshly sent buy',
     retireSettled([sentBuy], stale, SENT + 1000).length === 1);
 
-  const mine = new Map([[`buy:${TABLE}:${ME}:season1`, SENT + 40]]);
+  const mine = new Map([[`buy:${TABLE}:${ME}:season1:${AUTHORED}`, AUTHORED]]);
   check('...while this attempt\'s own twin does',
     retireSettled([sentBuy], mine, SENT + 1000).length === 0);
 
-  // The skew window exists because the body's ms and `sentAt` are stamped from
-  // two separate clock reads in the same tick.
-  const slightlyEarly = new Map([[`buy:${TABLE}:${ME}:season1`, SENT - 500]]);
-  check('...and a twin a few hundred ms "before" the send still counts',
-    retireSettled([sentBuy], slightlyEarly, SENT + 1000).length === 0);
+  // No recency window: the twin's ms is the tap, legitimately long before
+  // `sentAt`. A 20-second submit must not strand the echo (it did, live).
+  check('...however slow the submit was',
+    retireSettled([sentBuy], mine, SENT + 600_000).length === 0);
 
   // A dip's key already names one move for all time, so it must NOT be subject
   // to the recency test — a bank's twin ms is the chip's mining time and can
@@ -194,9 +202,9 @@ const keys = confirmedMoveKeys(onChain, TABLE, ME);
    GRANT and the purchase evaporates in front of the player. */
 {
   const SENT = 1785909915000;
-  const key = `buy:${TABLE}:${ME}:bowl1`;
-  const twin = new Map([[key, SENT + 10]]);
-  const buy: QueuedMove = { ...P, kind: 'buy', id: 456, key: 'bowl1', sentAt: SENT } as QueuedMove;
+  const key = `buy:${TABLE}:${ME}:bowl1:${SENT - 5_000}`;
+  const twin = new Map([[key, SENT - 5_000]]);
+  const buy: QueuedMove = { ...P, kind: 'buy', id: 456, key: 'bowl1', ms: SENT - 5_000, sentAt: SENT } as QueuedMove;
 
   // The fold did NOT honour it: `owned` lacks the jar.
   const refused = retireSettled([buy], twin, SENT + 5_000, undefined, new Set<string>());

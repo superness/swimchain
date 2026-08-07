@@ -97,14 +97,11 @@ export const SETTLE_TTL_MS = 600_000 + 2 * 15_000;
 export function confirmedMoveKeys(
   replies: ChipsReply[], tableId: string, author: string,
 ): Map<string, number> {
-  /* A MAP, NOT A SET — the value is the NEWEST authoring ms seen for that key.
-     Most keys carry their own `ms` and so name exactly one move for all time.
-     `buy` does not: it is `buy:<table>:<me>:<jar>`, and a tip clears `owned`,
-     so the same jar is bought again every bowl. Without the timestamp a
-     freshly-sent `buy season1` matches a season1 bought hours ago and is
-     retired on evidence that has nothing to do with it — and if its own
-     submission were dropped, the player loses the jar with no expiry ever
-     firing to say so. `retireSettled` compares against the attempt. */
+  /* A MAP, NOT A SET — the value is the authoring ms seen for that key. Every
+     key now folds its move's ms in (a buy's includes the attempt's authoring
+     ms — see moveKey.ts), so each names exactly one move for all time and the
+     value is diagnostic rather than load-bearing. It stays a map because the
+     shape is cheap and the ms is what a journal reader wants next. */
   const keys = new Map<string, number>();
   const me = author.toLowerCase();
   const note = (k: string, ms: number): void => {
@@ -118,7 +115,7 @@ export function confirmedMoveKeys(
     if (parsed.kind === 'bank') {
       for (const chip of parsed.chips) note(proofKey(tableId, author, chip.ms, chip.nonce), chip.ms);
     } else if (parsed.kind === 'buy') {
-      note(`buy:${tableId}:${me}:${parsed.key}`, parsed.ms);
+      note(`buy:${tableId}:${me}:${parsed.key}:${parsed.ms}`, parsed.ms);
     } else if (parsed.kind === 'dip') {
       note(`dip:${tableId}:${me}:${parsed.ms}`, parsed.ms);
     } else if (parsed.kind === 'tip') {
@@ -128,17 +125,6 @@ export function confirmedMoveKeys(
   }
   return keys;
 }
-
-/**
- * How far BEFORE `sentAt` a twin may be authored and still count as this
- * attempt's own. The body's ms is stamped in `planSend` and `sentAt` in
- * `markSent`, a few milliseconds apart in the same tick — but the two clocks
- * are read separately, and `allocMs` hands out monotonic values that can sit
- * marginally behind the wall clock. A couple of seconds absorbs that without
- * coming close to a namesake from a previous bowl, which is minutes away at
- * the very best and usually hours.
- */
-export const TWIN_SKEW_MS = 2_000;
 
 /**
  * Whether a settling move may still be folded.
@@ -166,10 +152,11 @@ export function settlingStillValid(sentAt: number, now: number, ttlMs: number = 
  * Can this move's `moveKey` name exactly ONE move in the table's whole history?
  *
  * Only then may an UNSENT entry be retired on a twin match (see the note in
- * `retireSettled`). `dip`/`tip` fold the authoring ms into the key and `bank`
- * folds ms+nonce, so each names one move for all time. A `buy` is keyed on the
- * jar alone and a tip lets the same jar be bought again every bowl, so its key
- * names a whole family — matching it proves nothing about a fresh entry.
+ * `retireSettled`). `dip`/`tip` fold the authoring ms into the key, `bank`
+ * folds ms+nonce, and since 2026-08-06 `buy` folds its authoring ms too — the
+ * jar-name-only key it used to have named a whole family (a tip clears
+ * `owned`, so the same jar is bought again every bowl), and matching the
+ * wrong member is where both reconcile incidents came from.
  *
  * `broke`/`burn`/`spend` are ms- or ability-scoped but `confirmedMoveKeys` does
  * not emit keys for them at all, so they can never match here regardless; they
@@ -177,7 +164,7 @@ export function settlingStillValid(sentAt: number, now: number, ttlMs: number = 
  */
 function uniquelyKeyed(m: QueuedMove): boolean {
   return m.kind === 'dip' || m.kind === 'tip' || m.kind === 'bank'
-    || m.kind === 'broke' || m.kind === 'burn';
+    || m.kind === 'broke' || m.kind === 'burn' || m.kind === 'buy';
 }
 
 export function retireSettled(
@@ -215,17 +202,6 @@ export function retireSettled(
        only admits replies authored by the player on this table, so the chain
        saying "I have this move" is the strongest evidence available, and it is
        exactly the condition under which the local echo is redundant. */
-    /* THE TWIN MUST BE NEWER THAN THE ATTEMPT.
-       A `buy` key carries no ms (see `confirmedMoveKeys`), so a jar bought in
-       an earlier bowl sits in this map forever. Matching it would retire a
-       freshly-SENT buy on evidence about a different purchase — and if that
-       send were dropped, the jar is gone with no expiry ever firing to say so.
-       Every other key already names one move for all time, so for those the
-       comparison is a no-op: the twin's ms IS the move's ms.
-
-       `sentAt` is when we handed it to the node and the body's authoring ms is
-       stamped at that same moment, so the move's own twin always satisfies
-       this; only an older namesake fails it. */
     /* A BUY IS SETTLED ONLY WHEN THE JAR IS ACTUALLY OWNED.
        `confirmedMoveKeys` proves a reply EXISTS on chain; it does not prove the
        fold ACCEPTED it. A buy can be on chain and still fold `rejected-order`,
@@ -249,16 +225,16 @@ export function retireSettled(
        this way. */
     const twinAt = confirmed.get(moveKey(m));
     const granted = m.kind !== 'buy' || owned === undefined || owned.has(m.key);
-    const done = granted && twinAt !== undefined && (
-      // A key that names one move for all time needs no date: its presence IS
-      // the proof. And its ms is NOT comparable to `sentAt` anyway — a bank's
-      // is the chip's mining time, legitimately hours older than the submit.
-      uniquelyKeyed(m)
-      // A `buy` key names a whole family, so only a twin from this attempt
-      // counts. An unsent buy has nothing to compare against and is handled by
-      // the branch below, which refuses it outright.
-      || (m.sentAt !== undefined && twinAt >= m.sentAt - TWIN_SKEW_MS)
-    );
+    /* A key that names one move for all time needs no date window: its
+       presence IS the proof, and its ms is NOT comparable to `sentAt` anyway
+       — a bank's is the chip's mining time and a buy's is its tap, both
+       legitimately far older than the submit (a phone submit alone takes
+       5-25s, which is what sank the old `twinAt >= sentAt - TWIN_SKEW_MS`
+       check: every slow buy failed it and sat as settling noise until the
+       TTL — observed 2026-08-06, six buys pinned for minutes). Every kind is
+       uniquely keyed now; `uniquelyKeyed` gates the UNSENT branch below and
+       documents the key shapes. */
+    const done = granted && twinAt !== undefined && uniquelyKeyed(m);
     if (m.sentAt === undefined) {
       /* ── ONLY MOVES WHOSE KEY IS UNIQUE FOR ALL TIME ──────────────────────
          SHIPPED BROKEN 2026-08-04 23:10 and caught by the operator inside

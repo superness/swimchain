@@ -23,7 +23,7 @@ function check(name: string, cond: boolean, extra?: unknown) {
 const COST: Record<string, number> = { season1: 30_000, airtight: 70_000, bowl1: 60_000 };
 const costOf = (key: string): number | undefined => COST[key];
 
-const buy = (id: number, key: string): BuyMove => ({ id, tableId: 't', author: 'a', kind: 'buy', key });
+const buy = (id: number, key: string): BuyMove => ({ id, tableId: 't', author: 'a', kind: 'buy', key, ms: 1_000_000 + id });
 
 /* ── 1) A buy the fold already reflects is not charged again ─────────────
  *

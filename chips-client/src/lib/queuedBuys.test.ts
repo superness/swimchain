@@ -44,7 +44,7 @@ const OTHER = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'
 
 let nextId = 1;
 function withBuy(q: QueuedMove[], key: string, author = ME, table = TABLE): QueuedMove[] {
-  return enqueue(q, { tableId: table, author, kind: 'buy', key }, nextId++);
+  return enqueue(q, { tableId: table, author, kind: 'buy', key, ms: 1_000_000 + nextId }, nextId++);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,8 +179,12 @@ function withBuy(q: QueuedMove[], key: string, author = ME, table = TABLE): Queu
   // unstamped set was freed by a `rejected-order` from a previous bowl nine
   // hours earlier, which is how the same jar came to be queued twice (see
   // lib/buyGuard.ts and buyGuard.test.ts).
+  // ONE ms for the ref and the queue entry: the same authoring moment guards
+  // the in-flight set AND rides in the body (see chipsQueue's buy arm — a
+  // send-minted ms re-orders a delayed buy behind later dips, 2026-08-06).
   check('the set is filled where the buy is enqueued, with the attempt ms',
-    app.includes('boughtPendingRef.current.set(key, allocMs());'));
+    app.includes('boughtPendingRef.current.set(key, ms);')
+    && app.includes("kind: 'buy', key, ms }"));
   const guard = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'buyGuard.ts'), 'utf8');
   check('...and drained on owned', guard.includes('if (owned.has(key)) {'));
   check('...and drained on a rejection, so a refused buy can be retried',

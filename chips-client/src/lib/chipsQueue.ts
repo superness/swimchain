@@ -68,7 +68,13 @@ type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : n
  */
 export type QueuedMove =
   | { id: number; tableId: string; author: string; kind: 'bank'; chip: ChipEntry; sentAt?: number }
-  | { id: number; tableId: string; author: string; kind: 'buy'; key: string; sentAt?: number }
+  /** `ms` is the buy's AUTHORING moment, allocated at the tap. It becomes the
+   *  body's embedded ms — never the send clock: the fold replays in ms order,
+   *  and a send-minted ms re-orders a delayed buy behind dips tapped after it
+   *  (2026-08-06: `buy bowl2` sent 2.5 min late folded after the dips it was
+   *  bought to hold, and the old 3M cap destroyed ~6.4M credited crumbs). It
+   *  also makes the moveKey unique per attempt and a retry byte-identical. */
+  | { id: number; tableId: string; author: string; kind: 'buy'; key: string; ms: number; sentAt?: number }
   /** Give a jar back for BURN_REFUND of its price. Carries `ms` because,
    *  unlike a buy, you can burn the SAME key more than once in a run (buy it
    *  again, burn it again) — so the key alone cannot identify the move. */
@@ -252,7 +258,12 @@ export function loadQueue(): QueuedMove[] {
       if (hasMark && !(typeof r.sentAt === 'number' && Number.isFinite(r.sentAt))) continue;
       const sentAt = hasMark ? { sentAt: r.sentAt as number } : {};
       if (r.kind === 'buy' && typeof r.key === 'string') {
-        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ...sentAt });
+        // REPAIRED, not dropped, when the ms is missing: rows persisted before
+        // buys carried an authoring ms have none. Load-time is the earliest
+        // moment this session can honestly claim for them — same floor-don't-
+        // drop philosophy as the fractional dip below.
+        const ms = typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0 ? r.ms : Date.now();
+        out.push({ id: r.id, tableId: r.tableId, author: r.author, kind: 'buy', key: r.key, ms, ...sentAt });
       } else if (
         r.kind === 'broke'
         && typeof r.ms === 'number' && Number.isSafeInteger(r.ms) && r.ms > 0
@@ -332,7 +343,7 @@ export function saveQueue(q: QueuedMove[]): void {
               ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'broke', paid: m.paid, ms: m.ms, ...mark }
               : m.kind === 'burn'
                 ? { id: m.id, tableId: m.tableId, author: m.author, kind: 'burn', key: m.key, ms: m.ms, ...mark }
-                : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ...mark };
+                : { id: m.id, tableId: m.tableId, author: m.author, kind: 'buy', key: m.key, ms: m.ms, ...mark };
     })));
   } catch { /* quota or private mode — the in-memory queue still works */ }
 }

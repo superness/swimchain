@@ -38,7 +38,7 @@ function submittable(m: QueuedMove, at: number): boolean {
     else if (m.kind === 'burn') burnBody(m.key, m.ms);
     else if (m.kind === 'broke') brokeBody(m.paid, m.ms);
     else if (m.kind === 'spend') spendBody(m.ability, m.cost, m.ms);
-    else buyBody(m.key, at);
+    else buyBody(m.key, m.ms);
     return true;
   } catch {
     return false;
@@ -80,8 +80,17 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
   const active = unsent(activeFor(queue, tableId, author)).filter((m) => submittable(m, at));
   const take = takeBatch(active);
   if (!take) return null;
+  // AUTHORING ms, NEVER `at`: the fold replays in embedded-ms order, so a body
+  // stamped with the send clock re-orders a delayed move against everything
+  // tapped after it (see authoringMs.test.ts for the mainnet incident). A
+  // batch's authoring moment is its oldest chip's mining ms; every other kind
+  // carries its own. This also makes every retry byte-identical, which the
+  // node dedupes to the SAME content id — a lost ack can no longer mint an
+  // on-chain duplicate.
   const body = take.kind === 'bank'
-    ? bankBatchBody(take.moves.map((m) => (m as { chip: ChipEntry }).chip), at)
+    ? bankBatchBody(
+        take.moves.map((m) => (m as { chip: ChipEntry }).chip),
+        Math.min(...take.moves.map((m) => (m as { chip: ChipEntry }).chip.ms)))
     : take.kind === 'dip'
       ? dipBody((take.moves[0] as { amount: number }).amount, (take.moves[0] as { ms: number }).ms)
       : take.kind === 'tip'
@@ -92,7 +101,7 @@ export function planSend(queue: QueuedMove[], tableId: string, author: string, a
             ? spendBody((take.moves[0] as { ability: string }).ability, (take.moves[0] as { cost: number }).cost, (take.moves[0] as { ms: number }).ms)
           : take.kind === 'broke'
             ? brokeBody((take.moves[0] as { paid: number }).paid, (take.moves[0] as { ms: number }).ms)
-            : buyBody((take.moves[0] as { key: string }).key, at);
+            : buyBody((take.moves[0] as { key: string }).key, (take.moves[0] as { ms: number }).ms);
   return { moves: take.moves, kind: take.kind, body };
 }
 
